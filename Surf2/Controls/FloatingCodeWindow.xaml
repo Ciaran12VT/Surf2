@@ -1,0 +1,147 @@
+<UserControl x:Class="Surf2.Controls.FloatingCodeWindow"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:avalonEdit="http://icsharpcode.net/sharpdevelop/avalonedit"
+             xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
+             MinWidth="320"
+             MinHeight="220"
+             ContextMenuOpening="FloatingCodeWindow_ContextMenuOpening">
+    <UserControl.ContextMenu>
+        <ContextMenu>
+            <MenuItem Click="CloseContextMenuItem_Click"
+                      Header="Close" />
+        </ContextMenu>
+    </UserControl.ContextMenu>
+
+    <Border BorderBrush="#687385"
+            BorderThickness="1"
+            Background="#FFFFFF"
+            SnapsToDevicePixels="True">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="32" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid x:Name="HeaderBar"
+                  Grid.Row="0"
+                  Background="#253245"
+                  Cursor="SizeAll"
+                  MouseLeftButtonDown="HeaderBar_MouseLeftButtonDown"
+                  MouseLeftButtonUp="HeaderBar_MouseLeftButtonUp"
+                  MouseMove="HeaderBar_MouseMove">
+                <TextBlock x:Name="TitleText"
+                           Margin="10,0,38,0"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Center"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           Foreground="#FFFFFF"
+                           IsHitTestVisible="False"
+                           TextTrimming="CharacterEllipsis" />
+                <Button x:Name="CloseButton"
+                        Panel.ZIndex="2"
+                        Width="24"
+                        Height="24"
+                        Margin="0,4,5,4"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Click="CloseButton_Click"
+                        Content="X"
+                        FontSize="11"
+                        FontWeight="Bold" />
+            </Grid>
+
+            <Grid Grid.Row="1">
+                <avalonEdit:TextEditor x:Name="Editor"
+                                       Background="#FFFFFF"
+                                       FontFamily="Consolas"
+                                       FontSize="13"
+                                       IsReadOnly="True"
+                                       ShowLineNumbers="True"
+                                       VerticalScrollBarVisibility="Auto"
+                                       HorizontalScrollBarVisibility="Auto">
+                    <avalonEdit:TextEditor.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Click="CloseContextMenuItem_Click"
+                                      Header="Close" />
+                        </ContextMenu>
+                    </avalonEdit:TextEditor.ContextMenu>
+                </avalonEdit:TextEditor>
+            </Grid>
+
+            <primitives:Thumb Grid.RowSpan="2"
+                              Width="6"
+                              HorizontalAlignment="Left"
+                              Background="Transparent"
+                              Cursor="SizeWE"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="3"
+                              Tag="Left" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Width="6"
+                              HorizontalAlignment="Right"
+                              Background="Transparent"
+                              Cursor="SizeWE"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="3"
+                              Tag="Right" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Height="6"
+                              VerticalAlignment="Top"
+                              Background="Transparent"
+                              Cursor="SizeNS"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="3"
+                              Tag="Top" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Height="6"
+                              VerticalAlignment="Bottom"
+                              Background="Transparent"
+                              Cursor="SizeNS"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="3"
+                              Tag="Bottom" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Width="14"
+                              Height="14"
+                              HorizontalAlignment="Left"
+                              VerticalAlignment="Top"
+                              Background="Transparent"
+                              Cursor="SizeNWSE"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="4"
+                              Tag="TopLeft" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Width="14"
+                              Height="14"
+                              HorizontalAlignment="Right"
+                              VerticalAlignment="Top"
+                              Background="Transparent"
+                              Cursor="SizeNESW"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="4"
+                              Tag="TopRight" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Width="14"
+                              Height="14"
+                              HorizontalAlignment="Left"
+                              VerticalAlignment="Bottom"
+                              Background="Transparent"
+                              Cursor="SizeNESW"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="4"
+                              Tag="BottomLeft" />
+            <primitives:Thumb Grid.RowSpan="2"
+                              Width="14"
+                              Height="14"
+                              HorizontalAlignment="Right"
+                              VerticalAlignment="Bottom"
+                              Background="#D5DAE1"
+                              Cursor="SizeNWSE"
+                              DragDelta="ResizeThumb_DragDelta"
+                              Panel.ZIndex="4"
+                              Tag="BottomRight" />
+        </Grid>
+    </Border>
+</UserControl>
