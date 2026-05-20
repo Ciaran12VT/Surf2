@@ -1,0 +1,434 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.IO;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
+using Surf2.Models;
+using Surf2.Services;
+
+namespace Surf2.Controls;
+
+public partial class FloatingSpreadsheetWindow : UserControl
+{
+    private const double MinimumFontSize = 8;
+    private const double MaximumFontSize = 36;
+    private const double FontZoomStep = 1.1;
+    private const int ColumnAutoSizeSampleRows = 100;
+
+    private readonly ObservableCollection<CsvGridRow> _rows = [];
+    private readonly Dictionary<int, string> _filters = [];
+    private readonly DispatcherTimer _filterDebounceTimer;
+    private bool _isDragging;
+    private Point _dragStartPoint;
+    private double _dragStartLeft;
+    private double _dragStartTop;
+    private int _totalRowCount;
+    private int _columnCount;
+
+    public FloatingSpreadsheetWindow(OpenDocumentState state, string content)
+    {
+        InitializeComponent();
+
+        State = state;
+        Width = Math.Max(MinWidth, state.Width);
+        Height = Math.Max(MinHeight, state.Height);
+        TitleText.Text = string.IsNullOrWhiteSpace(state.DisplayName)
+            ? Path.GetFileName(state.FilePath)
+            : state.DisplayName;
+        ToolTip = state.FilePath;
+
+        double initialFontSize = state.FontSize > 0 ? state.FontSize : 13;
+        SpreadsheetGrid.FontSize = Math.Clamp(initialFontSize, MinimumFontSize, MaximumFontSize);
+        State.FontSize = SpreadsheetGrid.FontSize;
+        SpreadsheetGrid.ItemsSource = _rows;
+
+        _filterDebounceTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        _filterDebounceTimer.Tick += FilterDebounceTimer_Tick;
+
+        PreviewMouseWheel += FloatingSpreadsheetWindow_PreviewMouseWheel;
+        Loaded += async (_, _) => await LoadCsvAsync(content);
+    }
+
+    public event EventHandler? CloseRequested;
+
+    public event EventHandler? BoundsChanged;
+
+    public event EventHandler? BringToFrontRequested;
+
+    public OpenDocumentState State { get; }
+
+    public void ApplyGridBackcolor(Brush backcolor)
+    {
+        SpreadsheetGrid.Background = backcolor;
+        SpreadsheetGrid.RowBackground = backcolor;
+    }
+
+    private async Task LoadCsvAsync(string content)
+    {
+        LoadingOverlay.Visibility = Visibility.Visible;
+        LoadingText.Text = "Loading CSV...";
+
+        try
+        {
+            CsvGridDocument document = await Task.Run(() => CsvGridParser.Parse(content));
+            _rows.Clear();
+            foreach (CsvGridRow row in document.Rows)
+            {
+                _rows.Add(row);
+            }
+
+            _totalRowCount = _rows.Count;
+            _columnCount = document.Headers.Count;
+            BuildColumns(document.Headers);
+            ApplyFilters();
+            LoadingOverlay.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            LoadingText.Text = $"Could not load CSV: {ex.Message}";
+        }
+    }
+
+    private void BuildColumns(IReadOnlyList<string> headers)
+    {
+        SpreadsheetGrid.Columns.Clear();
+        _filters.Clear();
+
+        for (int index = 0; index < headers.Count; index++)
+        {
+            int columnIndex = index;
+            var column = new DataGridTextColumn
+            {
+                Binding = new Binding($"[{columnIndex}]")
+                {
+                    Mode = BindingMode.TwoWay,
+                    UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+                },
+                Header = CreateColumnHeader(headers[index], columnIndex),
+                MinWidth = 80,
+                Width = new DataGridLength(EstimateColumnWidth(headers[index], columnIndex), DataGridLengthUnitType.Pixel)
+            };
+
+            SpreadsheetGrid.Columns.Add(column);
+        }
+    }
+
+    private FrameworkElement CreateColumnHeader(string headerText, int columnIndex)
+    {
+        var panel = new Grid();
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var header = new TextBlock
+        {
+            Text = headerText,
+            FontWeight = FontWeights.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 0, 3)
+        };
+
+        var filter = new TextBox
+        {
+            Height = 22,
+            MinWidth = 48,
+            FontWeight = FontWeights.Normal,
+            FontSize = 11,
+            Tag = columnIndex,
+            ToolTip = $"Filter {headerText}"
+        };
+        filter.TextChanged += FilterTextBox_TextChanged;
+
+        Grid.SetRow(header, 0);
+        Grid.SetRow(filter, 1);
+        panel.Children.Add(header);
+        panel.Children.Add(filter);
+        return panel;
+    }
+
+    private double EstimateColumnWidth(string headerText, int columnIndex)
+    {
+        int maxLength = headerText.Length;
+        foreach (CsvGridRow row in _rows.Take(ColumnAutoSizeSampleRows))
+        {
+            maxLength = Math.Max(maxLength, row[columnIndex].Length);
+        }
+
+        return Math.Clamp((maxLength * 7) + 36, 90, 320);
+    }
+
+    private void FilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (sender is not TextBox textBox || textBox.Tag is not int columnIndex)
+        {
+            return;
+        }
+
+        string filter = textBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(filter))
+        {
+            _filters.Remove(columnIndex);
+        }
+        else
+        {
+            _filters[columnIndex] = filter;
+        }
+
+        _filterDebounceTimer.Stop();
+        _filterDebounceTimer.Start();
+    }
+
+    private void FilterDebounceTimer_Tick(object? sender, EventArgs e)
+    {
+        _filterDebounceTimer.Stop();
+        ApplyFilters();
+    }
+
+    private void ApplyFilters()
+    {
+        ICollectionView view = CollectionViewSource.GetDefaultView(_rows);
+        view.Filter = RowMatchesFilters;
+        view.Refresh();
+        UpdateStatusText(view.Cast<object>().Count());
+    }
+
+    private bool RowMatchesFilters(object item)
+    {
+        if (item is not CsvGridRow row)
+        {
+            return false;
+        }
+
+        foreach ((int columnIndex, string filter) in _filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            if (row[columnIndex].IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void UpdateStatusText(int visibleRows)
+    {
+        string rowText = visibleRows == _totalRowCount
+            ? $"Rows: {_totalRowCount}"
+            : $"Rows: {visibleRows}/{_totalRowCount}";
+        StatusText.Text = $"{rowText}    Columns: {_columnCount}";
+    }
+
+    private void ClearFiltersButton_Click(object sender, RoutedEventArgs e)
+    {
+        _filters.Clear();
+
+        foreach (DataGridColumn column in SpreadsheetGrid.Columns)
+        {
+            if (column.Header is not DependencyObject header)
+            {
+                continue;
+            }
+
+            foreach (TextBox textBox in FindVisualChildren<TextBox>(header))
+            {
+                textBox.Text = string.Empty;
+            }
+        }
+
+        ApplyFilters();
+    }
+
+    private void HeaderBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (Parent is not Canvas parentCanvas)
+        {
+            return;
+        }
+
+        BringToFrontRequested?.Invoke(this, EventArgs.Empty);
+        _isDragging = true;
+        _dragStartPoint = e.GetPosition(parentCanvas);
+        _dragStartLeft = Canvas.GetLeft(this);
+        _dragStartTop = Canvas.GetTop(this);
+
+        if (double.IsNaN(_dragStartLeft))
+        {
+            _dragStartLeft = 0;
+        }
+
+        if (double.IsNaN(_dragStartTop))
+        {
+            _dragStartTop = 0;
+        }
+
+        HeaderBar.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void HeaderBar_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isDragging || e.LeftButton != MouseButtonState.Pressed || Parent is not Canvas parentCanvas)
+        {
+            return;
+        }
+
+        Point currentPoint = e.GetPosition(parentCanvas);
+        double left = Math.Max(0, _dragStartLeft + currentPoint.X - _dragStartPoint.X);
+        double top = Math.Max(0, _dragStartTop + currentPoint.Y - _dragStartPoint.Y);
+
+        Canvas.SetLeft(this, left);
+        Canvas.SetTop(this, top);
+
+        State.Left = left;
+        State.Top = top;
+        BoundsChanged?.Invoke(this, EventArgs.Empty);
+        e.Handled = true;
+    }
+
+    private void HeaderBar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isDragging)
+        {
+            return;
+        }
+
+        _isDragging = false;
+        HeaderBar.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void ResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        BringToFrontRequested?.Invoke(this, EventArgs.Empty);
+
+        string direction = (sender as FrameworkElement)?.Tag?.ToString() ?? "BottomRight";
+        bool resizeLeft = direction.Contains("Left", StringComparison.OrdinalIgnoreCase);
+        bool resizeRight = direction.Contains("Right", StringComparison.OrdinalIgnoreCase);
+        bool resizeTop = direction.Contains("Top", StringComparison.OrdinalIgnoreCase);
+        bool resizeBottom = direction.Contains("Bottom", StringComparison.OrdinalIgnoreCase);
+
+        double left = Canvas.GetLeft(this);
+        double top = Canvas.GetTop(this);
+
+        if (double.IsNaN(left))
+        {
+            left = 0;
+        }
+
+        if (double.IsNaN(top))
+        {
+            top = 0;
+        }
+
+        double newLeft = left;
+        double newTop = top;
+        double newWidth = Width;
+        double newHeight = Height;
+
+        if (resizeLeft)
+        {
+            newWidth = Math.Max(MinWidth, Width - e.HorizontalChange);
+            newLeft = left + Width - newWidth;
+
+            if (newLeft < 0)
+            {
+                newWidth += newLeft;
+                newLeft = 0;
+                newWidth = Math.Max(MinWidth, newWidth);
+            }
+        }
+
+        if (resizeRight)
+        {
+            newWidth = Math.Max(MinWidth, newWidth + e.HorizontalChange);
+        }
+
+        if (resizeTop)
+        {
+            newHeight = Math.Max(MinHeight, Height - e.VerticalChange);
+            newTop = top + Height - newHeight;
+
+            if (newTop < 0)
+            {
+                newHeight += newTop;
+                newTop = 0;
+                newHeight = Math.Max(MinHeight, newHeight);
+            }
+        }
+
+        if (resizeBottom)
+        {
+            newHeight = Math.Max(MinHeight, newHeight + e.VerticalChange);
+        }
+
+        Width = newWidth;
+        Height = newHeight;
+        Canvas.SetLeft(this, newLeft);
+        Canvas.SetTop(this, newTop);
+
+        State.Left = newLeft;
+        State.Top = newTop;
+        State.Width = Width;
+        State.Height = Height;
+        BoundsChanged?.Invoke(this, EventArgs.Empty);
+        e.Handled = true;
+    }
+
+    private void FloatingSpreadsheetWindow_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
+        {
+            return;
+        }
+
+        double multiplier = e.Delta > 0 ? FontZoomStep : 1 / FontZoomStep;
+        SpreadsheetGrid.FontSize = Math.Clamp(SpreadsheetGrid.FontSize * multiplier, MinimumFontSize, MaximumFontSize);
+        State.FontSize = SpreadsheetGrid.FontSize;
+        e.Handled = true;
+        BoundsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        CloseRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CloseContextMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CloseRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void FloatingSpreadsheetWindow_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        BringToFrontRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T target)
+            {
+                yield return target;
+            }
+
+            foreach (T descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+}

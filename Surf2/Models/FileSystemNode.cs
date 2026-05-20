@@ -29,6 +29,12 @@ public sealed class FileSystemNode
 
     public bool IsLoaded { get; set; }
 
+    public bool IsExpanded { get; set; }
+
+    public bool IsVirtualDocument { get; set; }
+
+    public bool HasUnresolvedQueries { get; set; }
+
     public ObservableCollection<FileSystemNode> Children { get; } = [];
 
     public string Extension => IsDirectory ? string.Empty : Path.GetExtension(FullPath).ToLowerInvariant();
@@ -37,7 +43,7 @@ public sealed class FileSystemNode
 
     public Brush AccentBrush => !Exists ? Brushes.Firebrick : IsDirectory ? Brushes.DarkGoldenrod : Brushes.SlateGray;
 
-    public Brush TextBrush => !Exists ? Brushes.Firebrick : IsDirectory ? Brushes.Black : Brushes.DimGray;
+    public Brush TextBrush => !Exists || HasUnresolvedQueries ? Brushes.Firebrick : IsDirectory ? Brushes.Black : Brushes.DimGray;
 
     public void AddLoadingPlaceholder()
     {

@@ -4,6 +4,8 @@ public sealed class OpenDocumentState
 {
     public string FilePath { get; set; } = string.Empty;
 
+    public string DisplayName { get; set; } = string.Empty;
+
     public double Left { get; set; }
 
     public double Top { get; set; }

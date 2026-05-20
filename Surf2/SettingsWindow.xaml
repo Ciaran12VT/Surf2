@@ -2,11 +2,71 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Settings"
-        Width="760"
-        Height="500"
-        MinWidth="680"
-        MinHeight="420"
+        Width="820"
+        Height="590"
+        MinWidth="720"
+        MinHeight="460"
         WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="SettingsActionButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="12,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.9" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SettingsPrimaryButtonStyle"
+               BasedOn="{StaticResource SettingsActionButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#1E3A8A" />
+        </Style>
+
+        <Style x:Key="SettingsDangerButtonStyle"
+               BasedOn="{StaticResource SettingsActionButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#DC2626" />
+        </Style>
+
+        <Style x:Key="SettingsSaveButtonStyle"
+               BasedOn="{StaticResource SettingsActionButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#16A34A" />
+        </Style>
+
+        <Style x:Key="SettingsCloseButtonStyle"
+               BasedOn="{StaticResource SettingsActionButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#111827" />
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="12">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="180" />
@@ -24,8 +84,12 @@
                        Text="Settings" />
             <ListBox x:Name="SectionList"
                      Grid.Row="1"
-                     Margin="0,8,0,0">
+                     Margin="0,8,0,0"
+                     SelectionChanged="SectionList_SelectionChanged">
                 <ListBoxItem Content="Code Windows" IsSelected="True" />
+                <ListBoxItem Content="Reference Highlights" />
+                <ListBoxItem Content="Diagram Images" />
+                <ListBoxItem Content="Persistence" />
             </ListBox>
         </Grid>
 
@@ -36,150 +100,538 @@
                       Background="#D7DCE2" />
 
         <Grid Grid.Column="2">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
+            <Grid x:Name="CodeWindowSettingsPanel">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-            <TextBlock FontSize="14"
-                       FontWeight="SemiBold"
-                       Text="Code Window Backcolors" />
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Code Window Backcolors" />
 
-            <ListBox x:Name="BackcolorList"
-                     Grid.Row="1"
-                     Margin="0,8,0,10"
-                     SelectionChanged="BackcolorList_SelectionChanged">
-                <ListBox.ItemTemplate>
-                    <DataTemplate>
-                        <Grid MinHeight="28" Margin="0,2">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="90" />
-                                <ColumnDefinition Width="36" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock VerticalAlignment="Center"
-                                       FontWeight="SemiBold"
-                                       Text="{Binding Extension}" />
-                            <Border Grid.Column="1"
-                                    Width="24"
-                                    Height="16"
-                                    VerticalAlignment="Center"
-                                    Background="{Binding Backcolor}"
-                                    BorderBrush="#9CA3AF"
-                                    BorderThickness="1" />
-                            <TextBlock Grid.Column="2"
-                                       VerticalAlignment="Center"
-                                       Foreground="#4B5563"
-                                       Text="{Binding Backcolor}" />
-                        </Grid>
-                    </DataTemplate>
-                </ListBox.ItemTemplate>
-            </ListBox>
+                <ListBox x:Name="BackcolorList"
+                         Grid.Row="1"
+                         Margin="0,8,0,10"
+                         SelectionChanged="BackcolorList_SelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid MinHeight="28" Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="90" />
+                                    <ColumnDefinition Width="36" />
+                                    <ColumnDefinition Width="110" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding Extension}" />
+                                <Border Grid.Column="1"
+                                        Width="24"
+                                        Height="16"
+                                        VerticalAlignment="Center"
+                                        Background="{Binding Backcolor}"
+                                        BorderBrush="#9CA3AF"
+                                        BorderThickness="1" />
+                                <TextBlock Grid.Column="2"
+                                           VerticalAlignment="Center"
+                                           Foreground="#4B5563"
+                                           Text="{Binding Backcolor}" />
+                                <TextBlock Grid.Column="3"
+                                           Margin="10,0,0,0"
+                                           VerticalAlignment="Center"
+                                           Foreground="#4B5563"
+                                           Text="{Binding Language}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
 
-            <Grid Grid.Row="2">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="88" />
-                    <ColumnDefinition Width="120" />
-                    <ColumnDefinition Width="72" />
-                    <ColumnDefinition Width="150" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <TextBlock VerticalAlignment="Center" Text="Extension" />
-                <TextBox x:Name="ExtensionTextBox"
-                         Grid.Column="1"
-                         Height="26" />
-                <TextBlock Grid.Column="2"
-                           Margin="12,0,0,0"
-                           VerticalAlignment="Center"
-                           Text="Backcolor" />
-                <TextBox x:Name="ColorTextBox"
-                         Grid.Column="3"
-                         Height="26"
-                         TextChanged="ColorTextBox_TextChanged" />
-                <Button x:Name="PickColorButton"
-                        Grid.Column="4"
-                        Width="72"
-                        Height="26"
-                        Margin="8,0,0,0"
-                        Click="PickColorButton_Click"
-                        Content="Apply" />
-                <StackPanel Grid.Column="5"
-                            Margin="10,0,0,0"
-                            Orientation="Horizontal">
-                    <Border x:Name="PreviewSwatch"
-                            Width="42"
-                            Height="24"
-                            BorderBrush="#9CA3AF"
-                            BorderThickness="1" />
-                    <Button Width="24"
-                            Height="24"
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="76" />
+                        <ColumnDefinition Width="104" />
+                        <ColumnDefinition Width="72" />
+                        <ColumnDefinition Width="130" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center" Text="Extension" />
+                    <TextBox x:Name="ExtensionTextBox"
+                             Grid.Column="1"
+                             Height="26" />
+                    <TextBlock Grid.Column="2"
+                               Margin="12,0,0,0"
+                               VerticalAlignment="Center"
+                               Text="Backcolor" />
+                    <TextBox x:Name="ColorTextBox"
+                             Grid.Column="3"
+                             Height="26"
+                             Cursor="Hand"
+                             PreviewMouseLeftButtonDown="ColorTextBox_PreviewMouseLeftButtonDown"
+                             ToolTip="Click to pick a color"
+                             TextChanged="ColorTextBox_TextChanged" />
+                    <Button x:Name="PickColorButton"
+                            Grid.Column="4"
+                            Width="72"
+                            Height="26"
                             Margin="8,0,0,0"
-                            Background="#FFFFFF"
-                            BorderBrush="#9CA3AF"
-                            Click="PresetColorButton_Click"
-                            Tag="#FFFFFF"
-                            ToolTip="White" />
-                    <Button Width="24"
-                            Height="24"
-                            Margin="4,0,0,0"
-                            Background="#EAF4FF"
-                            BorderBrush="#9CA3AF"
-                            Click="PresetColorButton_Click"
-                            Tag="#EAF4FF"
-                            ToolTip="Pale Blue" />
-                    <Button Width="24"
-                            Height="24"
-                            Margin="4,0,0,0"
-                            Background="#FFF8D6"
-                            BorderBrush="#9CA3AF"
-                            Click="PresetColorButton_Click"
-                            Tag="#FFF8D6"
-                            ToolTip="Pale Yellow" />
-                    <Button Width="24"
-                            Height="24"
-                            Margin="4,0,0,0"
-                            Background="#ECFDF3"
-                            BorderBrush="#9CA3AF"
-                            Click="PresetColorButton_Click"
-                            Tag="#ECFDF3"
-                            ToolTip="Pale Green" />
-                    <Button Width="24"
-                            Height="24"
-                            Margin="4,0,0,0"
-                            Background="#FFF1F2"
-                            BorderBrush="#9CA3AF"
-                            Click="PresetColorButton_Click"
-                            Tag="#FFF1F2"
-                            ToolTip="Pale Pink" />
-                </StackPanel>
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="PickColorButton_Click"
+                            Content="Apply" />
+                    <ComboBox x:Name="LanguageComboBox"
+                              Grid.Column="5"
+                              Height="26"
+                              Margin="8,0,0,0"
+                              SelectionChanged="LanguageComboBox_SelectionChanged"
+                              ToolTip="Language used for syntax highlighting, references, and context menus" />
+                </Grid>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <TextBlock x:Name="ValidationText"
+                               VerticalAlignment="Center"
+                               Foreground="#B91C1C" />
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="80"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsPrimaryButtonStyle}"
+                                Click="AddButton_Click"
+                                Content="Add" />
+                        <Button x:Name="RemoveButton"
+                                Width="80"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsDangerButtonStyle}"
+                                Click="RemoveButton_Click"
+                                Content="Remove" />
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
             </Grid>
 
-            <DockPanel Grid.Row="3" Margin="0,12,0,0">
-                <TextBlock x:Name="ValidationText"
-                           VerticalAlignment="Center"
-                           Foreground="#B91C1C" />
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Width="80"
-                            Margin="0,0,8,0"
-                            Click="AddButton_Click"
-                            Content="Add" />
-                    <Button x:Name="RemoveButton"
-                            Width="80"
-                            Margin="0,0,8,0"
-                            Click="RemoveButton_Click"
-                            Content="Remove" />
-                    <Button Width="96"
-                            Margin="0,0,8,0"
-                            Click="SaveButton_Click"
-                            Content="Save" />
-                    <Button Width="86"
-                            Click="CloseButton_Click"
-                            Content="Close" />
-                </StackPanel>
-            </DockPanel>
+            <Grid x:Name="ReferenceHighlightSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Reference Highlight Styles" />
+
+                <ListBox x:Name="HighlightStyleList"
+                         Grid.Row="1"
+                         Margin="0,8,0,10"
+                         SelectionChanged="HighlightStyleList_SelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid MinHeight="30" Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="110" />
+                                    <ColumnDefinition Width="36" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding Language}" />
+                                <TextBlock Grid.Column="1"
+                                           VerticalAlignment="Center"
+                                           Text="{Binding Kind}" />
+                                <Border Grid.Column="2"
+                                        Width="24"
+                                        Height="16"
+                                        VerticalAlignment="Center"
+                                        Background="{Binding Foreground}"
+                                        BorderBrush="#9CA3AF"
+                                        BorderThickness="1" />
+                                <TextBlock Grid.Column="3"
+                                           VerticalAlignment="Center"
+                                           Foreground="#4B5563"
+                                           Text="{Binding Foreground}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Grid Grid.Row="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="150" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock VerticalAlignment="Center" Text="Reference" />
+                    <TextBlock x:Name="HighlightTargetText"
+                               Grid.Column="1"
+                               Grid.ColumnSpan="3"
+                               VerticalAlignment="Center"
+                               FontWeight="SemiBold" />
+
+                    <TextBlock Grid.Row="1"
+                               Margin="0,8,0,0"
+                               VerticalAlignment="Center"
+                               Text="Font color" />
+                    <TextBox x:Name="HighlightColorTextBox"
+                             Grid.Row="1"
+                             Grid.Column="1"
+                             Height="26"
+                             Margin="0,8,0,0"
+                             TextChanged="HighlightColorTextBox_TextChanged" />
+                    <Button x:Name="ApplyHighlightColorButton"
+                            Grid.Row="1"
+                            Grid.Column="2"
+                            Width="72"
+                            Height="26"
+                            Margin="8,8,0,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="ApplyHighlightColorButton_Click"
+                            Content="Apply" />
+                    <StackPanel Grid.Row="1"
+                                Grid.Column="3"
+                                Margin="10,8,0,0"
+                                Orientation="Horizontal">
+                        <Border x:Name="HighlightPreviewSwatch"
+                                Width="42"
+                                Height="24"
+                                BorderBrush="#9CA3AF"
+                                BorderThickness="1" />
+                        <Button Width="24"
+                                Height="24"
+                                Margin="8,0,0,0"
+                                Background="#B45309"
+                                BorderBrush="#9CA3AF"
+                                Click="HighlightPresetColorButton_Click"
+                                Tag="#B45309"
+                                ToolTip="Dark Orange" />
+                        <Button Width="24"
+                                Height="24"
+                                Margin="4,0,0,0"
+                                Background="#1D4ED8"
+                                BorderBrush="#9CA3AF"
+                                Click="HighlightPresetColorButton_Click"
+                                Tag="#1D4ED8"
+                                ToolTip="Blue" />
+                        <Button Width="24"
+                                Height="24"
+                                Margin="4,0,0,0"
+                                Background="#047857"
+                                BorderBrush="#9CA3AF"
+                                Click="HighlightPresetColorButton_Click"
+                                Tag="#047857"
+                                ToolTip="Green" />
+                        <Button Width="24"
+                                Height="24"
+                                Margin="4,0,0,0"
+                                Background="#7C3AED"
+                                BorderBrush="#9CA3AF"
+                                Click="HighlightPresetColorButton_Click"
+                                Tag="#7C3AED"
+                                ToolTip="Purple" />
+                        <Button Width="24"
+                                Height="24"
+                                Margin="4,0,0,0"
+                                Background="#BE123C"
+                                BorderBrush="#9CA3AF"
+                                Click="HighlightPresetColorButton_Click"
+                                Tag="#BE123C"
+                                ToolTip="Red" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2"
+                                Grid.Column="1"
+                                Grid.ColumnSpan="3"
+                                Margin="0,10,0,0"
+                                Orientation="Horizontal">
+                        <CheckBox x:Name="HighlightBoldCheckBox"
+                                  Margin="0,0,16,0"
+                                  Checked="HighlightStyleCheckBox_Changed"
+                                  Content="Bold"
+                                  Unchecked="HighlightStyleCheckBox_Changed" />
+                        <CheckBox x:Name="HighlightItalicCheckBox"
+                                  Margin="0,0,16,0"
+                                  Checked="HighlightStyleCheckBox_Changed"
+                                  Content="Italic"
+                                  Unchecked="HighlightStyleCheckBox_Changed" />
+                        <CheckBox x:Name="HighlightUnderlineCheckBox"
+                                  Margin="0,0,20,0"
+                                  Checked="HighlightStyleCheckBox_Changed"
+                                  Content="Underline"
+                                  Unchecked="HighlightStyleCheckBox_Changed" />
+                        <TextBlock x:Name="HighlightPreviewText"
+                                   VerticalAlignment="Center"
+                                   Text="ReferencePreview" />
+                    </StackPanel>
+                </Grid>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <TextBlock x:Name="HighlightValidationText"
+                               VerticalAlignment="Center"
+                               Foreground="#B91C1C" />
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveHighlightButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
+
+            <Grid x:Name="DiagramImageSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Diagram Images" />
+
+                <ListBox x:Name="DiagramImageList"
+                         Grid.Row="1"
+                         Margin="0,8,0,10"
+                         SelectionChanged="DiagramImageList_SelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid MinHeight="30" Margin="0,2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="170" />
+                                    <ColumnDefinition Width="80" />
+                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock VerticalAlignment="Center"
+                                           FontWeight="SemiBold"
+                                           Text="{Binding Name}" />
+                                <TextBlock Grid.Column="1"
+                                           VerticalAlignment="Center"
+                                           Foreground="#4B5563"
+                                           Text="{Binding MatchTarget}" />
+                                <TextBlock Grid.Column="2"
+                                           VerticalAlignment="Center"
+                                           Foreground="#4B5563"
+                                           Text="{Binding Regex}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="3"
+                                           VerticalAlignment="Center"
+                                           Foreground="#4B5563"
+                                           Text="{Binding OriginalFileName}" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="92" />
+                        <ColumnDefinition Width="170" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock VerticalAlignment="Center" Text="Name" />
+                    <TextBox x:Name="DiagramImageNameTextBox"
+                             Grid.Column="1"
+                             Height="26"
+                             TextChanged="DiagramImageNameTextBox_TextChanged" />
+                    <Button x:Name="ImportDiagramImageButton"
+                            Grid.Column="2"
+                            Width="94"
+                            Height="26"
+                            Margin="8,0,0,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="ImportDiagramImageButton_Click"
+                            Content="Import" />
+
+                    <TextBlock Grid.Row="1"
+                               Margin="0,10,0,0"
+                               VerticalAlignment="Center"
+                               Text="Regex" />
+                    <TextBox x:Name="DiagramImageRegexTextBox"
+                             Grid.Row="1"
+                             Grid.Column="1"
+                             Height="26"
+                             Margin="0,10,0,0"
+                             TextChanged="DiagramImageRegexTextBox_TextChanged" />
+                    <ComboBox x:Name="DiagramImageMatchTargetComboBox"
+                              Grid.Row="1"
+                              Grid.Column="2"
+                              Width="94"
+                              Height="26"
+                              Margin="8,10,0,0"
+                              SelectionChanged="DiagramImageMatchTargetComboBox_SelectionChanged">
+                        <ComboBoxItem Content="Name" />
+                        <ComboBoxItem Content="Content" />
+                    </ComboBox>
+
+                    <TextBlock Grid.Row="2"
+                               Margin="0,10,0,0"
+                               VerticalAlignment="Top"
+                               Text="Preview" />
+                    <Border Grid.Row="2"
+                            Grid.Column="1"
+                            Grid.ColumnSpan="3"
+                            Width="150"
+                            Height="92"
+                            Margin="0,10,0,0"
+                            HorizontalAlignment="Left"
+                            BorderBrush="#CBD5E1"
+                            BorderThickness="1"
+                            Background="#F8FAFC">
+                        <Image x:Name="DiagramImagePreview"
+                               Margin="6"
+                               Stretch="Uniform" />
+                    </Border>
+                    <TextBlock x:Name="DiagramImageFileText"
+                               Grid.Row="2"
+                               Grid.Column="1"
+                               Grid.ColumnSpan="3"
+                               Margin="164,10,0,0"
+                               VerticalAlignment="Top"
+                               Foreground="#4B5563"
+                               TextWrapping="Wrap" />
+                </Grid>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <TextBlock x:Name="DiagramImageValidationText"
+                               VerticalAlignment="Center"
+                               Foreground="#B91C1C" />
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="80"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsPrimaryButtonStyle}"
+                                Click="AddDiagramImageButton_Click"
+                                Content="Add" />
+                        <Button x:Name="RemoveDiagramImageButton"
+                                Width="80"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsDangerButtonStyle}"
+                                Click="RemoveDiagramImageButton_Click"
+                                Content="Remove" />
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveDiagramImagesButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
+
+            <Grid x:Name="PersistenceSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Persistence Database" />
+
+                <TextBlock x:Name="ConnectionOverrideText"
+                           Grid.Row="1"
+                           Margin="0,8,0,0"
+                           Foreground="#4B5563"
+                           TextWrapping="Wrap" />
+
+                <Grid Grid.Row="2" Margin="0,12,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Text="Connection string" />
+                    <TextBox x:Name="PersistenceConnectionStringTextBox"
+                             Grid.Row="1"
+                             MinHeight="90"
+                             Margin="0,8,0,0"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" />
+
+                    <StackPanel Grid.Row="2"
+                                Margin="0,10,0,0"
+                                Orientation="Horizontal">
+                        <Button Width="118"
+                                Margin="0,0,8,0"
+                                Click="TestConnectionButton_Click"
+                                Content="Test Connection" />
+                        <Button Width="104"
+                                Click="UseDefaultConnectionButton_Click"
+                                Content="Use Default" />
+                    </StackPanel>
+
+                    <Border Grid.Row="3"
+                            Margin="0,14,0,0"
+                            Padding="10"
+                            BorderBrush="#D7DCE2"
+                            BorderThickness="1"
+                            Background="#F8FAFC">
+                        <TextBlock TextWrapping="Wrap">
+                            <Run Text="Connection changes are used the next time Surf2 starts. " />
+                            <Run Text="The environment variable SURF2_CONNECTION_STRING overrides this local setting when it is present." />
+                        </TextBlock>
+                    </Border>
+                </Grid>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <TextBlock x:Name="PersistenceValidationText"
+                               VerticalAlignment="Center"
+                               Foreground="#4B5563"
+                               TextWrapping="Wrap" />
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SavePersistenceButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
         </Grid>
     </Grid>
 </Window>

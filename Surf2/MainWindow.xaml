@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:avalonEdit="http://icsharpcode.net/sharpdevelop/avalonedit"
         xmlns:models="clr-namespace:Surf2.Models"
         mc:Ignorable="d"
         Title="Surf 2.0"
@@ -12,8 +13,278 @@
         MinHeight="600"
         Background="#F6F7F9"
         Closing="Window_Closing"
+        Icon="Assets/surf2_icon.ico"
         Loaded="Window_Loaded">
     <Window.Resources>
+        <Style x:Key="RoundedToolbarButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.9" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="GreenToolbarButtonStyle"
+               BasedOn="{StaticResource RoundedToolbarButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#16A34A" />
+        </Style>
+
+        <Style x:Key="RedToolbarButtonStyle"
+               BasedOn="{StaticResource RoundedToolbarButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#DC2626" />
+        </Style>
+
+        <Style x:Key="CircleToolbarButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="#2563EB" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="16">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#1D4ED8" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#1E40AF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#93C5FD" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SettingsCogButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Foreground" Value="#1F2937" />
+            <Setter Property="Background" Value="#F3F4F6" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="16">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E5E7EB" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#D1D5DB" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RegexToggleStyle" TargetType="{x:Type ToggleButton}">
+            <Setter Property="Foreground" Value="#A0A7B0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#4B5563" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="Black" />
+                                <Setter Property="FontWeight" Value="Bold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ViewModeToggleStyle" TargetType="{x:Type ToggleButton}">
+            <Setter Property="Foreground" Value="#9CA3AF" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="#4B5563" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="Black" />
+                                <Setter Property="FontWeight" Value="Bold" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DiagramToolToggleButtonStyle" TargetType="{x:Type ToggleButton}">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Background" Value="#FFFFFF" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="9">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E0ECFF" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#93C5FD" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#BFDBFE" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#2563EB" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DiagramToolButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="42" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Background" Value="#FFFFFF" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="9">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E0ECFF" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#93C5FD" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#BFDBFE" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#2563EB" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SplitOrientationButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="16">
+                            <ContentPresenter x:Name="ButtonContent"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonContent" Property="Opacity" Value="0.88" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonContent" Property="Opacity" Value="0.72" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <HierarchicalDataTemplate DataType="{x:Type models:FileSystemNode}" ItemsSource="{Binding Children}">
             <DockPanel LastChildFill="True" MinHeight="22">
                 <TextBlock Width="18"
@@ -41,21 +312,87 @@
                 Background="#FFFFFF">
             <DockPanel Margin="10,8">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Width="108"
-                            Height="30"
+                    <Button Style="{StaticResource SettingsCogButtonStyle}"
                             Click="SettingsButton_Click"
-                            Content="Settings" />
+                            Content="&#xE713;"
+                            ToolTip="Settings" />
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
                     <Button Width="116"
                             Height="30"
+                            Style="{StaticResource GreenToolbarButtonStyle}"
                             Click="ScopesButton_Click"
                             Content="Scopes" />
+                    <Button Margin="8,0,0,0"
+                            Style="{StaticResource CircleToolbarButtonStyle}"
+                            Click="BackButton_Click"
+                            Content="&#x2190;"
+                            IsEnabled="{Binding CanNavigateBack}"
+                            ToolTip="Back" />
+                    <Button Margin="4,0,0,0"
+                            Style="{StaticResource CircleToolbarButtonStyle}"
+                            Click="ForwardButton_Click"
+                            Content="&#x2192;"
+                            IsEnabled="{Binding CanNavigateForward}"
+                            ToolTip="Forward" />
                     <Button Width="108"
                             Height="30"
                             Margin="8,0,0,0"
+                            Style="{StaticResource RedToolbarButtonStyle}"
                             Click="CloseAllButton_Click"
                             Content="Close All" />
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Left"
+                            Margin="16,0,0,0"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal">
+                    <ToggleButton x:Name="CodeViewToggle"
+                                  Style="{StaticResource ViewModeToggleStyle}"
+                                  Checked="ViewToggle_CheckedChanged"
+                                  Content="Code"
+                                  IsChecked="True"
+                                  Unchecked="ViewToggle_CheckedChanged" />
+                    <ToggleButton x:Name="DiagramViewToggle"
+                                  Margin="12,0,0,0"
+                                  Style="{StaticResource ViewModeToggleStyle}"
+                                  Checked="ViewToggle_CheckedChanged"
+                                  Content="Diagram"
+                                  Unchecked="ViewToggle_CheckedChanged" />
+                    <Button x:Name="SplitOrientationButton"
+                            Margin="10,0,0,0"
+                            Style="{StaticResource SplitOrientationButtonStyle}"
+                            Click="SplitOrientationButton_Click"
+                            ToolTip="Enable Code and Diagram to change split orientation">
+                        <Grid x:Name="SplitOrientationIcon"
+                              Width="32"
+                              Height="32"
+                              IsHitTestVisible="False"
+                              RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <RotateTransform x:Name="SplitOrientationIconRotation" Angle="270" />
+                            </Grid.RenderTransform>
+                            <Grid>
+                                <Grid.Clip>
+                                    <EllipseGeometry Center="16,16"
+                                                     RadiusX="15"
+                                                     RadiusY="15" />
+                                </Grid.Clip>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="3" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Background="#FFFFFF" />
+                                <Border Grid.Column="1"
+                                        Background="#374151" />
+                                <Border Grid.Column="2"
+                                        Background="#D1D5DB" />
+                            </Grid>
+                            <Ellipse Fill="Transparent"
+                                     Stroke="#6B7280"
+                                     StrokeThickness="1" />
+                        </Grid>
+                    </Button>
                 </StackPanel>
                 <TextBlock Margin="14,0,0,0"
                            VerticalAlignment="Center"
@@ -78,6 +415,7 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="3*" MinHeight="120" />
                         <RowDefinition Height="5" />
                         <RowDefinition Height="2*" MinHeight="90" />
@@ -91,63 +429,199 @@
                                    Foreground="#1F2937"
                                    Text="Object Explorer" />
                     </Border>
+                    <Border Grid.Row="1"
+                            BorderBrush="#E4E7EB"
+                            BorderThickness="0,0,0,1"
+                            Padding="8,6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock VerticalAlignment="Center"
+                                       Text="Find:" />
+                            <TextBox x:Name="ObjectExplorerSearchTextBox"
+                                     Grid.Column="1"
+                                     Height="24"
+                                     Margin="6,0,6,0"
+                                     KeyDown="ObjectExplorerSearchTextBox_KeyDown" />
+                            <ToggleButton x:Name="ObjectExplorerRegexToggle"
+                                          Grid.Column="2"
+                                          Width="38"
+                                          Height="24"
+                                          Style="{StaticResource RegexToggleStyle}"
+                                          Content="(.*)" />
+                            <TextBlock Grid.Column="3"
+                                       Margin="8,0,5,0"
+                                       VerticalAlignment="Center"
+                                       Text="in" />
+                            <ComboBox x:Name="ObjectExplorerSearchTargetComboBox"
+                                      Grid.Column="4"
+                                      Width="82"
+                                      Height="24"
+                                      SelectedIndex="0">
+                                <ComboBoxItem Content="Name" />
+                                <ComboBoxItem Content="Content" />
+                            </ComboBox>
+                        </Grid>
+                    </Border>
                     <TreeView x:Name="ObjectExplorer"
-                              Grid.Row="1"
+                              Grid.Row="2"
                               BorderThickness="0"
                               ItemsSource="{Binding RootNodes}"
                               MouseDoubleClick="ObjectExplorer_MouseDoubleClick"
+                              MouseMove="ObjectExplorer_MouseMove"
+                              PreviewMouseLeftButtonDown="ObjectExplorer_PreviewMouseLeftButtonDown"
                               TreeViewItem.PreviewMouseDoubleClick="ObjectExplorerItem_PreviewMouseDoubleClick"
-                              TreeViewItem.Expanded="ObjectExplorerItem_Expanded" />
-                    <GridSplitter Grid.Row="2"
+                              TreeViewItem.PreviewMouseRightButtonDown="ObjectExplorerItem_PreviewMouseRightButtonDown"
+                              TreeViewItem.Expanded="ObjectExplorerItem_Expanded">
+                        <TreeView.ItemContainerStyle>
+                            <Style TargetType="{x:Type TreeViewItem}">
+                                <Setter Property="IsExpanded"
+                                        Value="{Binding IsExpanded, Mode=TwoWay}" />
+                            </Style>
+                        </TreeView.ItemContainerStyle>
+                    </TreeView>
+                    <GridSplitter Grid.Row="3"
                                   Height="5"
                                   HorizontalAlignment="Stretch"
                                   VerticalAlignment="Stretch"
                                   Background="#D7DCE2"
                                   ResizeBehavior="PreviousAndNext"
                                   ResizeDirection="Rows" />
-                    <Grid Grid.Row="3">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-                        <Border Grid.Row="0"
+                    <TabControl x:Name="ExplorerDetailTabs"
+                                Grid.Row="4"
                                 BorderBrush="#E4E7EB"
-                                BorderThickness="0,1,0,1"
-                                Padding="10,8">
-                            <TextBlock FontSize="13"
-                                       FontWeight="SemiBold"
-                                       Foreground="#1F2937"
-                                       Text="Open Windows" />
-                        </Border>
-                        <ListBox x:Name="OpenTabsList"
-                                 Grid.Row="1"
-                                 BorderThickness="0"
-                                 ItemsSource="{Binding OpenTabs}"
-                                 PreviewMouseLeftButtonUp="OpenTabsList_PreviewMouseLeftButtonUp"
-                                 ContextMenuOpening="OpenTabsList_ContextMenuOpening"
-                                 SelectionChanged="OpenTabsList_SelectionChanged">
-                            <ListBox.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Click="CloseOpenTabMenuItem_Click"
-                                              Header="Close" />
-                                </ContextMenu>
-                            </ListBox.ContextMenu>
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="{x:Type ListBoxItem}">
-                                    <EventSetter Event="PreviewMouseRightButtonDown"
-                                                 Handler="OpenTabsListItem_PreviewMouseRightButtonDown" />
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate DataType="{x:Type models:OpenWindowItem}">
-                                    <TextBlock Padding="8,5"
-                                               Text="{Binding FileName}"
-                                               TextTrimming="CharacterEllipsis"
-                                               ToolTip="{Binding FilePath}" />
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </Grid>
+                                BorderThickness="0,1,0,0">
+                        <TabItem x:Name="OpenWindowsTabItem"
+                                 Header="Open Windows">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Border Grid.Row="0"
+                                        BorderBrush="#E4E7EB"
+                                        BorderThickness="0,0,0,1"
+                                        Background="#F8FAFC"
+                                        Padding="8,5">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="58" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#4B5563"
+                                                   Text="Name" />
+                                        <TextBlock Grid.Column="1"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#4B5563"
+                                                   Text="Type" />
+                                    </Grid>
+                                </Border>
+                                <ListBox x:Name="OpenTabsList"
+                                         Grid.Row="1"
+                                         BorderThickness="0"
+                                         ItemsSource="{Binding OpenTabs}"
+                                         PreviewMouseLeftButtonUp="OpenTabsList_PreviewMouseLeftButtonUp"
+                                         ContextMenuOpening="OpenTabsList_ContextMenuOpening"
+                                         SelectionChanged="OpenTabsList_SelectionChanged">
+                                    <ListBox.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem Click="CloseOpenTabMenuItem_Click"
+                                                      Header="Close" />
+                                            <MenuItem Click="CloseAllButThisOpenTabMenuItem_Click"
+                                                      Header="Close all but this" />
+                                            <Separator />
+                                            <MenuItem Click="CloseAllOpenTabsMenuItem_Click"
+                                                      Header="Close all" />
+                                        </ContextMenu>
+                                    </ListBox.ContextMenu>
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="{x:Type ListBoxItem}">
+                                            <Setter Property="HorizontalContentAlignment"
+                                                    Value="Stretch" />
+                                            <Setter Property="Padding"
+                                                    Value="0" />
+                                            <EventSetter Event="PreviewMouseRightButtonDown"
+                                                         Handler="OpenTabsListItem_PreviewMouseRightButtonDown" />
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type models:OpenWindowItem}">
+                                            <Grid MinHeight="26"
+                                                  Background="{Binding TypeBackBrush}"
+                                                  ToolTip="{Binding FilePath}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="58" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock VerticalAlignment="Center"
+                                                           Margin="8,0,4,0"
+                                                           Foreground="Black"
+                                                           Text="{Binding FileName}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="1"
+                                                           VerticalAlignment="Center"
+                                                           Margin="4,0,8,0"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="Black"
+                                                           Text="{Binding Type}"
+                                                           TextAlignment="Left" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </TabItem>
+                        <TabItem x:Name="PreviewTabItem"
+                                 Header="Preview">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Border Grid.Row="0"
+                                        BorderBrush="#E4E7EB"
+                                        BorderThickness="0,0,0,1"
+                                        Background="#F8FAFC"
+                                        Padding="8,6">
+                                    <TextBlock x:Name="PreviewHeaderText"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="#1F2937"
+                                               Text="No reference selected"
+                                               TextTrimming="CharacterEllipsis" />
+                                </Border>
+                                <Grid Grid.Row="1">
+                                    <avalonEdit:TextEditor x:Name="PreviewEditor"
+                                                           Background="#FFFFFF"
+                                                           FontFamily="Consolas"
+                                                           FontSize="12"
+                                                           HorizontalScrollBarVisibility="Auto"
+                                                           IsReadOnly="True"
+                                                           PreviewMouseWheel="PreviewEditor_PreviewMouseWheel"
+                                                           ShowLineNumbers="True"
+                                                           VerticalScrollBarVisibility="Auto"
+                                                           Visibility="Collapsed" />
+                                    <TextBlock x:Name="PreviewEmptyText"
+                                               Margin="14"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Foreground="#7B8794"
+                                               IsHitTestVisible="False"
+                                               Text="Single-click a reference to preview it."
+                                               TextAlignment="Center"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                            </Grid>
+                        </TabItem>
+                    </TabControl>
                 </Grid>
             </Border>
 
@@ -157,32 +631,894 @@
                           Background="#D7DCE2" />
 
             <Border Grid.Column="2" Background="#EEF1F5">
-                <Grid>
-                    <ScrollViewer x:Name="WorkspaceScrollViewer"
-                                  HorizontalScrollBarVisibility="Auto"
-                                  VerticalScrollBarVisibility="Auto">
-                        <Canvas x:Name="WorkspaceCanvas"
-                                Width="100000"
-                                Height="100000"
-                                Background="#EEF1F5"
-                                MouseLeftButtonDown="WorkspaceCanvas_MouseLeftButtonDown"
-                                MouseLeftButtonUp="WorkspaceCanvas_MouseLeftButtonUp"
-                                MouseMove="WorkspaceCanvas_MouseMove"
-                                MouseWheel="WorkspaceCanvas_MouseWheel">
-                            <Canvas.LayoutTransform>
-                                <ScaleTransform x:Name="WorkspaceScaleTransform"
-                                                ScaleX="1"
-                                                ScaleY="1" />
-                            </Canvas.LayoutTransform>
-                        </Canvas>
-                    </ScrollViewer>
-                    <TextBlock x:Name="EmptyWorkspaceHint"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               FontSize="18"
-                               Foreground="#7B8794"
-                               IsHitTestVisible="False"
-                               Text="Open a folder, then double-click a file to view it." />
+                <Grid x:Name="WorkspaceViewGrid">
+                    <Grid.RowDefinitions>
+                        <RowDefinition x:Name="CodeViewRow" Height="*" MinHeight="140" />
+                        <RowDefinition x:Name="WorkspaceViewSplitterRow" Height="0" />
+                        <RowDefinition x:Name="DiagramViewRow" Height="0" MinHeight="0" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="CodeViewColumn" Width="*" MinWidth="140" />
+                        <ColumnDefinition x:Name="WorkspaceViewSplitterColumn" Width="0" />
+                        <ColumnDefinition x:Name="DiagramViewColumn" Width="0" MinWidth="0" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid x:Name="CodeViewHost"
+                          Grid.Row="0"
+                          Grid.Column="0"
+                          PreviewMouseDown="CodeViewHost_PreviewMouseDown"
+                          PreviewMouseWheel="CodeViewHost_PreviewMouseWheel">
+                        <ScrollViewer x:Name="WorkspaceScrollViewer"
+                                      HorizontalScrollBarVisibility="Auto"
+                                      VerticalScrollBarVisibility="Auto">
+                            <Canvas x:Name="WorkspaceCanvas"
+                                    Width="100000"
+                                    Height="100000"
+                                    Background="#EEF1F5"
+                                    MouseLeftButtonDown="WorkspaceCanvas_MouseLeftButtonDown"
+                                    MouseLeftButtonUp="WorkspaceCanvas_MouseLeftButtonUp"
+                                    MouseMove="WorkspaceCanvas_MouseMove"
+                                    MouseWheel="WorkspaceCanvas_MouseWheel">
+                                <Canvas.LayoutTransform>
+                                    <ScaleTransform x:Name="WorkspaceScaleTransform"
+                                                    ScaleX="1"
+                                                    ScaleY="1" />
+                                </Canvas.LayoutTransform>
+                            </Canvas>
+                        </ScrollViewer>
+                        <TextBlock x:Name="EmptyWorkspaceHint"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontSize="18"
+                                   Foreground="#7B8794"
+                                   IsHitTestVisible="False"
+                                   Text="Open a folder, then double-click a file to view it." />
+                    </Grid>
+
+                    <GridSplitter x:Name="WorkspaceViewSplitter"
+                                  Grid.Row="1"
+                                  Grid.Column="0"
+                                  Height="5"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="#D7DCE2"
+                                  ResizeBehavior="PreviousAndNext"
+                                  ResizeDirection="Rows"
+                                  Visibility="Collapsed" />
+
+                    <Grid x:Name="DiagramViewHost"
+                          Grid.Row="2"
+                          Grid.Column="0"
+                          PreviewMouseDown="DiagramViewHost_PreviewMouseDown"
+                          PreviewMouseWheel="DiagramViewHost_PreviewMouseWheel"
+                          Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition x:Name="DiagramContentColumn"
+                                              Width="*"
+                                              MinWidth="220" />
+                            <ColumnDefinition x:Name="DiagramSidebarSplitterColumn"
+                                              Width="0" />
+                            <ColumnDefinition x:Name="DiagramSidebarColumn"
+                                              Width="0"
+                                              MinWidth="0" />
+                        </Grid.ColumnDefinitions>
+
+                        <Grid Grid.Column="0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="34" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0"
+                                    BorderBrush="#D7DCE2"
+                                    BorderThickness="0,0,0,1"
+                                    Background="#FFFFFF">
+                                <DockPanel Margin="10,4" LastChildFill="True">
+                                    <StackPanel DockPanel.Dock="Right"
+                                                Orientation="Horizontal">
+                                        <ProgressBar x:Name="DiagramExportProgressBar"
+                                                     Width="120"
+                                                     Height="8"
+                                                     Margin="0,9,8,0"
+                                                     Maximum="100"
+                                                     Minimum="0"
+                                                     Visibility="Collapsed" />
+                                        <Button x:Name="ExportDiagramPngButton"
+                                                Width="92"
+                                                Height="26"
+                                                Margin="0,0,8,0"
+                                                Padding="8,0"
+                                                Background="#0F766E"
+                                                Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                Click="ExportDiagramPngButton_Click"
+                                                Content="Export PNG"
+                                                ToolTip="Export the entire diagram as a PNG" />
+                                        <Button x:Name="SaveDiagramButton"
+                                                Width="64"
+                                                Height="26"
+                                                Padding="8,0"
+                                                Style="{StaticResource GreenToolbarButtonStyle}"
+                                                Click="SaveDiagramButton_Click"
+                                                Content="Save" />
+                                        <Button x:Name="SaveDiagramAsButton"
+                                                Width="78"
+                                                Height="26"
+                                                Margin="8,0,0,0"
+                                                Padding="8,0"
+                                                Background="#2563EB"
+                                                Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                Click="SaveDiagramAsButton_Click"
+                                                Content="Save As"
+                                                IsEnabled="{Binding CanSaveDiagramAs}" />
+                                        <Button x:Name="DeleteDiagramButton"
+                                                Width="72"
+                                                Height="26"
+                                                Margin="8,0,0,0"
+                                                Padding="8,0"
+                                                Style="{StaticResource RedToolbarButtonStyle}"
+                                                Click="DeleteDiagramButton_Click"
+                                                Content="Delete"
+                                                IsEnabled="{Binding CanDeleteDiagram}" />
+                                    </StackPanel>
+                                    <StackPanel DockPanel.Dock="Left"
+                                                Orientation="Horizontal">
+                                    <ToggleButton x:Name="DiagramRectangleToolButton"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  ToolTip="Rectangle">
+                                        <Rectangle Width="15"
+                                                   Height="11"
+                                                   Fill="Transparent"
+                                                   RadiusX="1"
+                                                   RadiusY="1"
+                                                   Stroke="#111827"
+                                                   StrokeThickness="2" />
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="DiagramEllipseToolButton"
+                                                  Margin="6,0,0,0"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  ToolTip="Ellipse">
+                                        <Ellipse Width="15"
+                                                 Height="13"
+                                                 Fill="Transparent"
+                                                 Stroke="#111827"
+                                                 StrokeThickness="2" />
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="DiagramImageToolButton"
+                                                  Margin="6,0,0,0"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  Click="DiagramImageToolButton_Click"
+                                                  ToolTip="Image">
+                                        <ToggleButton.ContextMenu>
+                                            <ContextMenu Closed="DiagramImageToolMenu_Closed" />
+                                        </ToggleButton.ContextMenu>
+                                        <Grid Width="28"
+                                              Height="17">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="7" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid Width="17"
+                                                  Height="14"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center">
+                                                <Rectangle Fill="Transparent"
+                                                           Stroke="#111827"
+                                                           StrokeThickness="1.6" />
+                                                <Polygon Points="2,12 6,7 9,10 12,5 15,12"
+                                                         Fill="#111827" />
+                                                <Ellipse Width="3"
+                                                         Height="3"
+                                                         Margin="3,2,0,0"
+                                                         HorizontalAlignment="Left"
+                                                         VerticalAlignment="Top"
+                                                         Fill="#111827" />
+                                            </Grid>
+                                            <Polygon Grid.Column="1"
+                                                     Width="5"
+                                                     Height="3"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="#4B5563"
+                                                     Points="0,0 5,0 2.5,3" />
+                                        </Grid>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="DiagramLineToolButton"
+                                                  Margin="6,0,0,0"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  Click="DiagramLineToolButton_Click"
+                                                  ToolTip="Line">
+                                        <ToggleButton.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem x:Name="DiagramLineEndArrowMenuItem"
+                                                          Header="Arrow at end"
+                                                          IsCheckable="True"
+                                                          Click="DiagramLineEndArrowMenuItem_Click" />
+                                            </ContextMenu>
+                                        </ToggleButton.ContextMenu>
+                                        <Grid Width="28"
+                                              Height="17">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="7" />
+                                            </Grid.ColumnDefinitions>
+                                            <Canvas Width="17"
+                                                    Height="14"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center">
+                                                <Line X1="2"
+                                                      Y1="11"
+                                                      X2="15"
+                                                      Y2="3"
+                                                      Stroke="#111827"
+                                                      StrokeThickness="2"
+                                                      StrokeStartLineCap="Round"
+                                                      StrokeEndLineCap="Round" />
+                                            </Canvas>
+                                            <Polygon Grid.Column="1"
+                                                     Width="5"
+                                                     Height="3"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="#4B5563"
+                                                     Points="0,0 5,0 2.5,3" />
+                                        </Grid>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="DiagramLabelToolButton"
+                                                  Margin="6,0,0,0"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  ToolTip="Label">
+                                        <Canvas Width="24"
+                                                Height="17">
+                                            <Line X1="2"
+                                                  Y1="14"
+                                                  X2="9"
+                                                  Y2="5"
+                                                  Stroke="#111827"
+                                                  StrokeThickness="1.5" />
+                                            <Rectangle Canvas.Left="8"
+                                                       Canvas.Top="2"
+                                                       Width="14"
+                                                       Height="10"
+                                                       Fill="Transparent"
+                                                       Stroke="#111827"
+                                                       StrokeThickness="1.5" />
+                                            <TextBlock Canvas.Left="11"
+                                                       Canvas.Top="1"
+                                                       FontSize="9"
+                                                       FontWeight="Bold"
+                                                       Foreground="#111827"
+                                                       Text="T" />
+                                        </Canvas>
+                                    </ToggleButton>
+                                    <Border Width="1"
+                                            Height="22"
+                                            Margin="10,0,4,0"
+                                            Background="#CBD5E1" />
+                                    <Button x:Name="DiagramOutlineColorButton"
+                                            Margin="6,0,0,0"
+                                            Style="{StaticResource DiagramToolButtonStyle}"
+                                            Click="DiagramOutlineColorButton_Click"
+                                            ToolTip="Shape outline color">
+                                        <Button.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Click="DiagramOutlineColorMenuItem_Click"
+                                                          Tag="Transparent">
+                                                    <MenuItem.Header>
+                                                        <Grid Width="36"
+                                                              Height="14">
+                                                            <Rectangle Fill="Transparent"
+                                                                       Stroke="#9CA3AF"
+                                                                       StrokeThickness="1" />
+                                                            <Line X1="3"
+                                                                  Y1="12"
+                                                                  X2="33"
+                                                                  Y2="2"
+                                                                  Stroke="#DC2626"
+                                                                  StrokeThickness="2" />
+                                                        </Grid>
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <Separator />
+                                                <MenuItem Click="DiagramOutlineColorMenuItem_Click"
+                                                          Tag="#000000">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#000000"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramOutlineColorMenuItem_Click"
+                                                          Tag="#FFFFFF">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#FFFFFF"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramOutlineColorMenuItem_Click"
+                                                          Tag="#DC2626">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#DC2626"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramOutlineColorMenuItem_Click"
+                                                          Tag="#2563EB">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#2563EB"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramOutlineColorMenuItem_Click"
+                                                          Tag="#16A34A">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#16A34A"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <Separator />
+                                                <MenuItem Click="DiagramCustomOutlineColorMenuItem_Click"
+                                                          Header="Custom" />
+                                            </ContextMenu>
+                                        </Button.ContextMenu>
+                                        <Grid Width="31"
+                                              Height="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="8" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid>
+                                                <Rectangle x:Name="DiagramOutlineColorSwatch"
+                                                           Height="14"
+                                                           VerticalAlignment="Center"
+                                                           Fill="#000000"
+                                                           Stroke="#9CA3AF"
+                                                           StrokeThickness="1" />
+                                                <Line x:Name="DiagramOutlineColorTransparentSlash"
+                                                      X1="2"
+                                                      Y1="13"
+                                                      X2="21"
+                                                      Y2="3"
+                                                      Stroke="#DC2626"
+                                                      StrokeThickness="2"
+                                                      Visibility="Collapsed" />
+                                            </Grid>
+                                            <Polygon Grid.Column="1"
+                                                     Width="6"
+                                                     Height="4"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="#4B5563"
+                                                     Points="0,0 6,0 3,4" />
+                                        </Grid>
+                                    </Button>
+                                    <Button x:Name="DiagramBackColorButton"
+                                            Margin="6,0,0,0"
+                                            Style="{StaticResource DiagramToolButtonStyle}"
+                                            Click="DiagramBackColorButton_Click"
+                                            ToolTip="Shape backcolor">
+                                        <Button.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Click="DiagramBackColorMenuItem_Click"
+                                                          Tag="Transparent">
+                                                    <MenuItem.Header>
+                                                        <Grid Width="36"
+                                                              Height="14">
+                                                            <Rectangle Fill="Transparent"
+                                                                       Stroke="#9CA3AF"
+                                                                       StrokeThickness="1" />
+                                                            <Line X1="3"
+                                                                  Y1="12"
+                                                                  X2="33"
+                                                                  Y2="2"
+                                                                  Stroke="#DC2626"
+                                                                  StrokeThickness="2" />
+                                                        </Grid>
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <Separator />
+                                                <MenuItem Click="DiagramBackColorMenuItem_Click"
+                                                          Tag="#000000">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#000000"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramBackColorMenuItem_Click"
+                                                          Tag="#FFFFFF">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#FFFFFF"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramBackColorMenuItem_Click"
+                                                          Tag="#DC2626">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#DC2626"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramBackColorMenuItem_Click"
+                                                          Tag="#2563EB">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#2563EB"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <MenuItem Click="DiagramBackColorMenuItem_Click"
+                                                          Tag="#16A34A">
+                                                    <MenuItem.Header>
+                                                        <Rectangle Width="36"
+                                                                   Height="14"
+                                                                   Fill="#16A34A"
+                                                                   Stroke="#9CA3AF"
+                                                                   StrokeThickness="1" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
+                                                <Separator />
+                                                <MenuItem Click="DiagramCustomBackColorMenuItem_Click"
+                                                          Header="Custom" />
+                                            </ContextMenu>
+                                        </Button.ContextMenu>
+                                        <Grid Width="31"
+                                              Height="16">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="8" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid>
+                                                <Rectangle x:Name="DiagramBackColorSwatch"
+                                                           Height="14"
+                                                           VerticalAlignment="Center"
+                                                           Fill="#FFFFFF"
+                                                           Stroke="#9CA3AF"
+                                                           StrokeThickness="1" />
+                                                <Line x:Name="DiagramBackColorTransparentSlash"
+                                                      X1="2"
+                                                      Y1="13"
+                                                      X2="21"
+                                                      Y2="3"
+                                                      Stroke="#DC2626"
+                                                      StrokeThickness="2"
+                                                      Visibility="Collapsed" />
+                                            </Grid>
+                                            <Polygon Grid.Column="1"
+                                                     Width="6"
+                                                     Height="4"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="#4B5563"
+                                                     Points="0,0 6,0 3,4" />
+                                        </Grid>
+                                    </Button>
+                                    <Border Width="1"
+                                            Height="22"
+                                            Margin="12,0,8,0"
+                                            Background="#CBD5E1" />
+                                    <TextBlock VerticalAlignment="Center"
+                                               Foreground="#64748B"
+                                               Text="Diagram:" />
+                                    <TextBlock MaxWidth="220"
+                                               Margin="6,0,0,0"
+                                               VerticalAlignment="Center"
+                                               FontWeight="SemiBold"
+                                               Foreground="#111827"
+                                               Text="{Binding CurrentDiagramName}"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <Grid Grid.Row="1">
+                            <ScrollViewer x:Name="DiagramScrollViewer"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto">
+                                <Canvas x:Name="DiagramCanvas"
+                                        AllowDrop="True"
+                                        Width="100000"
+                                        Height="100000"
+                                        Background="#F4F6F8"
+                                        DragOver="DiagramCanvas_DragOver"
+                                        Drop="DiagramCanvas_Drop"
+                                        MouseLeftButtonDown="DiagramCanvas_MouseLeftButtonDown"
+                                        MouseLeftButtonUp="DiagramCanvas_MouseLeftButtonUp"
+                                        MouseMove="DiagramCanvas_MouseMove"
+                                        MouseRightButtonDown="DiagramCanvas_MouseRightButtonDown"
+                                        MouseWheel="DiagramCanvas_MouseWheel">
+                                    <Canvas.LayoutTransform>
+                                        <ScaleTransform x:Name="DiagramScaleTransform"
+                                                        ScaleX="1"
+                                                        ScaleY="1" />
+                                    </Canvas.LayoutTransform>
+                                </Canvas>
+                            </ScrollViewer>
+                            <Button x:Name="OpenDiagramSidebarButton"
+                                    Width="30"
+                                    Height="30"
+                                    Margin="0,10,10,0"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Style="{StaticResource CircleToolbarButtonStyle}"
+                                    Click="OpenDiagramSidebarButton_Click"
+                                    Content="⮞"
+                                    ToolTip="Open diagram details" />
+                        </Grid>
+                        </Grid>
+
+                        <GridSplitter x:Name="DiagramSidebarSplitter"
+                                      Grid.Column="1"
+                                      Width="5"
+                                      HorizontalAlignment="Stretch"
+                                      VerticalAlignment="Stretch"
+                                      Background="#D7DCE2"
+                                      ResizeBehavior="PreviousAndNext"
+                                      ResizeDirection="Columns"
+                                      Visibility="Collapsed" />
+
+                        <Border x:Name="DiagramSidebarHost"
+                                Grid.Column="2"
+                                MinWidth="280"
+                                BorderBrush="#D7DCE2"
+                                BorderThickness="1,0,0,0"
+                                Background="#FFFFFF"
+                                Visibility="Collapsed">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="42" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="46" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0"
+                                        BorderBrush="#E5E7EB"
+                                        BorderThickness="0,0,0,1"
+                                        Background="#F8FAFC">
+                                    <DockPanel Margin="8,5">
+                                        <Button x:Name="CollapseDiagramSidebarButton"
+                                                DockPanel.Dock="Left"
+                                                Width="30"
+                                                Height="30"
+                                                Style="{StaticResource CircleToolbarButtonStyle}"
+                                                Click="CollapseDiagramSidebarButton_Click"
+                                                Content="⮜"
+                                                ToolTip="Collapse diagram details" />
+                                        <TextBlock Margin="10,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#111827"
+                                                   Text="Diagram Details" />
+                                    </DockPanel>
+                                </Border>
+
+                                <TabControl x:Name="DiagramSidebarTabs"
+                                            Grid.Row="1"
+                                            BorderThickness="0">
+                                    <TabItem Header="Metadata">
+                                        <Grid>
+                                            <Grid x:Name="MetadataEditorPanel"
+                                                  Margin="10"
+                                                  Visibility="Collapsed">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="2*" />
+                                                    <RowDefinition Height="5" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+
+                                                <Grid Grid.Row="0"
+                                                      Margin="0,0,0,10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="#111827"
+                                                               Text="Link:" />
+                                                    <TextBox x:Name="MetadataLinkTextBox"
+                                                             Grid.Column="1"
+                                                             Height="24"
+                                                             Margin="8,0"
+                                                             VerticalContentAlignment="Center" />
+                                                    <Button x:Name="MetadataPickResourceButton"
+                                                            Grid.Column="2"
+                                                            Width="102"
+                                                            Height="24"
+                                                            Margin="0,0,8,0"
+                                                            Background="#2563EB"
+                                                            Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                            Click="MetadataPickResourceButton_Click"
+                                                            Content="Pick Resource" />
+                                                    <Button x:Name="MetadataOpenLinkButton"
+                                                            Grid.Column="3"
+                                                            Width="56"
+                                                            Height="24"
+                                                            Background="#2563EB"
+                                                            Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                            Click="MetadataOpenLinkButton_Click"
+                                                            Content="Open" />
+                                                </Grid>
+
+                                                <TextBlock Grid.Row="1"
+                                                           Margin="0,0,0,4"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#111827"
+                                                           Text="Documentation:" />
+
+                                                <WrapPanel Grid.Row="2"
+                                                           Margin="0,0,0,6">
+                                                    <ToggleButton x:Name="MetadataBoldButton"
+                                                                  Width="28"
+                                                                  Height="24"
+                                                                  FontWeight="Bold"
+                                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                                  Click="MetadataBoldButton_Click"
+                                                                  Content="B"
+                                                                  ToolTip="Bold" />
+                                                    <ToggleButton x:Name="MetadataItalicButton"
+                                                                  Width="28"
+                                                                  Height="24"
+                                                                  Margin="4,0,0,0"
+                                                                  FontStyle="Italic"
+                                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                                  Click="MetadataItalicButton_Click"
+                                                                  Content="I"
+                                                                  ToolTip="Italic" />
+                                                    <ToggleButton x:Name="MetadataUnderlineButton"
+                                                                  Width="28"
+                                                                  Height="24"
+                                                                  Margin="4,0,0,0"
+                                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                                  Click="MetadataUnderlineButton_Click"
+                                                                  Content="U"
+                                                                  ToolTip="Underline" />
+                                                    <ToggleButton x:Name="MetadataStrikethroughButton"
+                                                                  Width="28"
+                                                                  Height="24"
+                                                                  Margin="4,0,8,0"
+                                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                                  Click="MetadataStrikethroughButton_Click"
+                                                                  Content="S"
+                                                                  ToolTip="Strikethrough" />
+                                                    <ComboBox x:Name="MetadataFontFamilyComboBox"
+                                                              Width="118"
+                                                              Height="24"
+                                                              Margin="0,0,6,0"
+                                                              SelectionChanged="MetadataFontFamilyComboBox_SelectionChanged"
+                                                              ToolTip="Font family" />
+                                                    <ComboBox x:Name="MetadataFontSizeComboBox"
+                                                              Width="56"
+                                                              Height="24"
+                                                              Margin="0,0,6,0"
+                                                              SelectionChanged="MetadataFontSizeComboBox_SelectionChanged"
+                                                              ToolTip="Font size">
+                                                        <ComboBoxItem Content="10" />
+                                                        <ComboBoxItem Content="11" />
+                                                        <ComboBoxItem Content="12" IsSelected="True" />
+                                                        <ComboBoxItem Content="14" />
+                                                        <ComboBoxItem Content="16" />
+                                                        <ComboBoxItem Content="18" />
+                                                        <ComboBoxItem Content="20" />
+                                                        <ComboBoxItem Content="24" />
+                                                        <ComboBoxItem Content="28" />
+                                                    </ComboBox>
+                                                    <ComboBox x:Name="MetadataHeaderComboBox"
+                                                              Width="92"
+                                                              Height="24"
+                                                              SelectionChanged="MetadataHeaderComboBox_SelectionChanged"
+                                                              ToolTip="Section header">
+                                                        <ComboBoxItem Content="Normal" IsSelected="True" />
+                                                        <ComboBoxItem Content="Header 1" />
+                                                        <ComboBoxItem Content="Header 2" />
+                                                        <ComboBoxItem Content="Header 3" />
+                                                    </ComboBox>
+                                                </WrapPanel>
+
+                                                <RichTextBox x:Name="MetadataDocumentationRichTextBox"
+                                                             Grid.Row="3"
+                                                             AcceptsTab="True"
+                                                             BorderBrush="#CBD5E1"
+                                                             BorderThickness="1"
+                                                             SelectionChanged="MetadataDocumentationRichTextBox_SelectionChanged"
+                                                             VerticalScrollBarVisibility="Auto">
+                                                    <FlowDocument />
+                                                </RichTextBox>
+
+                                                <GridSplitter Grid.Row="4"
+                                                              Height="5"
+                                                              HorizontalAlignment="Stretch"
+                                                              VerticalAlignment="Stretch"
+                                                              Background="#D7DCE2"
+                                                              ResizeBehavior="PreviousAndNext"
+                                                              ResizeDirection="Rows" />
+
+                                                <Grid Grid.Row="5"
+                                                      Margin="0,8,0,0">
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="*" />
+                                                    </Grid.RowDefinitions>
+                                                    <DockPanel Grid.Row="0"
+                                                               Margin="0,0,0,6">
+                                                        <Button x:Name="AddMetadataQueryButton"
+                                                                DockPanel.Dock="Right"
+                                                                Width="28"
+                                                                Height="24"
+                                                                Background="#2563EB"
+                                                                Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                                Click="AddMetadataQueryButton_Click"
+                                                                Content="+"
+                                                                ToolTip="Add query" />
+                                                        <TextBlock VerticalAlignment="Center"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="#111827"
+                                                                   Text="Queries:" />
+                                                    </DockPanel>
+                                                    <ScrollViewer Grid.Row="1"
+                                                                  VerticalScrollBarVisibility="Auto">
+                                                        <StackPanel x:Name="MetadataQueriesPanel" />
+                                                    </ScrollViewer>
+                                                </Grid>
+                                            </Grid>
+
+                                            <Border x:Name="MetadataEditorPlaceholder"
+                                                    Background="#FFFFFF">
+                                                <TextBlock x:Name="MetadataEditorPlaceholderText"
+                                                           Margin="18"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center"
+                                                           Foreground="#64748B"
+                                                           Text="Select a diagram object to edit metadata."
+                                                           TextWrapping="Wrap"
+                                                           TextAlignment="Center" />
+                                            </Border>
+                                        </Grid>
+                                    </TabItem>
+                                    <TabItem Header="Workflows">
+                                        <Grid Margin="10">
+                                            <Grid x:Name="WorkflowListPanel">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+                                                <Button x:Name="NewWorkflowButton"
+                                                        Grid.Row="0"
+                                                        Height="30"
+                                                        HorizontalAlignment="Stretch"
+                                                        Background="#2563EB"
+                                                        Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                        Click="NewWorkflowButton_Click"
+                                                        Content="New Workflow" />
+                                                <ScrollViewer Grid.Row="1"
+                                                              Margin="0,10,0,0"
+                                                              VerticalScrollBarVisibility="Auto">
+                                                    <Grid>
+                                                        <StackPanel x:Name="WorkflowListItemsPanel" />
+                                                        <TextBlock x:Name="WorkflowListPlaceholder"
+                                                                   Margin="12"
+                                                                   HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center"
+                                                                   Foreground="#64748B"
+                                                                   Text="No workflows for this diagram yet."
+                                                                   TextWrapping="Wrap"
+                                                                   TextAlignment="Center" />
+                                                    </Grid>
+                                                </ScrollViewer>
+                                            </Grid>
+
+                                            <Grid x:Name="WorkflowDetailsPanel"
+                                                  Visibility="Collapsed">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+
+                                                <Button x:Name="WorkflowBackButton"
+                                                        Grid.Row="0"
+                                                        Height="30"
+                                                        HorizontalAlignment="Stretch"
+                                                        Background="#111827"
+                                                        Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                        Click="WorkflowBackButton_Click"
+                                                        Content="Back" />
+
+                                                <Grid Grid.Row="1"
+                                                      Margin="0,10,0,8">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="#111827"
+                                                               Text="Workflow Name:" />
+                                                    <TextBox x:Name="WorkflowNameTextBox"
+                                                             Grid.Column="1"
+                                                             Height="24"
+                                                             Margin="8,0,0,0"
+                                                             VerticalContentAlignment="Center" />
+                                                </Grid>
+
+                                                <ToggleButton x:Name="WorkflowAddItemsToggleButton"
+                                                              Grid.Row="2"
+                                                              Height="30"
+                                                              HorizontalAlignment="Stretch"
+                                                              Click="WorkflowAddItemsToggleButton_Click"
+                                                              Content="Add Items: OFF" />
+
+                                                <ScrollViewer x:Name="WorkflowItemsScrollViewer"
+                                                              Grid.Row="3"
+                                                              Margin="0,10,0,0"
+                                                              VerticalScrollBarVisibility="Auto">
+                                                    <Grid>
+                                                        <StackPanel x:Name="WorkflowItemsPanel" />
+                                                        <TextBlock x:Name="WorkflowItemsPlaceholder"
+                                                                   Margin="12"
+                                                                   HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center"
+                                                                   Foreground="#64748B"
+                                                                   Text="No workflow items yet."
+                                                                   TextWrapping="Wrap"
+                                                                   TextAlignment="Center" />
+                                                    </Grid>
+                                                </ScrollViewer>
+                                            </Grid>
+                                        </Grid>
+                                    </TabItem>
+                                </TabControl>
+
+                                <Border Grid.Row="2"
+                                        BorderBrush="#E5E7EB"
+                                        BorderThickness="0,1,0,0"
+                                        Background="#F8FAFC">
+                                    <Button x:Name="DiagramSidebarSaveButton"
+                                            Width="88"
+                                            Height="28"
+                                            Margin="0,8,12,8"
+                                            HorizontalAlignment="Right"
+                                            Style="{StaticResource GreenToolbarButtonStyle}"
+                                            Click="DiagramSidebarSaveButton_Click"
+                                            Content="Save" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>

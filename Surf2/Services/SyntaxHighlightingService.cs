@@ -2,6 +2,7 @@ using System.IO;
 using System.Xml;
 using ICSharpCode.AvalonEdit.Highlighting;
 using ICSharpCode.AvalonEdit.Highlighting.Xshd;
+using Surf2.Models;
 
 namespace Surf2.Services;
 
@@ -14,13 +15,32 @@ public sealed class SyntaxHighlightingService
         RegisterSqlHighlighting();
     }
 
-    public IHighlightingDefinition? GetDefinition(string filePath)
+    public IHighlightingDefinition? GetDefinition(string filePath, string? language = null)
     {
+        string normalizedLanguage = CodeWindowSettings.NormalizeLanguage(language);
+        if (!string.IsNullOrWhiteSpace(language))
+        {
+            return normalizedLanguage switch
+            {
+                CodeWindowSettings.CSharpLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".cs"),
+                CodeWindowSettings.VisualBasicLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".vb"),
+                CodeWindowSettings.SqlServerLanguage => HighlightingManager.Instance.GetDefinition(SqlDefinitionName),
+                CodeWindowSettings.JavaScriptLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".js"),
+                CodeWindowSettings.XmlLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".xml"),
+                _ => null
+            };
+        }
+
         string extension = Path.GetExtension(filePath).ToLowerInvariant();
 
         if (extension == ".sql")
         {
             return HighlightingManager.Instance.GetDefinition(SqlDefinitionName);
+        }
+
+        if (extension == ".vbs")
+        {
+            return HighlightingManager.Instance.GetDefinitionByExtension(".vb");
         }
 
         return HighlightingManager.Instance.GetDefinitionByExtension(extension);

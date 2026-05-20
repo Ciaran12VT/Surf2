@@ -1,0 +1,123 @@
+<Window x:Class="Surf2.ColorPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pick Color"
+        Width="430"
+        MinHeight="390"
+        ResizeMode="NoResize"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        Loaded="Window_Loaded"
+        PreviewMouseLeftButtonUp="Window_PreviewMouseLeftButtonUp">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock FontSize="14"
+                   FontWeight="SemiBold"
+                   Text="Choose color" />
+
+        <StackPanel Grid.Row="1"
+                    Margin="0,12,0,0"
+                    Orientation="Horizontal">
+            <Grid Width="300" Height="220">
+                <Image x:Name="SpectrumImage"
+                       Width="300"
+                       Height="220"
+                       Cursor="Cross"
+                       MouseLeftButtonDown="SpectrumImage_MouseLeftButtonDown"
+                       MouseLeftButtonUp="Picker_MouseLeftButtonUp"
+                       MouseMove="SpectrumImage_MouseMove"
+                       Stretch="Fill" />
+                <Canvas Width="300"
+                        Height="220"
+                        IsHitTestVisible="False">
+                    <Ellipse x:Name="SpectrumPin"
+                             Width="12"
+                             Height="12"
+                             Fill="Transparent"
+                             Stroke="Black"
+                             StrokeThickness="2" />
+                </Canvas>
+                <Border BorderBrush="#6B7280"
+                        BorderThickness="1"
+                        IsHitTestVisible="False" />
+            </Grid>
+
+            <Grid Width="24"
+                  Height="220"
+                  Margin="12,0,0,0">
+                <Image x:Name="HueImage"
+                       Width="24"
+                       Height="220"
+                       Cursor="Hand"
+                       MouseLeftButtonDown="HueImage_MouseLeftButtonDown"
+                       MouseLeftButtonUp="Picker_MouseLeftButtonUp"
+                       MouseMove="HueImage_MouseMove"
+                       Stretch="Fill" />
+                <Canvas Width="24"
+                        Height="220"
+                        IsHitTestVisible="False">
+                    <Rectangle x:Name="HuePin"
+                               Width="30"
+                               Height="4"
+                               Fill="Black" />
+                </Canvas>
+                <Border BorderBrush="#6B7280"
+                        BorderThickness="1"
+                        IsHitTestVisible="False" />
+            </Grid>
+        </StackPanel>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="120" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock VerticalAlignment="Center"
+                       Text="Hex" />
+            <TextBox x:Name="HexColorTextBox"
+                     Grid.Column="1"
+                     Height="26"
+                     Margin="8,0,0,0"
+                     TextChanged="HexColorTextBox_TextChanged" />
+            <Border x:Name="PreviewSwatch"
+                    Grid.Column="2"
+                    Width="54"
+                    Height="26"
+                    Margin="12,0,0,0"
+                    BorderBrush="#6B7280"
+                    BorderThickness="1" />
+            <TextBlock x:Name="ValidationText"
+                       Grid.Column="3"
+                       Margin="10,0,0,0"
+                       VerticalAlignment="Center"
+                       Foreground="#B91C1C" />
+        </Grid>
+
+        <DockPanel Grid.Row="4" Margin="0,16,0,0">
+            <StackPanel DockPanel.Dock="Right"
+                        Orientation="Horizontal">
+                <Button Width="82"
+                        Height="28"
+                        Margin="0,0,8,0"
+                        Click="OkButton_Click"
+                        IsDefault="True"
+                        Content="OK" />
+                <Button Width="82"
+                        Height="28"
+                        Click="CancelButton_Click"
+                        IsCancel="True"
+                        Content="Cancel" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

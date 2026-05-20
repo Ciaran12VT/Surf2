@@ -8,13 +8,15 @@ namespace Surf2;
 public partial class ScopeManagerWindow : Window
 {
     private readonly ScopeLibrary _scopeLibrary;
+    private readonly DatabaseSnapshotLibrary _databaseSnapshots;
     private bool _isLoadingScope;
     private Scope? _selectedScope;
 
-    public ScopeManagerWindow(ScopeLibrary scopeLibrary)
+    public ScopeManagerWindow(ScopeLibrary scopeLibrary, DatabaseSnapshotLibrary databaseSnapshots)
     {
         InitializeComponent();
         _scopeLibrary = scopeLibrary;
+        _databaseSnapshots = databaseSnapshots;
 
         ScopeList.ItemsSource = _scopeLibrary.Scopes;
         RefreshMergeScopes();
@@ -157,6 +159,64 @@ public partial class ScopeManagerWindow : Window
         }
     }
 
+    private void AddDatabaseButton_Click(object sender, RoutedEventArgs e)
+    {
+        Scope? scope = EnsureSelectedScope();
+        if (scope == null)
+        {
+            return;
+        }
+
+        var databaseWindow = new DatabaseResourceWindow
+        {
+            Owner = this
+        };
+
+        if (databaseWindow.ShowDialog() != true || databaseWindow.Snapshot == null)
+        {
+            return;
+        }
+
+        DatabaseMetadataSnapshot snapshot = databaseWindow.Snapshot;
+        DatabaseMetadataSnapshot? existingSnapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+            string.Equals(candidate.SnapshotId, snapshot.SnapshotId, StringComparison.OrdinalIgnoreCase));
+        if (existingSnapshot != null)
+        {
+            int index = _databaseSnapshots.Snapshots.IndexOf(existingSnapshot);
+            _databaseSnapshots.Snapshots[index] = snapshot;
+        }
+        else
+        {
+            _databaseSnapshots.Snapshots.Add(snapshot);
+        }
+
+        AddResource(scope, ResourceKind.DatabaseSnapshot, snapshot.SnapshotId, snapshot.DisplayName, snapshot.DatabaseName);
+    }
+
+    private void RenameResourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (ResourceList.SelectedItem is not ScopedResource resource)
+        {
+            StatusTextBlock.Text = "Select a resource to rename.";
+            return;
+        }
+
+        var renameWindow = new RenameResourceWindow(resource.DisplayName)
+        {
+            Owner = this
+        };
+
+        if (renameWindow.ShowDialog() != true)
+        {
+            return;
+        }
+
+        resource.DisplayNameOverride = renameWindow.ResourceName;
+        ResourceList.Items.Refresh();
+        WasChanged = true;
+        StatusTextBlock.Text = "Renamed resource.";
+    }
+
     private void RemoveResourceButton_Click(object sender, RoutedEventArgs e)
     {
         Scope? scope = EnsureSelectedScope();
@@ -182,7 +242,14 @@ public partial class ScopeManagerWindow : Window
         int added = 0;
         foreach (ScopedResource resource in sourceScope.Resources)
         {
-            if (AddResource(targetScope, resource.Kind, resource.Path, updateStatus: false))
+            if (AddResource(
+                    targetScope,
+                    resource.Kind,
+                    resource.Path,
+                    resource.DisplayNameOverride,
+                    resource.DetailsOverride,
+                    resource.IncludeChildren,
+                    updateStatus: false))
             {
                 added++;
             }
@@ -246,6 +313,7 @@ public partial class ScopeManagerWindow : Window
 
             NameTextBox.Text = _selectedScope.Name;
             DescriptionTextBox.Text = _selectedScope.Description;
+            HydrateDatabaseResourceMetadata(_selectedScope);
             ResourceList.ItemsSource = _selectedScope.Resources;
         }
         finally
@@ -274,7 +342,14 @@ public partial class ScopeManagerWindow : Window
         ResourceList.ItemsSource = null;
     }
 
-    private bool AddResource(Scope scope, ResourceKind kind, string path, bool updateStatus = true)
+    private bool AddResource(
+        Scope scope,
+        ResourceKind kind,
+        string path,
+        string displayName = "",
+        string details = "",
+        bool? includeChildren = null,
+        bool updateStatus = true)
     {
         string normalizedPath = NormalizePath(path);
         bool alreadyExists = scope.Resources.Any(resource =>
@@ -295,7 +370,10 @@ public partial class ScopeManagerWindow : Window
         {
             Kind = kind,
             Path = path,
-            IncludeChildren = kind == ResourceKind.Folder
+            DisplayNameOverride = displayName,
+            DetailsOverride = details,
+            AddedAtUtc = DateTimeOffset.UtcNow,
+            IncludeChildren = includeChildren ?? kind == ResourceKind.Folder
         });
 
         ResourceList.Items.Refresh();
@@ -315,6 +393,38 @@ public partial class ScopeManagerWindow : Window
         MergeScopeComboBox.ItemsSource = _scopeLibrary.Scopes
             .Where(scope => selected == null || scope.ScopeId != selected.ScopeId)
             .ToList();
+    }
+
+    private void HydrateDatabaseResourceMetadata(Scope scope)
+    {
+        bool changed = false;
+        foreach (ScopedResource resource in scope.Resources.Where(resource => resource.Kind == ResourceKind.DatabaseSnapshot))
+        {
+            DatabaseMetadataSnapshot? snapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+                string.Equals(candidate.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase));
+            if (snapshot == null)
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(resource.DisplayNameOverride))
+            {
+                resource.DisplayNameOverride = !string.IsNullOrWhiteSpace(snapshot.DisplayName)
+                    ? snapshot.DisplayName
+                    : string.IsNullOrWhiteSpace(snapshot.DatabaseName)
+                        ? "Database"
+                        : snapshot.DatabaseName;
+                changed = true;
+            }
+
+            if (!string.Equals(resource.DetailsOverride, snapshot.DatabaseName, StringComparison.Ordinal))
+            {
+                resource.DetailsOverride = snapshot.DatabaseName;
+                changed = true;
+            }
+        }
+
+        WasChanged |= changed;
     }
 
     private string GetUniqueScopeName(string baseName)

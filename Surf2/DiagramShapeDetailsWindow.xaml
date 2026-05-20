@@ -1,0 +1,115 @@
+<Window x:Class="Surf2.DiagramShapeDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Shape Details"
+        Width="380"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Label"
+                       FontWeight="SemiBold"
+                       Margin="0,0,0,4" />
+            <TextBox x:Name="LabelTextBox"
+                     MinHeight="28"
+                     VerticalContentAlignment="Center" />
+        </StackPanel>
+
+        <Grid Grid.Row="1"
+              Margin="0,14,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock VerticalAlignment="Center"
+                       Text="Outline" />
+            <StackPanel Grid.Column="1"
+                        Orientation="Horizontal">
+                <Button Width="72"
+                        Height="28"
+                        Click="OutlineColorButton_Click"
+                        ToolTip="Choose outline color">
+                    <Grid Width="44"
+                          Height="16">
+                        <Rectangle x:Name="OutlineColorSwatch"
+                                   Fill="#000000"
+                                   Stroke="#9CA3AF"
+                                   StrokeThickness="1" />
+                        <Line x:Name="OutlineColorTransparentSlash"
+                              X1="4"
+                              Y1="14"
+                              X2="40"
+                              Y2="2"
+                              Stroke="#DC2626"
+                              StrokeThickness="2"
+                              Visibility="Collapsed" />
+                    </Grid>
+                </Button>
+                <Button Margin="8,0,0,0"
+                        Padding="12,0"
+                        Content="Transparent"
+                        Click="OutlineTransparentButton_Click" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="2"
+              Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="90" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock VerticalAlignment="Center"
+                       Text="Backcolor" />
+            <StackPanel Grid.Column="1"
+                        Orientation="Horizontal">
+                <Button Width="72"
+                        Height="28"
+                        Click="BackColorButton_Click"
+                        ToolTip="Choose backcolor">
+                    <Grid Width="44"
+                          Height="16">
+                        <Rectangle x:Name="BackColorSwatch"
+                                   Fill="#FFFFFF"
+                                   Stroke="#9CA3AF"
+                                   StrokeThickness="1" />
+                        <Line x:Name="BackColorTransparentSlash"
+                              X1="4"
+                              Y1="14"
+                              X2="40"
+                              Y2="2"
+                              Stroke="#DC2626"
+                              StrokeThickness="2"
+                              Visibility="Collapsed" />
+                    </Grid>
+                </Button>
+                <Button Margin="8,0,0,0"
+                        Padding="12,0"
+                        Content="Transparent"
+                        Click="BackTransparentButton_Click" />
+            </StackPanel>
+        </Grid>
+
+        <StackPanel Grid.Row="3"
+                    Margin="0,18,0,0"
+                    HorizontalAlignment="Right"
+                    Orientation="Horizontal">
+            <Button Width="88"
+                    Height="28"
+                    Content="Save"
+                    Click="SaveButton_Click" />
+            <Button Width="88"
+                    Height="28"
+                    Margin="8,0,0,0"
+                    Content="Cancel"
+                    IsCancel="True" />
+        </StackPanel>
+    </Grid>
+</Window>
