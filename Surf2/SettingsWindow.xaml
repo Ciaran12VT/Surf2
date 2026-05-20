@@ -89,6 +89,7 @@
                 <ListBoxItem Content="Code Windows" IsSelected="True" />
                 <ListBoxItem Content="Reference Highlights" />
                 <ListBoxItem Content="Diagram Images" />
+                <ListBoxItem Content="Keyboard Shortcuts" />
                 <ListBoxItem Content="Workbench" />
                 <ListBoxItem Content="Persistence" />
             </ListBox>
@@ -627,6 +628,62 @@
                                 Margin="0,0,8,0"
                                 Style="{StaticResource SettingsSaveButtonStyle}"
                                 Click="SavePersistenceButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
+
+            <Grid x:Name="KeyboardShortcutSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Keyboard Shortcuts" />
+
+                <StackPanel Grid.Row="1"
+                            Margin="0,14,0,0">
+                    <CheckBox x:Name="CanvasCtrlMousePanningCheckBox"
+                              Margin="0,0,0,12"
+                              Content="Canvas: Ctrl + Mouse for Panning" />
+                    <CheckBox x:Name="TabCtrlMouseScrollingCheckBox"
+                              Margin="0,0,0,12"
+                              Content="Tab View: Ctrl + Mouse for Scrolling" />
+                    <CheckBox x:Name="TabCtrlShiftAutoscrollCheckBox"
+                              Margin="0,0,0,12"
+                              Content="Tab View: Ctrl + Shift for Autoscrolling" />
+                    <CheckBox x:Name="CodeViewHistoryNavigationCheckBox"
+                              Margin="0,0,0,12"
+                              Content="Code View: Ctrl + '-' and '+' for Back and Forward" />
+                    <CheckBox x:Name="ViewSwitchingCtrlNumberCheckBox"
+                              Content="View Switching with Ctrl + 1 and 2" />
+                </StackPanel>
+
+                <Border Grid.Row="2"
+                        Margin="0,14,0,0"
+                        Padding="10"
+                        BorderBrush="#D7DCE2"
+                        BorderThickness="1"
+                        Background="#F8FAFC">
+                    <TextBlock TextWrapping="Wrap"
+                               Text="These shortcuts control mouse-driven navigation helpers. Standard left-drag canvas panning and normal editor scrolling remain available." />
+                </Border>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveKeyboardShortcutSettingsButton_Click"
                                 Content="Save" />
                         <Button Width="86"
                                 Style="{StaticResource SettingsCloseButtonStyle}"

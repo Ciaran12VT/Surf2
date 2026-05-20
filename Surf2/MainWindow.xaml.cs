@@ -24,6 +24,8 @@ using Surf2.Controls;
 using Surf2.Models;
 using Surf2.Services;
 using Surf2.Storage;
+using VisualBasicSyntaxKind = Microsoft.CodeAnalysis.VisualBasic.SyntaxKind;
+using VisualBasicSyntaxTree = Microsoft.CodeAnalysis.VisualBasic.VisualBasicSyntaxTree;
 
 namespace Surf2;
 
@@ -1722,7 +1724,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool TryHandleControlCodeCanvasPan(MouseEventArgs e)
     {
-        if (_codeViewMode != CodeViewMode.Canvas ||
+        if (_appSettings.KeyboardShortcuts.EnableCanvasCtrlMousePanning != true ||
+            _codeViewMode != CodeViewMode.Canvas ||
             WorkspaceScrollViewer == null ||
             WorkspaceScrollViewer.Visibility != Visibility.Visible)
         {
@@ -1746,7 +1749,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool TryHandleControlDiagramCanvasPan(MouseEventArgs e)
     {
-        if (DiagramScrollViewer == null ||
+        if (_appSettings.KeyboardShortcuts.EnableCanvasCtrlMousePanning != true ||
+            DiagramScrollViewer == null ||
             DiagramScrollViewer.Visibility != Visibility.Visible)
         {
             _isControlPanningDiagramCanvas = false;
@@ -3920,6 +3924,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             content,
             _syntaxHighlightingService.GetDefinition(syntaxPath, GetCodeLanguageForFile(syntaxPath)));
         window.ApplyCodeBackcolor(GetCodeWindowBackcolor(syntaxPath));
+        window.ApplyKeyboardShortcutSettings(_appSettings.KeyboardShortcuts);
         window.ApplyReferenceHighlights(GetReferenceHighlightStylesForFile(syntaxPath));
         window.CloseRequested += FloatingWindow_CloseRequested;
         window.BoundsChanged += FloatingWindow_BoundsChanged;
@@ -4244,6 +4249,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (IsVisualBasicDocument(window.State.FilePath))
+        {
+            InsertDynamicReferencesMenu(e.ContextMenu, CreateVisualBasicReferencesContextMenu(window));
+            return;
+        }
+
         if (IsSqlDocument(window.State.FilePath))
         {
             InsertDynamicReferencesMenu(
@@ -4285,6 +4296,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         AddInternalReferencesMenu(referencesMenu, window, occurrences.Where(occurrence => occurrence.IsInternal));
         AddExternalReferencesMenu(referencesMenu, window, occurrences.Where(occurrence => !occurrence.IsInternal));
+        return referencesMenu;
+    }
+
+    private MenuItem CreateVisualBasicReferencesContextMenu(FloatingCodeWindow window)
+    {
+        var referencesMenu = new MenuItem
+        {
+            Header = "References",
+            Tag = DynamicReferencesContextMenuTag
+        };
+
+        if (_activeScope == null || _referenceIndex.EntityCount == 0)
+        {
+            AddDisabledMenuItem(referencesMenu, "No scope reference index loaded");
+            return referencesMenu;
+        }
+
+        IReadOnlyList<CodeReferenceOccurrence> occurrences = BuildVisualBasicReferenceOccurrences(window);
+        if (occurrences.Count == 0)
+        {
+            AddDisabledMenuItem(referencesMenu, "No references found in this file");
+            return referencesMenu;
+        }
+
+        AddInternalReferencesMenu(
+            referencesMenu,
+            window,
+            occurrences.Where(occurrence => occurrence.IsInternal),
+            CodeWindowSettings.VisualBasicLanguage);
+        AddExternalReferencesMenu(
+            referencesMenu,
+            window,
+            occurrences.Where(occurrence => !occurrence.IsInternal),
+            CodeWindowSettings.VisualBasicLanguage);
         return referencesMenu;
     }
 
@@ -4708,7 +4753,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void AddInternalReferencesMenu(
         MenuItem referencesMenu,
         FloatingCodeWindow window,
-        IEnumerable<CodeReferenceOccurrence> occurrences)
+        IEnumerable<CodeReferenceOccurrence> occurrences,
+        string sourceLanguage = "")
     {
         List<CodeReferenceOccurrence> internalOccurrences = occurrences
             .OrderBy(occurrence => GetReferenceKindMenuRank(occurrence.Target.Kind))
@@ -4726,7 +4772,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             foreach (IGrouping<ReferenceEntityKind, CodeReferenceOccurrence> kindGroup in internalOccurrences.GroupBy(occurrence => occurrence.Target.Kind))
             {
-                var kindMenu = new MenuItem { Header = GetReferenceKindGroupHeader(kindGroup.Key) };
+                var kindMenu = new MenuItem { Header = GetReferenceKindGroupHeader(kindGroup.Key, sourceLanguage) };
                 foreach (CodeReferenceOccurrence occurrence in kindGroup)
                 {
                     kindMenu.Items.Add(CreateReferenceOccurrenceMenuItem(window, occurrence));
@@ -4742,7 +4788,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void AddExternalReferencesMenu(
         MenuItem referencesMenu,
         FloatingCodeWindow window,
-        IEnumerable<CodeReferenceOccurrence> occurrences)
+        IEnumerable<CodeReferenceOccurrence> occurrences,
+        string sourceLanguage = "")
     {
         List<CodeReferenceOccurrence> externalOccurrences = occurrences
             .OrderBy(occurrence => occurrence.TargetResource.DisplayName)
@@ -4770,7 +4817,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
                 if (resource.Kind == ResourceKind.DatabaseSnapshot)
                 {
-                    AddExternalDatabaseReferenceMenus(resourceMenu, window, resourceGroup);
+                    AddExternalDatabaseReferenceMenus(resourceMenu, window, resourceGroup, sourceLanguage);
                 }
                 else
                 {
@@ -4787,7 +4834,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void AddExternalDatabaseReferenceMenus(
         MenuItem resourceMenu,
         FloatingCodeWindow window,
-        IEnumerable<CodeReferenceOccurrence> occurrences)
+        IEnumerable<CodeReferenceOccurrence> occurrences,
+        string sourceLanguage = "")
     {
         foreach (IGrouping<ReferenceEntityKind, CodeReferenceOccurrence> kindGroup in occurrences
                      .OrderBy(occurrence => GetReferenceKindMenuRank(occurrence.Target.Kind))
@@ -4795,7 +4843,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                      .ThenBy(occurrence => occurrence.LineNumber)
                      .GroupBy(occurrence => occurrence.Target.Kind))
         {
-            var kindMenu = new MenuItem { Header = GetReferenceKindGroupHeader(kindGroup.Key) };
+            var kindMenu = new MenuItem { Header = GetReferenceKindGroupHeader(kindGroup.Key, sourceLanguage) };
             foreach (CodeReferenceOccurrence occurrence in kindGroup)
             {
                 kindMenu.Items.Add(CreateReferenceOccurrenceMenuItem(window, occurrence));
@@ -4909,6 +4957,109 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             int? argumentCount = TryGetCSharpInvocationArgumentCount(token);
+            IReadOnlyList<ReferenceEntity> references = SortReferencesForSource(
+                _referenceIndex.Resolve(tokenText, argumentCount),
+                window.State.FilePath);
+            if (references.Count == 0)
+            {
+                continue;
+            }
+
+            FileLinePositionSpan lineSpan = token.GetLocation().GetLineSpan();
+            int lineNumber = lineSpan.StartLinePosition.Line + 1;
+            int columnNumber = lineSpan.StartLinePosition.Character + 1;
+
+            foreach (ReferenceEntity reference in references)
+            {
+                IReadOnlyList<ReferenceResourceContext> targetResources = GetCachedResourceContexts(reference.FilePath);
+                ReferenceResourceContext? sharedResource = targetResources.FirstOrDefault(resource => sourceResourceKeys.Contains(resource.Key));
+                bool isInternal = sharedResource != null || IsSameFile(reference.FilePath, window.State.FilePath);
+                ReferenceResourceContext targetResource = sharedResource
+                    ?? targetResources.FirstOrDefault()
+                    ?? CreateFallbackReferenceResourceContext(reference.FilePath);
+
+                string occurrenceKey = string.Join(
+                    "|",
+                    token.SpanStart,
+                    lineNumber,
+                    columnNumber,
+                    reference.Kind,
+                    reference.FilePath,
+                    reference.LineNumber,
+                    reference.ColumnNumber,
+                    targetResource.Key);
+                if (!seenOccurrences.Add(occurrenceKey))
+                {
+                    continue;
+                }
+
+                occurrences.Add(new CodeReferenceOccurrence(
+                    tokenText,
+                    lineNumber,
+                    columnNumber,
+                    reference,
+                    targetResource,
+                    isInternal));
+            }
+        }
+
+        return occurrences
+            .OrderBy(occurrence => occurrence.IsInternal ? 0 : 1)
+            .ThenBy(occurrence => occurrence.TargetResource.DisplayName)
+            .ThenBy(occurrence => GetReferenceKindMenuRank(occurrence.Target.Kind))
+            .ThenBy(occurrence => occurrence.LineNumber)
+            .ThenBy(occurrence => occurrence.ColumnNumber)
+            .ToList();
+
+        IReadOnlyList<ReferenceResourceContext> GetCachedResourceContexts(string documentPath)
+        {
+            if (!contextCache.TryGetValue(documentPath, out IReadOnlyList<ReferenceResourceContext>? contexts))
+            {
+                contexts = FindReferenceResourceContextsForDocument(documentPath);
+                contextCache[documentPath] = contexts;
+            }
+
+            return contexts;
+        }
+    }
+
+    private IReadOnlyList<CodeReferenceOccurrence> BuildVisualBasicReferenceOccurrences(FloatingCodeWindow window)
+    {
+        if (string.IsNullOrWhiteSpace(window.Text))
+        {
+            return [];
+        }
+
+        SyntaxNode root;
+        try
+        {
+            root = VisualBasicSyntaxTree.ParseText(window.Text).GetRoot();
+        }
+        catch (ArgumentException)
+        {
+            return [];
+        }
+
+        var contextCache = new Dictionary<string, IReadOnlyList<ReferenceResourceContext>>(StringComparer.OrdinalIgnoreCase);
+        IReadOnlyList<ReferenceResourceContext> sourceResources = GetCachedResourceContexts(window.State.FilePath);
+        HashSet<string> sourceResourceKeys = sourceResources.Select(resource => resource.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var seenOccurrences = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var occurrences = new List<CodeReferenceOccurrence>();
+
+        foreach (SyntaxToken token in root.DescendantTokens(descendIntoTrivia: false))
+        {
+            if (!IsVisualBasicReferenceIdentifierToken(token))
+            {
+                continue;
+            }
+
+            string tokenText = token.ValueText;
+            if (string.IsNullOrWhiteSpace(tokenText))
+            {
+                continue;
+            }
+
+            int? argumentCount = TryGetVisualBasicInvocationArgumentCount(token);
             IReadOnlyList<ReferenceEntity> references = SortReferencesForSource(
                 _referenceIndex.Resolve(tokenText, argumentCount),
                 window.State.FilePath);
@@ -5164,6 +5315,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                    StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsVisualBasicDocument(string documentPath)
+    {
+        return !DatabaseDocumentService.IsDatabaseDocumentPath(documentPath) &&
+               string.Equals(
+                   GetCodeLanguageForFile(documentPath),
+                   CodeWindowSettings.VisualBasicLanguage,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool IsSqlDocument(string documentPath)
     {
         return DatabaseDocumentService.IsDatabaseDocumentPath(documentPath) ||
@@ -5376,12 +5536,68 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return null;
     }
 
+    private static bool IsVisualBasicReferenceIdentifierToken(SyntaxToken token)
+    {
+        if (!token.IsKind(VisualBasicSyntaxKind.IdentifierToken))
+        {
+            return false;
+        }
+
+        return token.Parent switch
+        {
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.ClassStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.InterfaceStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.StructureStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.EnumStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.ModuleStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.MethodStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.PropertyStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.EventStatementSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.EnumMemberDeclarationSyntax statement when statement.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.ModifiedIdentifierSyntax modifiedIdentifier when modifiedIdentifier.Identifier == token => false,
+            Microsoft.CodeAnalysis.VisualBasic.Syntax.TypeParameterSyntax typeParameter when typeParameter.Identifier == token => false,
+            _ => true
+        };
+    }
+
+    private static int? TryGetVisualBasicInvocationArgumentCount(SyntaxToken token)
+    {
+        if (token.Parent is not Microsoft.CodeAnalysis.VisualBasic.Syntax.SimpleNameSyntax simpleName)
+        {
+            return null;
+        }
+
+        if (simpleName.Parent is Microsoft.CodeAnalysis.VisualBasic.Syntax.InvocationExpressionSyntax directInvocation &&
+            directInvocation.Expression == simpleName)
+        {
+            return directInvocation.ArgumentList?.Arguments.Count;
+        }
+
+        if (simpleName.Parent is Microsoft.CodeAnalysis.VisualBasic.Syntax.MemberAccessExpressionSyntax memberAccess &&
+            memberAccess.Name == simpleName &&
+            memberAccess.Parent is Microsoft.CodeAnalysis.VisualBasic.Syntax.InvocationExpressionSyntax memberInvocation &&
+            memberInvocation.Expression == memberAccess)
+        {
+            return memberInvocation.ArgumentList?.Arguments.Count;
+        }
+
+        return null;
+    }
+
     private static string FormatReferenceOccurrenceHeader(CodeReferenceOccurrence occurrence)
     {
         string parameterLabel = occurrence.Target.ParameterCount.HasValue
             ? $" ({occurrence.Target.ParameterCount.Value} params)"
             : string.Empty;
         return $"{occurrence.Token}{parameterLabel} - line {occurrence.LineNumber}";
+    }
+
+    private static string GetReferenceKindGroupHeader(ReferenceEntityKind kind, string sourceLanguage)
+    {
+        return string.Equals(sourceLanguage, CodeWindowSettings.VisualBasicLanguage, StringComparison.OrdinalIgnoreCase) &&
+               kind == ReferenceEntityKind.Method
+            ? "Subs and Functions"
+            : GetReferenceKindGroupHeader(kind);
     }
 
     private static string GetReferenceKindGroupHeader(ReferenceEntityKind kind)
@@ -6082,10 +6298,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             .FirstOrDefault();
     }
 
-    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
-            !IsDiagramViewCommandTarget())
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
+        {
+            return;
+        }
+
+        if (await TryHandleGlobalKeyboardShortcutAsync(e))
+        {
+            return;
+        }
+
+        if (!IsDiagramViewCommandTarget())
         {
             return;
         }
@@ -6129,6 +6354,60 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 e.Handled = true;
                 break;
         }
+    }
+
+    private async Task<bool> TryHandleGlobalKeyboardShortcutAsync(KeyEventArgs e)
+    {
+        _appSettings.KeyboardShortcuts ??= new KeyboardShortcutSettings();
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+
+        if (_appSettings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation)
+        {
+            if (IsBackShortcutKey(key))
+            {
+                e.Handled = true;
+                await NavigateHistoryAsync(_navigationHistoryService.MoveBack(), "Back");
+                return true;
+            }
+
+            if (IsForwardShortcutKey(key))
+            {
+                e.Handled = true;
+                await NavigateHistoryAsync(_navigationHistoryService.MoveForward(), "Forward");
+                return true;
+            }
+        }
+
+        if (_appSettings.KeyboardShortcuts.EnableCtrlNumberViewSwitching)
+        {
+            if (key is Key.D1 or Key.NumPad1)
+            {
+                e.Handled = true;
+                ShowSingleWorkspaceView(WorkspaceViewKind.Code);
+                StatusText = "Code View selected.";
+                return true;
+            }
+
+            if (key is Key.D2 or Key.NumPad2)
+            {
+                e.Handled = true;
+                ShowSingleWorkspaceView(WorkspaceViewKind.Diagram);
+                StatusText = "Diagram View selected.";
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsBackShortcutKey(Key key)
+    {
+        return key is Key.OemMinus or Key.Subtract;
+    }
+
+    private static bool IsForwardShortcutKey(Key key)
+    {
+        return key is Key.OemPlus or Key.Add;
     }
 
     private bool IsDiagramViewCommandTarget()
@@ -9104,6 +9383,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 window.State.FilePath,
                 GetCodeLanguageForFile(window.State.FilePath)));
             window.ApplyCodeBackcolor(GetCodeWindowBackcolor(window.State.FilePath));
+            window.ApplyKeyboardShortcutSettings(_appSettings.KeyboardShortcuts);
         }
 
         foreach (FloatingSpreadsheetWindow window in _openSpreadsheetWindows.Values)

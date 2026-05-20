@@ -46,7 +46,13 @@ public sealed class VisualBasicReferenceDefinitionParser : IReferenceDefinitionP
 
         foreach (MethodBlockSyntax block in root.DescendantNodes().OfType<MethodBlockSyntax>())
         {
-            yield return CreateEntity(block.SubOrFunctionStatement.Identifier.ValueText, ReferenceEntityKind.Method, filePath, block.SubOrFunctionStatement, "VB");
+            yield return CreateEntity(
+                block.SubOrFunctionStatement.Identifier.ValueText,
+                ReferenceEntityKind.Method,
+                filePath,
+                block.SubOrFunctionStatement,
+                "VB",
+                block.SubOrFunctionStatement.ParameterList);
         }
 
         foreach (MethodStatementSyntax statement in root.DescendantNodes().OfType<MethodStatementSyntax>())
@@ -56,7 +62,13 @@ public sealed class VisualBasicReferenceDefinitionParser : IReferenceDefinitionP
                 continue;
             }
 
-            yield return CreateEntity(statement.Identifier.ValueText, ReferenceEntityKind.Method, filePath, statement, "VB");
+            yield return CreateEntity(
+                statement.Identifier.ValueText,
+                ReferenceEntityKind.Method,
+                filePath,
+                statement,
+                "VB",
+                statement.ParameterList);
         }
     }
 
@@ -65,9 +77,11 @@ public sealed class VisualBasicReferenceDefinitionParser : IReferenceDefinitionP
         ReferenceEntityKind kind,
         string filePath,
         SyntaxNode node,
-        string language)
+        string language,
+        ParameterListSyntax? parameterList = null)
     {
         FileLinePositionSpan lineSpan = node.GetLocation().GetLineSpan();
+        (int? parameterCount, int? minimumArgumentCount, int? maximumArgumentCount) = GetArgumentRange(parameterList);
 
         return new ReferenceEntity
         {
@@ -79,6 +93,9 @@ public sealed class VisualBasicReferenceDefinitionParser : IReferenceDefinitionP
             ColumnNumber = lineSpan.StartLinePosition.Character + 1,
             EndLineNumber = lineSpan.EndLinePosition.Line + 1,
             EndColumnNumber = lineSpan.EndLinePosition.Character + 1,
+            ParameterCount = parameterCount,
+            MinimumArgumentCount = minimumArgumentCount,
+            MaximumArgumentCount = maximumArgumentCount,
             Language = language,
             ContainerName = GetContainerName(node)
         };
@@ -132,5 +149,41 @@ public sealed class VisualBasicReferenceDefinitionParser : IReferenceDefinitionP
         }
 
         return string.Empty;
+    }
+
+    private static (int? ParameterCount, int? MinimumArgumentCount, int? MaximumArgumentCount) GetArgumentRange(ParameterListSyntax? parameterList)
+    {
+        if (parameterList == null)
+        {
+            return (null, null, null);
+        }
+
+        int parameterCount = 0;
+        int minimumArgumentCount = 0;
+        int maximumArgumentCount = 0;
+        bool hasParamArray = false;
+
+        foreach (ParameterSyntax parameter in parameterList.Parameters)
+        {
+            parameterCount++;
+
+            bool isParamArray = parameter.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.ParamArrayKeyword));
+            if (isParamArray)
+            {
+                hasParamArray = true;
+                continue;
+            }
+
+            maximumArgumentCount++;
+
+            bool isOptional = parameter.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.OptionalKeyword)) ||
+                              parameter.Default != null;
+            if (!isOptional)
+            {
+                minimumArgumentCount++;
+            }
+        }
+
+        return (parameterCount, minimumArgumentCount, hasParamArray ? int.MaxValue : maximumArgumentCount);
     }
 }

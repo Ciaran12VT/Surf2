@@ -19,13 +19,24 @@ public partial class FloatingCodeWindow : UserControl
     private const double MinimumFontSize = 8;
     private const double MaximumFontSize = 36;
     private const double FontZoomStep = 1.1;
+    private const double ShiftScrollDeadZone = 3;
+    private const double ShiftScrollSpeedFactor = 0.08;
 
     private bool _isDragging;
+    private bool _isDocked;
+    private bool _isCtrlMouseScrolling;
+    private bool _isShiftMouseScrolling;
+    private bool _enableTabCtrlMouseScrolling = true;
+    private bool _enableTabCtrlShiftMouseAutoscrolling = true;
     private Point _dragStartPoint;
+    private Point _ctrlMouseScrollDocumentPoint;
+    private Point _shiftMouseScrollOriginPoint;
+    private Point _shiftMouseScrollCurrentPoint;
     private double _dragStartLeft;
     private double _dragStartTop;
     private ReferenceHighlightColorizer? _referenceHighlightColorizer;
     private readonly SearchPanel _searchPanel;
+    private readonly DispatcherTimer _shiftMouseScrollTimer;
     private bool _suppressCursorPositionChanged;
 
     public FloatingCodeWindow(OpenDocumentState state, string content, IHighlightingDefinition? highlighting)
@@ -46,12 +57,19 @@ public partial class FloatingCodeWindow : UserControl
         Editor.FontSize = Math.Clamp(initialFontSize, MinimumFontSize, MaximumFontSize);
         State.FontSize = Editor.FontSize;
         _searchPanel = SearchPanel.Install(Editor);
+        _shiftMouseScrollTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _shiftMouseScrollTimer.Tick += ShiftMouseScrollTimer_Tick;
 
         Editor.TextArea.Caret.PositionChanged += Caret_PositionChanged;
         Editor.PreviewMouseLeftButtonUp += Editor_PreviewMouseLeftButtonUp;
         Editor.PreviewMouseDoubleClick += Editor_PreviewMouseDoubleClick;
         PreviewKeyDown += FloatingCodeWindow_PreviewKeyDown;
+        PreviewMouseMove += FloatingCodeWindow_PreviewMouseMove;
         PreviewMouseWheel += FloatingCodeWindow_PreviewMouseWheel;
+        Unloaded += (_, _) => StopShiftMouseScroll();
     }
 
     public event EventHandler? CloseRequested;
@@ -74,8 +92,25 @@ public partial class FloatingCodeWindow : UserControl
 
     public string Text => Editor.Text;
 
+    public void ApplyKeyboardShortcutSettings(KeyboardShortcutSettings settings)
+    {
+        _enableTabCtrlMouseScrolling = settings.EnableTabCtrlMouseScrolling;
+        _enableTabCtrlShiftMouseAutoscrolling = settings.EnableTabCtrlShiftMouseAutoscrolling;
+
+        if (!_enableTabCtrlMouseScrolling)
+        {
+            _isCtrlMouseScrolling = false;
+        }
+
+        if (!_enableTabCtrlShiftMouseAutoscrolling)
+        {
+            StopShiftMouseScroll();
+        }
+    }
+
     public void SetDockedMode(bool isDocked)
     {
+        _isDocked = isDocked;
         HeaderRow.Height = isDocked ? new GridLength(0) : new GridLength(32);
         HeaderBar.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
         OuterBorder.BorderThickness = isDocked ? new Thickness(0) : new Thickness(1);
@@ -94,6 +129,8 @@ public partial class FloatingCodeWindow : UserControl
             return;
         }
 
+        _isCtrlMouseScrolling = false;
+        StopShiftMouseScroll();
         Width = Math.Max(MinWidth, State.Width);
         Height = Math.Max(MinHeight, State.Height);
         HorizontalAlignment = HorizontalAlignment.Left;
@@ -436,6 +473,132 @@ public partial class FloatingCodeWindow : UserControl
         State.FontSize = Editor.FontSize;
         e.Handled = true;
         BoundsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void FloatingCodeWindow_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isDocked || Editor.Document == null || !Editor.IsMouseOver)
+        {
+            _isCtrlMouseScrolling = false;
+            StopShiftMouseScroll();
+            return;
+        }
+
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        bool isCtrlDown = (modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+        bool isShiftDown = (modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+
+        if (isCtrlDown && isShiftDown && _enableTabCtrlShiftMouseAutoscrolling)
+        {
+            _isCtrlMouseScrolling = false;
+            HandleShiftMouseScroll(e);
+            e.Handled = true;
+            return;
+        }
+
+        if (isCtrlDown && _enableTabCtrlMouseScrolling)
+        {
+            StopShiftMouseScroll();
+            HandleCtrlMouseScroll(e);
+            e.Handled = true;
+            return;
+        }
+
+        _isCtrlMouseScrolling = false;
+        StopShiftMouseScroll();
+    }
+
+    private void HandleCtrlMouseScroll(MouseEventArgs e)
+    {
+        Point currentPoint = GetMousePointInTextView(e);
+        if (!_isCtrlMouseScrolling)
+        {
+            _ctrlMouseScrollDocumentPoint = new Point(
+                Editor.HorizontalOffset + currentPoint.X,
+                Editor.VerticalOffset + currentPoint.Y);
+            _isCtrlMouseScrolling = true;
+            return;
+        }
+
+        ScrollEditorToOffsets(
+            _ctrlMouseScrollDocumentPoint.X - currentPoint.X,
+            _ctrlMouseScrollDocumentPoint.Y - currentPoint.Y);
+    }
+
+    private void HandleShiftMouseScroll(MouseEventArgs e)
+    {
+        Point currentPoint = e.GetPosition(Editor);
+        if (!_isShiftMouseScrolling)
+        {
+            _shiftMouseScrollOriginPoint = currentPoint;
+            _shiftMouseScrollCurrentPoint = currentPoint;
+            _isShiftMouseScrolling = true;
+            if (!_shiftMouseScrollTimer.IsEnabled)
+            {
+                _shiftMouseScrollTimer.Start();
+            }
+
+            return;
+        }
+
+        _shiftMouseScrollCurrentPoint = currentPoint;
+    }
+
+    private void ShiftMouseScrollTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_isDocked ||
+            Editor.Document == null ||
+            !Editor.IsMouseOver ||
+            (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != (ModifierKeys.Control | ModifierKeys.Shift) ||
+            !_enableTabCtrlShiftMouseAutoscrolling)
+        {
+            StopShiftMouseScroll();
+            return;
+        }
+
+        Vector delta = _shiftMouseScrollCurrentPoint - _shiftMouseScrollOriginPoint;
+        double horizontalChange = Math.Abs(delta.X) <= ShiftScrollDeadZone
+            ? 0
+            : delta.X * ShiftScrollSpeedFactor;
+        double verticalChange = Math.Abs(delta.Y) <= ShiftScrollDeadZone
+            ? 0
+            : delta.Y * ShiftScrollSpeedFactor;
+
+        if (Math.Abs(horizontalChange) <= 0.01 && Math.Abs(verticalChange) <= 0.01)
+        {
+            return;
+        }
+
+        ScrollEditorToOffsets(
+            Editor.HorizontalOffset + horizontalChange,
+            Editor.VerticalOffset + verticalChange);
+    }
+
+    private void StopShiftMouseScroll()
+    {
+        _isShiftMouseScrolling = false;
+        if (_shiftMouseScrollTimer.IsEnabled)
+        {
+            _shiftMouseScrollTimer.Stop();
+        }
+    }
+
+    private Point GetMousePointInTextView(MouseEventArgs e)
+    {
+        try
+        {
+            return e.GetPosition(Editor.TextArea.TextView);
+        }
+        catch (InvalidOperationException)
+        {
+            return e.GetPosition(Editor);
+        }
+    }
+
+    private void ScrollEditorToOffsets(double horizontalOffset, double verticalOffset)
+    {
+        Editor.ScrollToHorizontalOffset(Math.Max(0, horizontalOffset));
+        Editor.ScrollToVerticalOffset(Math.Max(0, verticalOffset));
     }
 
     private void FloatingCodeWindow_PreviewKeyDown(object sender, KeyEventArgs e)

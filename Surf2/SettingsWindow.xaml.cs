@@ -65,6 +65,7 @@ public partial class SettingsWindow : Window
         HighlightStyleList.ItemsSource = _highlightStyles;
         DiagramImageList.ItemsSource = _diagramImages;
         LoadConnectionSettings();
+        LoadKeyboardShortcutSettings();
         LoadMostRecentWorkbenchCheckBox.IsChecked = Settings.LoadMostRecentWorkbenchOnStartup;
 
         if (_backcolors.Count > 0)
@@ -106,6 +107,7 @@ public partial class SettingsWindow : Window
         if (CodeWindowSettingsPanel == null ||
             ReferenceHighlightSettingsPanel == null ||
             DiagramImageSettingsPanel == null ||
+            KeyboardShortcutSettingsPanel == null ||
             WorkbenchSettingsPanel == null ||
             PersistenceSettingsPanel == null)
         {
@@ -115,8 +117,9 @@ public partial class SettingsWindow : Window
         CodeWindowSettingsPanel.Visibility = SectionList.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         ReferenceHighlightSettingsPanel.Visibility = SectionList.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         DiagramImageSettingsPanel.Visibility = SectionList.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
-        WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
-        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
+        KeyboardShortcutSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
+        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -283,6 +286,7 @@ public partial class SettingsWindow : Window
         }
 
         SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
         DialogResult = true;
         Close();
     }
@@ -392,6 +396,7 @@ public partial class SettingsWindow : Window
         }
 
         SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
         DialogResult = true;
         Close();
     }
@@ -577,6 +582,7 @@ public partial class SettingsWindow : Window
         }
 
         SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
         DialogResult = true;
         Close();
     }
@@ -662,7 +668,23 @@ public partial class SettingsWindow : Window
         _connectionSettingsStore.Save(ConnectionSettings);
         ConnectionSettingsWereChanged = true;
         SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
 
+        DialogResult = true;
+        Close();
+    }
+
+    private void SaveKeyboardShortcutSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveBackcolorSettings() ||
+            !SaveReferenceHighlightSettings(validateActive: false) ||
+            !SaveDiagramImageSettings(validateActive: false))
+        {
+            return;
+        }
+
+        SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
         DialogResult = true;
         Close();
     }
@@ -677,8 +699,31 @@ public partial class SettingsWindow : Window
         }
 
         SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
         DialogResult = true;
         Close();
+    }
+
+    private void LoadKeyboardShortcutSettings()
+    {
+        Settings.KeyboardShortcuts ??= new KeyboardShortcutSettings();
+        Settings.KeyboardShortcuts.EnsureDefaults();
+        CanvasCtrlMousePanningCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCanvasCtrlMousePanning;
+        TabCtrlMouseScrollingCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableTabCtrlMouseScrolling;
+        TabCtrlShiftAutoscrollCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableTabCtrlShiftMouseAutoscrolling;
+        CodeViewHistoryNavigationCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation;
+        ViewSwitchingCtrlNumberCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCtrlNumberViewSwitching;
+    }
+
+    private void SaveKeyboardShortcutSettings()
+    {
+        Settings.KeyboardShortcuts ??= new KeyboardShortcutSettings();
+        Settings.KeyboardShortcuts.Version = KeyboardShortcutSettings.CurrentVersion;
+        Settings.KeyboardShortcuts.EnableCanvasCtrlMousePanning = CanvasCtrlMousePanningCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableTabCtrlMouseScrolling = TabCtrlMouseScrollingCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableTabCtrlShiftMouseAutoscrolling = TabCtrlShiftAutoscrollCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation = CodeViewHistoryNavigationCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCtrlNumberViewSwitching = ViewSwitchingCtrlNumberCheckBox.IsChecked == true;
     }
 
     private void SaveWorkbenchSettings()
