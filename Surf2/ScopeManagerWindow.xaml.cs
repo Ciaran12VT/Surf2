@@ -255,9 +255,24 @@ public partial class ScopeManagerWindow : Window
             }
         }
 
+        int virtualFoldersAdded = 0;
+        foreach (VirtualFolder virtualFolder in sourceScope.VirtualFolders)
+        {
+            bool alreadyExists = targetScope.VirtualFolders.Any(candidate =>
+                string.Equals(candidate.ParentNodeKey, virtualFolder.ParentNodeKey, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(candidate.Name, virtualFolder.Name, StringComparison.OrdinalIgnoreCase));
+            if (alreadyExists)
+            {
+                continue;
+            }
+
+            targetScope.VirtualFolders.Add(virtualFolder.CloneWithNewId());
+            virtualFoldersAdded++;
+        }
+
         ResourceList.Items.Refresh();
-        WasChanged = WasChanged || added > 0;
-        StatusTextBlock.Text = $"Added {added} resource(s) from '{sourceScope.Name}'.";
+        WasChanged = WasChanged || added > 0 || virtualFoldersAdded > 0;
+        StatusTextBlock.Text = $"Added {added} resource(s) and {virtualFoldersAdded} virtual folder(s) from '{sourceScope.Name}'.";
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)

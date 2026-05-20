@@ -327,11 +327,19 @@
 
         <HierarchicalDataTemplate DataType="{x:Type models:FileSystemNode}" ItemsSource="{Binding Children}">
             <DockPanel LastChildFill="True" MinHeight="22">
-                <TextBlock Width="18"
-                           Margin="0,0,4,0"
-                           VerticalAlignment="Center"
-                           Foreground="{Binding AccentBrush}"
-                           Text="{Binding Glyph}" />
+                <Viewbox Width="16"
+                         Height="16"
+                         Margin="0,0,6,0"
+                         VerticalAlignment="Center">
+                    <Path Data="{Binding IconGeometry}"
+                          Fill="Transparent"
+                          Stroke="{Binding IconBrush}"
+                          StrokeEndLineCap="Round"
+                          StrokeLineJoin="Round"
+                          StrokeStartLineCap="Round"
+                          StrokeThickness="1.7"
+                          Stretch="Uniform" />
+                </Viewbox>
                 <TextBlock VerticalAlignment="Center"
                            Foreground="{Binding TextBrush}"
                            Text="{Binding Name}" />
@@ -538,23 +546,83 @@
                             </ComboBox>
                         </Grid>
                     </Border>
-                    <TreeView x:Name="ObjectExplorer"
-                              Grid.Row="2"
-                              BorderThickness="0"
-                              ItemsSource="{Binding RootNodes}"
-                              MouseDoubleClick="ObjectExplorer_MouseDoubleClick"
-                              MouseMove="ObjectExplorer_MouseMove"
-                              PreviewMouseLeftButtonDown="ObjectExplorer_PreviewMouseLeftButtonDown"
-                              TreeViewItem.PreviewMouseDoubleClick="ObjectExplorerItem_PreviewMouseDoubleClick"
-                              TreeViewItem.PreviewMouseRightButtonDown="ObjectExplorerItem_PreviewMouseRightButtonDown"
-                              TreeViewItem.Expanded="ObjectExplorerItem_Expanded">
-                        <TreeView.ItemContainerStyle>
-                            <Style TargetType="{x:Type TreeViewItem}">
-                                <Setter Property="IsExpanded"
-                                        Value="{Binding IsExpanded, Mode=TwoWay}" />
-                            </Style>
-                        </TreeView.ItemContainerStyle>
-                    </TreeView>
+                    <Grid Grid.Row="2">
+                        <TreeView x:Name="ObjectExplorer"
+                                  AllowDrop="True"
+                                  BorderThickness="0"
+                                  ContextMenuOpening="ObjectExplorer_ContextMenuOpening"
+                                  Drop="ObjectExplorer_Drop"
+                                  DragOver="ObjectExplorer_DragOver"
+                                  ItemsSource="{Binding RootNodes}"
+                                  MouseDoubleClick="ObjectExplorer_MouseDoubleClick"
+                                  MouseMove="ObjectExplorer_MouseMove"
+                                  PreviewMouseLeftButtonDown="ObjectExplorer_PreviewMouseLeftButtonDown"
+                                  TreeViewItem.PreviewMouseDoubleClick="ObjectExplorerItem_PreviewMouseDoubleClick"
+                                  TreeViewItem.PreviewMouseRightButtonDown="ObjectExplorerItem_PreviewMouseRightButtonDown"
+                                  TreeViewItem.Collapsed="ObjectExplorerItem_Collapsed"
+                                  TreeViewItem.Expanded="ObjectExplorerItem_Expanded">
+                            <TreeView.ItemContainerStyle>
+                                <Style TargetType="{x:Type TreeViewItem}">
+                                    <Setter Property="IsExpanded"
+                                            Value="{Binding IsExpanded, Mode=TwoWay}" />
+                                </Style>
+                            </TreeView.ItemContainerStyle>
+                        </TreeView>
+                        <Grid x:Name="ObjectExplorerLoadingOverlay"
+                              Background="#BFFFFFFF"
+                              Visibility="Collapsed">
+                            <Border Width="190"
+                                    Padding="16,14"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    Background="White"
+                                    BorderBrush="#D8DEE8"
+                                    BorderThickness="1"
+                                    CornerRadius="10">
+                                <StackPanel HorizontalAlignment="Center">
+                                    <Grid Width="34"
+                                          Height="34"
+                                          HorizontalAlignment="Center"
+                                          RenderTransformOrigin="0.5,0.5">
+                                        <Grid.RenderTransform>
+                                            <RotateTransform />
+                                        </Grid.RenderTransform>
+                                        <Ellipse Width="30"
+                                                 Height="30"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center"
+                                                 Stroke="#D7DCE2"
+                                                 StrokeThickness="4" />
+                                        <Path Data="M17,2 A15,15 0 0 1 32,17"
+                                              Stroke="#2563EB"
+                                              StrokeEndLineCap="Round"
+                                              StrokeStartLineCap="Round"
+                                              StrokeThickness="4" />
+                                        <Grid.Triggers>
+                                            <EventTrigger RoutedEvent="Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard>
+                                                        <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                         From="0"
+                                                                         To="360"
+                                                                         Duration="0:0:0.85"
+                                                                         RepeatBehavior="Forever" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </Grid.Triggers>
+                                    </Grid>
+                                    <TextBlock x:Name="ObjectExplorerLoadingText"
+                                               Margin="0,10,0,0"
+                                               HorizontalAlignment="Center"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="#1F2937"
+                                               Text="Loading resources..." />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </Grid>
                     <GridSplitter Grid.Row="3"
                                   Height="5"
                                   HorizontalAlignment="Stretch"

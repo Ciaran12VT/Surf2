@@ -51,6 +51,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Tabs
     }
 
+    private sealed record ObjectExplorerViewState(
+        HashSet<string> ExpandedNodeKeys,
+        double HorizontalOffset,
+        double VerticalOffset);
+
     private enum DiagramUndoActionKind
     {
         Added,
@@ -257,6 +262,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<string, RichTextBox> _workflowItemDocumentationEditors = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FrameworkElement> _workflowItemContainers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBox> _workflowItemDescriptionEditors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _expandedObjectExplorerNodeKeys = new(StringComparer.OrdinalIgnoreCase);
     private string? _selectedDiagramImageId;
     private string? _pendingPortalName;
     private PendingPortalPairPlacement? _pendingPortalPairPlacement;
@@ -271,12 +277,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _currentFolderDisplay = "No scope selected";
     private string _statusText = "Ready.";
     private string? _previewFilePath;
+    private int _objectExplorerLoadingDepth;
+    private int _scopeLoadVersion;
+    private bool _isRestoringObjectExplorerExpansion;
     private readonly DispatcherTimer _diagramShiftPanTimer;
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
+        ObjectExplorer.ContextMenu = new ContextMenu();
         _diagramShiftPanTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -373,7 +383,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
             else
             {
-                InitializeDefaultStartupState();
+                await InitializeDefaultStartupStateAsync();
             }
         }
         catch (Exception ex)
@@ -401,7 +411,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (scopeManagerWindow.WasChanged && _activeScope != null)
             {
-                LoadLastActiveScope();
+                await LoadLastActiveScopeAsync();
             }
 
             return;
@@ -418,12 +428,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             await SaveWorkspaceStateAsync();
         }
 
-        LoadLastActiveScope();
+        await LoadLastActiveScopeAsync();
     }
 
-    private void LoadScope(Scope? scope)
+    private async Task LoadScopeAsync(Scope? scope)
     {
+        int loadVersion = ++_scopeLoadVersion;
         RootNodes.Clear();
+        _expandedObjectExplorerNodeKeys.Clear();
         _activeScope = scope;
         ObjectExplorerSearchTextBox.Clear();
 
@@ -436,21 +448,73 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        LoadObjectExplorerRoots(scope);
+        await ShowObjectExplorerLoadingAsync($"Loading {scope.Name}...");
 
-        CurrentFolderDisplay = $"Scope: {scope.Name}";
-        RebuildReferenceIndexForActiveScope();
-        ApplyReferenceHighlightsToOpenWindows();
-        StatusText = $"Loaded scope '{scope.Name}' with {scope.Resources.Count} resource(s). Indexed {_referenceIndex.EntityCount} definition(s) across {_referenceIndex.IndexedFileCount} file(s).";
+        try
+        {
+            DatabaseSnapshotLibrary databaseSnapshots = _databaseSnapshots;
+            DiagramLibrary diagramLibrary = _diagramLibrary;
+            CodeWindowSettings codeWindowSettings = _appSettings.CodeWindows;
+
+            List<FileSystemNode> roots = await Task.Run(() =>
+                _fileTreeService
+                    .CreateRoots(scope.Resources, databaseSnapshots, diagramLibrary, scope.VirtualFolders)
+                    .ToList());
+            ScopeReferenceIndex referenceIndex = await Task.Run(() =>
+                _referenceIndexService.Build(scope, databaseSnapshots, codeWindowSettings));
+
+            if (loadVersion != _scopeLoadVersion || !ReferenceEquals(_activeScope, scope))
+            {
+                return;
+            }
+
+            RootNodes.Clear();
+            foreach (FileSystemNode node in roots)
+            {
+                RootNodes.Add(node);
+            }
+
+            _referenceIndex = referenceIndex;
+            CurrentFolderDisplay = $"Scope: {scope.Name}";
+            ApplyReferenceHighlightsToOpenWindows();
+            StatusText = $"Loaded scope '{scope.Name}' with {scope.Resources.Count} resource(s). Indexed {_referenceIndex.EntityCount} definition(s) across {_referenceIndex.IndexedFileCount} file(s).";
+        }
+        finally
+        {
+            HideObjectExplorerLoading();
+        }
     }
 
     private void LoadObjectExplorerRoots(Scope scope)
     {
         RootNodes.Clear();
 
-        foreach (FileSystemNode node in _fileTreeService.CreateRoots(scope.Resources, _databaseSnapshots, _diagramLibrary))
+        foreach (FileSystemNode node in _fileTreeService.CreateRoots(scope.Resources, _databaseSnapshots, _diagramLibrary, scope.VirtualFolders))
         {
             RootNodes.Add(node);
+        }
+    }
+
+    private async Task ShowObjectExplorerLoadingAsync(string message)
+    {
+        _objectExplorerLoadingDepth++;
+        ObjectExplorerLoadingText.Text = message;
+        ObjectExplorerLoadingOverlay.Visibility = Visibility.Visible;
+        ObjectExplorerLoadingOverlay.IsHitTestVisible = true;
+        await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
+    }
+
+    private void HideObjectExplorerLoading()
+    {
+        if (_objectExplorerLoadingDepth > 0)
+        {
+            _objectExplorerLoadingDepth--;
+        }
+
+        if (_objectExplorerLoadingDepth == 0)
+        {
+            ObjectExplorerLoadingOverlay.Visibility = Visibility.Collapsed;
+            ObjectExplorerLoadingOverlay.IsHitTestVisible = false;
         }
     }
 
@@ -488,8 +552,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             StatusText = $"Searching Object Explorer {searchTarget.ToString().ToLowerInvariant()}...";
+            await ShowObjectExplorerLoadingAsync("Searching resources...");
             ObjectExplorerSearchResult result = await Task.Run(() =>
-                _fileTreeService.CreateFilteredRoots(resources, _databaseSnapshots, _diagramLibrary, query, searchTarget, useRegex));
+                _fileTreeService.CreateFilteredRoots(resources, _databaseSnapshots, _diagramLibrary, query, searchTarget, useRegex, _activeScope.VirtualFolders));
 
             RootNodes.Clear();
             foreach (FileSystemNode node in result.Roots)
@@ -502,6 +567,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch (ArgumentException ex) when (useRegex)
         {
             StatusText = $"Invalid regular expression: {ex.Message}";
+        }
+        finally
+        {
+            HideObjectExplorerLoading();
         }
     }
 
@@ -516,7 +585,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return ObjectExplorerSearchTarget.Name;
     }
 
-    private void LoadLastActiveScope()
+    private async Task LoadLastActiveScopeAsync()
     {
         Scope? activeScope = null;
 
@@ -531,10 +600,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _scopeLibrary.LastActiveScopeId = activeScope.ScopeId;
         }
 
-        LoadScope(activeScope);
+        await LoadScopeAsync(activeScope);
     }
 
-    private void InitializeDefaultStartupState()
+    private async Task InitializeDefaultStartupStateAsync()
     {
         _workspaceState = new WorkspaceState();
         _canvasZoom = 1;
@@ -543,7 +612,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ApplyDiagramCanvasZoom();
         SetCodeViewMode(CodeViewMode.Canvas);
         SetWorkspaceViewVisibility(showCode: true, showDiagram: false, WorkspaceViewKind.Code);
-        LoadScope(null);
+        await LoadScopeAsync(null);
         UpdateEmptyWorkspaceHint();
         _ = Dispatcher.BeginInvoke(RestoreViewport);
     }
@@ -630,7 +699,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (e.OriginalSource is TreeViewItem { DataContext: FileSystemNode node })
         {
-            _fileTreeService.LoadChildren(node);
+            node.IsExpanded = true;
+            if (!_isRestoringObjectExplorerExpansion)
+            {
+                _expandedObjectExplorerNodeKeys.Add(node.NodeKey);
+            }
+
+            _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
+        }
+    }
+
+    private void ObjectExplorerItem_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is TreeViewItem { DataContext: FileSystemNode node })
+        {
+            node.IsExpanded = false;
+            if (!_isRestoringObjectExplorerExpansion)
+            {
+                _expandedObjectExplorerNodeKeys.Remove(node.NodeKey);
+            }
         }
     }
 
@@ -651,14 +738,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         bool canCreateDiagram = string.Equals(node.FullPath, DiagramDocumentService.DiagramRootPath, StringComparison.OrdinalIgnoreCase);
         bool canOpenContainingFolder = CanOpenContainingFolder(node);
-        if (!canCreateDiagram && !canOpenContainingFolder)
+        bool canCreateVirtualFolder = _activeScope != null;
+        if (!canCreateDiagram && !canOpenContainingFolder && !canCreateVirtualFolder && !node.IsVirtualFolder)
         {
             return null;
         }
 
         var contextMenu = new ContextMenu();
+        if (node.IsVirtualFolder)
+        {
+            var disbandVirtualFolderItem = new MenuItem
+            {
+                Header = "Disband"
+            };
+            disbandVirtualFolderItem.Click += async (_, _) => await DisbandVirtualFolderAsync(node.VirtualFolderId);
+            contextMenu.Items.Add(disbandVirtualFolderItem);
+        }
+
+        if (canCreateVirtualFolder)
+        {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
+            var newVirtualFolderHereItem = new MenuItem
+            {
+                Header = "New Virtual Folder Here"
+            };
+            newVirtualFolderHereItem.Click += async (_, _) => await CreateVirtualFolderAsync(node.NaturalParentKey);
+            contextMenu.Items.Add(newVirtualFolderHereItem);
+
+            if (node.IsDirectory && !node.IsVirtualFolder)
+            {
+                var newVirtualFolderInsideItem = new MenuItem
+                {
+                    Header = "New Virtual Folder Inside"
+                };
+                newVirtualFolderInsideItem.Click += async (_, _) => await CreateVirtualFolderAsync(node.NodeKey);
+                contextMenu.Items.Add(newVirtualFolderInsideItem);
+            }
+        }
+
         if (canCreateDiagram)
         {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
             var newDiagramItem = new MenuItem
             {
                 Header = "New Diagram"
@@ -684,6 +812,362 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return contextMenu;
+    }
+
+    private void ObjectExplorer_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject) != null)
+        {
+            return;
+        }
+
+        if (_activeScope == null)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var contextMenu = new ContextMenu();
+        var newVirtualFolderItem = new MenuItem
+        {
+            Header = "New Virtual Folder"
+        };
+        newVirtualFolderItem.Click += async (_, _) => await CreateVirtualFolderAsync(FileSystemNode.RootParentKey);
+        contextMenu.Items.Add(newVirtualFolderItem);
+        ObjectExplorer.ContextMenu = contextMenu;
+    }
+
+    private async Task CreateVirtualFolderAsync(string parentNodeKey)
+    {
+        if (_activeScope == null)
+        {
+            StatusText = "Open a scope before creating a virtual folder.";
+            return;
+        }
+
+        string normalizedParentKey = NormalizeVirtualFolderParentKey(parentNodeKey);
+        string? folderName = PromptForDiagramName("Virtual Folder", "Virtual folder name", "Virtual Folder");
+        if (string.IsNullOrWhiteSpace(folderName))
+        {
+            return;
+        }
+
+        if (_activeScope.VirtualFolders.Any(folder =>
+                string.Equals(NormalizeVirtualFolderParentKey(folder.ParentNodeKey), normalizedParentKey, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(folder.Name, folderName, StringComparison.OrdinalIgnoreCase)))
+        {
+            StatusText = $"A virtual folder named '{folderName}' already exists at that level.";
+            return;
+        }
+
+        var virtualFolder = new VirtualFolder
+        {
+            Name = folderName,
+            ParentNodeKey = normalizedParentKey
+        };
+        _activeScope.VirtualFolders.Add(virtualFolder);
+
+        await SaveVirtualFolderChangesAsync(
+            $"Created virtual folder '{folderName}'.",
+            [FileSystemNode.CreateVirtualFolderNodeKey(virtualFolder.VirtualFolderId)]);
+    }
+
+    private async Task DisbandVirtualFolderAsync(string virtualFolderId)
+    {
+        if (_activeScope == null)
+        {
+            return;
+        }
+
+        VirtualFolder? virtualFolder = _activeScope.VirtualFolders.FirstOrDefault(folder =>
+            string.Equals(folder.VirtualFolderId, virtualFolderId, StringComparison.OrdinalIgnoreCase));
+        if (virtualFolder == null)
+        {
+            StatusText = "Virtual folder no longer exists.";
+            return;
+        }
+
+        string folderName = virtualFolder.Name;
+        _activeScope.VirtualFolders.Remove(virtualFolder);
+        await SaveVirtualFolderChangesAsync($"Disbanded virtual folder '{folderName}'.");
+    }
+
+    private void ObjectExplorer_DragOver(object sender, DragEventArgs e)
+    {
+        FileSystemNode? draggedNode = e.Data.GetData(ObjectExplorerDragDataFormat) as FileSystemNode;
+        FileSystemNode? targetNode = GetObjectExplorerDropTarget(e.OriginalSource as DependencyObject);
+        e.Effects = CanDropObjectExplorerNodeOnVirtualFolder(draggedNode, targetNode)
+            ? DragDropEffects.Move
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void ObjectExplorer_Drop(object sender, DragEventArgs e)
+    {
+        FileSystemNode? draggedNode = e.Data.GetData(ObjectExplorerDragDataFormat) as FileSystemNode;
+        FileSystemNode? targetNode = GetObjectExplorerDropTarget(e.OriginalSource as DependencyObject);
+        if (!CanDropObjectExplorerNodeOnVirtualFolder(draggedNode, targetNode) ||
+            draggedNode == null ||
+            targetNode == null ||
+            _activeScope == null)
+        {
+            return;
+        }
+
+        VirtualFolder? targetFolder = _activeScope.VirtualFolders.FirstOrDefault(folder =>
+            string.Equals(folder.VirtualFolderId, targetNode.VirtualFolderId, StringComparison.OrdinalIgnoreCase));
+        if (targetFolder == null)
+        {
+            return;
+        }
+
+        foreach (VirtualFolder virtualFolder in _activeScope.VirtualFolders)
+        {
+            if (string.Equals(NormalizeVirtualFolderParentKey(virtualFolder.ParentNodeKey), targetFolder.ParentNodeKey, StringComparison.OrdinalIgnoreCase))
+            {
+                RemoveVirtualFolderChildKey(virtualFolder, draggedNode.NodeKey);
+            }
+        }
+
+        if (!targetFolder.ChildNodeKeys.Any(key => string.Equals(key, draggedNode.NodeKey, StringComparison.OrdinalIgnoreCase)))
+        {
+            targetFolder.ChildNodeKeys.Add(draggedNode.NodeKey);
+        }
+
+        e.Handled = true;
+        await SaveVirtualFolderChangesAsync(
+            $"Moved '{draggedNode.Name}' into virtual folder '{targetFolder.Name}'.",
+            [targetNode.NodeKey]);
+    }
+
+    private bool CanDropObjectExplorerNodeOnVirtualFolder(FileSystemNode? draggedNode, FileSystemNode? targetNode)
+    {
+        if (_activeScope == null ||
+            draggedNode == null ||
+            targetNode?.IsVirtualFolder != true ||
+            draggedNode.IsVirtualFolder ||
+            string.Equals(draggedNode.NodeKey, targetNode.NodeKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return string.Equals(
+            NormalizeVirtualFolderParentKey(draggedNode.NaturalParentKey),
+            NormalizeVirtualFolderParentKey(targetNode.NaturalParentKey),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static FileSystemNode? GetObjectExplorerDropTarget(DependencyObject? source)
+    {
+        return FindAncestor<TreeViewItem>(source)?.DataContext as FileSystemNode;
+    }
+
+    private async Task SaveVirtualFolderChangesAsync(
+        string statusText,
+        IEnumerable<string>? additionalExpandedNodeKeys = null)
+    {
+        try
+        {
+            await _scopeStore.SaveAsync(_scopeLibrary);
+            await RefreshObjectExplorerForVirtualFolderChangeAsync(additionalExpandedNodeKeys);
+            StatusText = statusText;
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save virtual folder changes: {ex.Message}";
+        }
+    }
+
+    private async Task RefreshObjectExplorerForVirtualFolderChangeAsync(IEnumerable<string>? additionalExpandedNodeKeys = null)
+    {
+        if (_activeScope == null)
+        {
+            return;
+        }
+
+        ObjectExplorerViewState viewState = CaptureObjectExplorerViewState();
+        if (additionalExpandedNodeKeys != null)
+        {
+            foreach (string nodeKey in additionalExpandedNodeKeys)
+            {
+                if (!string.IsNullOrWhiteSpace(nodeKey))
+                {
+                    viewState.ExpandedNodeKeys.Add(nodeKey);
+                }
+            }
+        }
+
+        _isRestoringObjectExplorerExpansion = true;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text))
+            {
+                LoadObjectExplorerRoots(_activeScope);
+                await RestoreObjectExplorerViewStateAsync(viewState);
+                return;
+            }
+
+            await ApplyObjectExplorerSearchAsync();
+            await RestoreObjectExplorerViewStateAsync(viewState);
+        }
+        finally
+        {
+            ReplaceExpandedObjectExplorerState(viewState.ExpandedNodeKeys);
+            _isRestoringObjectExplorerExpansion = false;
+        }
+    }
+
+    private ObjectExplorerViewState CaptureObjectExplorerViewState()
+    {
+        var expandedNodeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        expandedNodeKeys.UnionWith(_expandedObjectExplorerNodeKeys);
+        CaptureExpandedObjectExplorerNodes(RootNodes, expandedNodeKeys);
+        CaptureExpandedObjectExplorerContainers(ObjectExplorer, expandedNodeKeys);
+
+        ScrollViewer? scrollViewer = FindDescendant<ScrollViewer>(ObjectExplorer);
+        return new ObjectExplorerViewState(
+            expandedNodeKeys,
+            scrollViewer?.HorizontalOffset ?? 0,
+            scrollViewer?.VerticalOffset ?? 0);
+    }
+
+    private static void CaptureExpandedObjectExplorerNodes(
+        IEnumerable<FileSystemNode> nodes,
+        HashSet<string> expandedNodeKeys)
+    {
+        foreach (FileSystemNode node in nodes)
+        {
+            if (node.IsExpanded)
+            {
+                expandedNodeKeys.Add(node.NodeKey);
+            }
+
+            CaptureExpandedObjectExplorerNodes(node.Children, expandedNodeKeys);
+        }
+    }
+
+    private static void CaptureExpandedObjectExplorerContainers(
+        ItemsControl itemsControl,
+        HashSet<string> expandedNodeKeys)
+    {
+        itemsControl.UpdateLayout();
+        foreach (object item in itemsControl.Items)
+        {
+            if (item is not FileSystemNode node ||
+                itemsControl.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem treeViewItem)
+            {
+                continue;
+            }
+
+            if (treeViewItem.IsExpanded)
+            {
+                expandedNodeKeys.Add(node.NodeKey);
+                CaptureExpandedObjectExplorerContainers(treeViewItem, expandedNodeKeys);
+            }
+        }
+    }
+
+    private async Task RestoreObjectExplorerViewStateAsync(ObjectExplorerViewState viewState)
+    {
+        RestoreExpandedObjectExplorerNodes(RootNodes, viewState.ExpandedNodeKeys);
+
+        for (int pass = 0; pass < 3; pass++)
+        {
+            ObjectExplorer.UpdateLayout();
+            await Dispatcher.InvokeAsync(
+                () =>
+                {
+                    RestoreObjectExplorerContainerExpansion(ObjectExplorer, viewState.ExpandedNodeKeys);
+                    ObjectExplorer.UpdateLayout();
+                },
+                DispatcherPriority.Loaded);
+        }
+
+        await Dispatcher.InvokeAsync(
+            () =>
+            {
+                ScrollViewer? scrollViewer = FindDescendant<ScrollViewer>(ObjectExplorer);
+                scrollViewer?.ScrollToHorizontalOffset(viewState.HorizontalOffset);
+                scrollViewer?.ScrollToVerticalOffset(viewState.VerticalOffset);
+            },
+            DispatcherPriority.ContextIdle);
+    }
+
+    private void RestoreExpandedObjectExplorerNodes(
+        IEnumerable<FileSystemNode> nodes,
+        HashSet<string> expandedNodeKeys)
+    {
+        foreach (FileSystemNode node in nodes)
+        {
+            if (!expandedNodeKeys.Contains(node.NodeKey))
+            {
+                continue;
+            }
+
+            if (node.IsDirectory && !node.IsLoaded)
+            {
+                _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
+            }
+
+            node.IsExpanded = true;
+            RestoreExpandedObjectExplorerNodes(node.Children, expandedNodeKeys);
+        }
+    }
+
+    private void RestoreObjectExplorerContainerExpansion(
+        ItemsControl itemsControl,
+        HashSet<string> expandedNodeKeys)
+    {
+        itemsControl.UpdateLayout();
+        foreach (object item in itemsControl.Items)
+        {
+            if (item is not FileSystemNode node ||
+                !expandedNodeKeys.Contains(node.NodeKey) ||
+                itemsControl.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem treeViewItem)
+            {
+                continue;
+            }
+
+            if (node.IsDirectory && !node.IsLoaded)
+            {
+                _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
+            }
+
+            node.IsExpanded = true;
+            treeViewItem.IsExpanded = true;
+            treeViewItem.UpdateLayout();
+            RestoreObjectExplorerContainerExpansion(treeViewItem, expandedNodeKeys);
+        }
+    }
+
+    private void ReplaceExpandedObjectExplorerState(IEnumerable<string> expandedNodeKeys)
+    {
+        _expandedObjectExplorerNodeKeys.Clear();
+        foreach (string nodeKey in expandedNodeKeys)
+        {
+            if (!string.IsNullOrWhiteSpace(nodeKey))
+            {
+                _expandedObjectExplorerNodeKeys.Add(nodeKey);
+            }
+        }
+    }
+
+    private static void RemoveVirtualFolderChildKey(VirtualFolder virtualFolder, string childNodeKey)
+    {
+        List<string> keysToRemove = virtualFolder.ChildNodeKeys
+            .Where(key => string.Equals(key, childNodeKey, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        foreach (string key in keysToRemove)
+        {
+            virtualFolder.ChildNodeKeys.Remove(key);
+        }
+    }
+
+    private static string NormalizeVirtualFolderParentKey(string? parentNodeKey)
+    {
+        return string.IsNullOrWhiteSpace(parentNodeKey)
+            ? FileSystemNode.RootParentKey
+            : parentNodeKey;
     }
 
     private static bool CanOpenContainingFolder(FileSystemNode node)
@@ -749,7 +1233,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FileSystemNode draggedNode = _pendingObjectExplorerDragNode;
         _pendingObjectExplorerDragNode = null;
         var dataObject = new DataObject(ObjectExplorerDragDataFormat, draggedNode);
-        DragDrop.DoDragDrop(ObjectExplorer, dataObject, DragDropEffects.Copy);
+        DragDrop.DoDragDrop(ObjectExplorer, dataObject, DragDropEffects.Copy | DragDropEffects.Move);
     }
 
     private void ViewToggle_CheckedChanged(object sender, RoutedEventArgs e)
@@ -9252,11 +9736,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (scope != null)
             {
                 _scopeLibrary.LastActiveScopeId = scope.ScopeId;
-                LoadScope(scope);
+                await LoadScopeAsync(scope);
             }
             else
             {
-                LoadScope(null);
+                await LoadScopeAsync(null);
             }
 
             LoadWorkbenchDiagram(workbench);
@@ -10882,6 +11366,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static T? FindDescendant<T>(DependencyObject? start) where T : DependencyObject
+    {
+        if (start == null)
+        {
+            return null;
+        }
+
+        int childCount = VisualTreeHelper.GetChildrenCount(start);
+        for (int i = 0; i < childCount; i++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(start, i);
+            if (child is T match)
+            {
+                return match;
+            }
+
+            T? descendant = FindDescendant<T>(child);
+            if (descendant != null)
+            {
+                return descendant;
+            }
         }
 
         return null;

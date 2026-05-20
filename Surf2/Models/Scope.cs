@@ -12,5 +12,7 @@ public sealed class Scope
 
     public ObservableCollection<ScopedResource> Resources { get; set; } = [];
 
+    public ObservableCollection<VirtualFolder> VirtualFolders { get; set; } = [];
+
     public override string ToString() => Name;
 }
