@@ -717,6 +717,7 @@ public partial class SettingsWindow : Window
         CodeTabCtrlASNavigationCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeTabCtrlASNavigation;
         DiagramSidebarToggleCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableDiagramCtrlQSidebarToggle;
         DiagramWorkflowSidebarCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableDiagramCtrlWWorkflowSidebar;
+        DiagramShiftMousePanningCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableDiagramShiftMousePanning;
     }
 
     private void SaveKeyboardShortcutSettings()
@@ -733,6 +734,7 @@ public partial class SettingsWindow : Window
         Settings.KeyboardShortcuts.EnableCodeTabCtrlASNavigation = CodeTabCtrlASNavigationCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableDiagramCtrlQSidebarToggle = DiagramSidebarToggleCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableDiagramCtrlWWorkflowSidebar = DiagramWorkflowSidebarCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableDiagramShiftMousePanning = DiagramShiftMousePanningCheckBox.IsChecked == true;
     }
 
     private void SaveWorkbenchSettings()

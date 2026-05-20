@@ -83,7 +83,7 @@ public sealed class AppSettings
 
 public sealed class KeyboardShortcutSettings
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -107,6 +107,8 @@ public sealed class KeyboardShortcutSettings
 
     public bool EnableDiagramCtrlWWorkflowSidebar { get; set; } = true;
 
+    public bool EnableDiagramShiftMousePanning { get; set; } = true;
+
     public bool EnsureDefaults()
     {
         if (Version >= CurrentVersion)
@@ -129,6 +131,7 @@ public sealed class KeyboardShortcutSettings
             EnableCodeCtrlShiftMouseScrollbarLockedScrolling = true;
         }
 
+        EnableDiagramShiftMousePanning = true;
         Version = CurrentVersion;
         return true;
     }
@@ -147,7 +150,8 @@ public sealed class KeyboardShortcutSettings
             EnableCtrlNumberViewSwitching = EnableCtrlNumberViewSwitching,
             EnableCodeTabCtrlASNavigation = EnableCodeTabCtrlASNavigation,
             EnableDiagramCtrlQSidebarToggle = EnableDiagramCtrlQSidebarToggle,
-            EnableDiagramCtrlWWorkflowSidebar = EnableDiagramCtrlWWorkflowSidebar
+            EnableDiagramCtrlWWorkflowSidebar = EnableDiagramCtrlWWorkflowSidebar,
+            EnableDiagramShiftMousePanning = EnableDiagramShiftMousePanning
         };
     }
 }

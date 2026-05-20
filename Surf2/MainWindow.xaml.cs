@@ -127,6 +127,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double DiagramSidebarMinimumWidth = 280;
     private const double WorkflowMarkerSize = 36;
     private const int DiagramLayerStep = 10;
+    private const double DiagramShiftPanDeadZone = 3;
+    private const double DiagramShiftPanSpeedFactor = 0.12;
     private const string ObjectExplorerDragDataFormat = "Surf2.ObjectExplorerNode";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
@@ -205,6 +207,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isDiagramCanvasPanning;
     private bool _isControlPanningCodeCanvas;
     private bool _isControlPanningDiagramCanvas;
+    private bool _isShiftPanningDiagramCanvas;
     private bool _isDrawingDiagramShape;
     private bool _isDrawingDiagramImage;
     private bool _isDrawingDiagramLine;
@@ -226,6 +229,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _diagramPanStartPoint;
     private Point _controlCodeCanvasPanPoint;
     private Point _controlDiagramCanvasPanPoint;
+    private Point _diagramShiftPanOriginPoint;
+    private Point _diagramShiftPanCurrentPoint;
     private Point _objectExplorerDragStartPoint;
     private Point _diagramShapeDrawStartPoint;
     private Point _diagramImageDrawStartPoint;
@@ -260,11 +265,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string _currentFolderDisplay = "No scope selected";
     private string _statusText = "Ready.";
     private string? _previewFilePath;
+    private readonly DispatcherTimer _diagramShiftPanTimer;
 
     public MainWindow()
     {
         InitializeComponent();
         DataContext = this;
+        _diagramShiftPanTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _diagramShiftPanTimer.Tick += DiagramShiftPanTimer_Tick;
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         InitializeMetadataEditorControls();
         ApplyWorkspaceViewLayout();
@@ -1703,6 +1714,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void DiagramViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        StopDiagramShiftPan();
         if (TryHandleControlDiagramCanvasPan(e))
         {
             e.Handled = true;
@@ -1711,6 +1723,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramViewHost_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (TryHandleDiagramShiftPan(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (TryHandleControlDiagramCanvasPan(e))
         {
             e.Handled = true;
@@ -1720,6 +1738,99 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void DiagramViewHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        StopDiagramShiftPan();
+    }
+
+    private bool TryHandleDiagramShiftPan(MouseEventArgs e)
+    {
+        if (_appSettings.KeyboardShortcuts.EnableDiagramShiftMousePanning != true ||
+            DiagramScrollViewer == null ||
+            DiagramScrollViewer.Visibility != Visibility.Visible ||
+            _isDrawingDiagramShape ||
+            _isDrawingDiagramImage ||
+            _isDrawingDiagramLine ||
+            _isDiagramCanvasPanning ||
+            e.LeftButton != MouseButtonState.Released ||
+            e.MiddleButton != MouseButtonState.Released ||
+            e.RightButton != MouseButtonState.Released)
+        {
+            StopDiagramShiftPan();
+            return false;
+        }
+
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if ((modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            (modifiers & ModifierKeys.Control) == ModifierKeys.Control ||
+            !IsMouseEventInsideElement(e, DiagramScrollViewer))
+        {
+            StopDiagramShiftPan();
+            return false;
+        }
+
+        Point currentPoint = e.GetPosition(DiagramScrollViewer);
+        if (!_isShiftPanningDiagramCanvas)
+        {
+            _diagramShiftPanOriginPoint = currentPoint;
+            _diagramShiftPanCurrentPoint = currentPoint;
+            _isShiftPanningDiagramCanvas = true;
+            DiagramViewHost.Cursor = Cursors.ScrollAll;
+            if (!_diagramShiftPanTimer.IsEnabled)
+            {
+                _diagramShiftPanTimer.Start();
+            }
+        }
+        else
+        {
+            _diagramShiftPanCurrentPoint = currentPoint;
+        }
+
+        SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        return true;
+    }
+
+    private void DiagramShiftPanTimer_Tick(object? sender, EventArgs e)
+    {
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if (!_isShiftPanningDiagramCanvas ||
+            DiagramScrollViewer == null ||
+            DiagramScrollViewer.Visibility != Visibility.Visible ||
+            !DiagramScrollViewer.IsMouseOver ||
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            (modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            StopDiagramShiftPan();
+            return;
+        }
+
+        Vector delta = _diagramShiftPanCurrentPoint - _diagramShiftPanOriginPoint;
+        double horizontalChange = Math.Abs(delta.X) <= DiagramShiftPanDeadZone
+            ? 0
+            : delta.X * DiagramShiftPanSpeedFactor;
+        double verticalChange = Math.Abs(delta.Y) <= DiagramShiftPanDeadZone
+            ? 0
+            : delta.Y * DiagramShiftPanSpeedFactor;
+
+        if (Math.Abs(horizontalChange) <= 0.01 && Math.Abs(verticalChange) <= 0.01)
+        {
+            return;
+        }
+
+        DiagramScrollViewer.ScrollToHorizontalOffset(DiagramScrollViewer.HorizontalOffset + horizontalChange);
+        DiagramScrollViewer.ScrollToVerticalOffset(DiagramScrollViewer.VerticalOffset + verticalChange);
+    }
+
+    private void StopDiagramShiftPan()
+    {
+        _isShiftPanningDiagramCanvas = false;
+        if (_diagramShiftPanTimer.IsEnabled)
+        {
+            _diagramShiftPanTimer.Stop();
+        }
+
+        if (DiagramViewHost != null)
+        {
+            DiagramViewHost.Cursor = null;
+        }
     }
 
     private bool TryHandleControlCodeCanvasPan(MouseEventArgs e)
@@ -9946,6 +10057,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _shutdownRequested = true;
+        StopDiagramShiftPan();
         IsEnabled = false;
         StatusText = "Saving application state...";
 
