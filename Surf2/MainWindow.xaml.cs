@@ -1776,7 +1776,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ref bool isPanning,
         ref Point previousPoint)
     {
-        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if ((modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            (modifiers & ModifierKeys.Shift) == ModifierKeys.Shift ||
             !IsMouseEventInsideElement(e, scrollViewer))
         {
             isPanning = false;
@@ -6360,6 +6362,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _appSettings.KeyboardShortcuts ??= new KeyboardShortcutSettings();
         Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        DependencyObject? originalSource = e.OriginalSource as DependencyObject;
+        bool isTextInput = IsTextInputElement(originalSource);
+
+        if (!isTextInput &&
+            _appSettings.KeyboardShortcuts.EnableCodeTabCtrlASNavigation &&
+            TryHandleCodeTabNavigationShortcut(key, originalSource))
+        {
+            e.Handled = true;
+            return true;
+        }
+
+        if (!isTextInput &&
+            _appSettings.KeyboardShortcuts.EnableDiagramCtrlQSidebarToggle &&
+            key == Key.Q &&
+            IsDiagramViewCommandTarget())
+        {
+            e.Handled = true;
+            ToggleDiagramSidebar();
+            return true;
+        }
+
+        if (!isTextInput &&
+            _appSettings.KeyboardShortcuts.EnableDiagramCtrlWWorkflowSidebar &&
+            key == Key.W &&
+            IsDiagramViewCommandTarget())
+        {
+            e.Handled = true;
+            OpenDiagramSidebarOnWorkflowTab();
+            return true;
+        }
 
         if (_appSettings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation)
         {
@@ -6398,6 +6430,74 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return false;
+    }
+
+    private bool TryHandleCodeTabNavigationShortcut(Key key, DependencyObject? originalSource)
+    {
+        if (key == Key.A)
+        {
+            return TryNavigateCodeDocumentTab(-1, originalSource);
+        }
+
+        if (key == Key.S)
+        {
+            return TryNavigateCodeDocumentTab(1, originalSource);
+        }
+
+        return false;
+    }
+
+    private bool TryNavigateCodeDocumentTab(int direction, DependencyObject? originalSource)
+    {
+        if (!IsCodeTabModeCommandTarget(originalSource) ||
+            CodeDocumentsTabControl.Items.Count == 0)
+        {
+            return false;
+        }
+
+        int currentIndex = CodeDocumentsTabControl.SelectedIndex;
+        if (currentIndex < 0)
+        {
+            currentIndex = direction >= 0 ? -1 : 0;
+        }
+
+        int nextIndex = (currentIndex + direction + CodeDocumentsTabControl.Items.Count) % CodeDocumentsTabControl.Items.Count;
+        CodeDocumentsTabControl.SelectedIndex = nextIndex;
+
+        if (CodeDocumentsTabControl.SelectedItem is TabItem { Tag: string filePath })
+        {
+            StatusText = $"Selected tab {Path.GetFileName(filePath)}.";
+        }
+
+        return true;
+    }
+
+    private bool IsCodeTabModeCommandTarget(DependencyObject? originalSource)
+    {
+        if (_codeViewMode != CodeViewMode.Tabs ||
+            CodeViewHost.Visibility != Visibility.Visible ||
+            CodeDocumentsTabControl.Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        return _activeWorkspaceView == WorkspaceViewKind.Code ||
+               originalSource != null && IsDescendantOf(originalSource, CodeViewHost);
+    }
+
+    private void ToggleDiagramSidebar()
+    {
+        SetDiagramSidebarOpen(!_isDiagramSidebarOpen);
+        StatusText = _isDiagramSidebarOpen
+            ? "Diagram sidebar opened."
+            : "Diagram sidebar closed.";
+    }
+
+    private void OpenDiagramSidebarOnWorkflowTab()
+    {
+        SetDiagramSidebarOpen(true);
+        DiagramSidebarTabs.SelectedIndex = 1;
+        StatusText = "Diagram sidebar opened on Workflows.";
     }
 
     private static bool IsBackShortcutKey(Key key)

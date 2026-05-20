@@ -710,9 +710,13 @@ public partial class SettingsWindow : Window
         Settings.KeyboardShortcuts.EnsureDefaults();
         CanvasCtrlMousePanningCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCanvasCtrlMousePanning;
         TabCtrlMouseScrollingCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableTabCtrlMouseScrolling;
-        TabCtrlShiftAutoscrollCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableTabCtrlShiftMouseAutoscrolling;
+        CodeShiftAutoscrollCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeShiftMouseAutoscrolling;
+        CodeCtrlShiftScrollbarLockedScrollCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeCtrlShiftMouseScrollbarLockedScrolling;
         CodeViewHistoryNavigationCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation;
         ViewSwitchingCtrlNumberCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCtrlNumberViewSwitching;
+        CodeTabCtrlASNavigationCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeTabCtrlASNavigation;
+        DiagramSidebarToggleCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableDiagramCtrlQSidebarToggle;
+        DiagramWorkflowSidebarCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableDiagramCtrlWWorkflowSidebar;
     }
 
     private void SaveKeyboardShortcutSettings()
@@ -721,9 +725,14 @@ public partial class SettingsWindow : Window
         Settings.KeyboardShortcuts.Version = KeyboardShortcutSettings.CurrentVersion;
         Settings.KeyboardShortcuts.EnableCanvasCtrlMousePanning = CanvasCtrlMousePanningCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableTabCtrlMouseScrolling = TabCtrlMouseScrollingCheckBox.IsChecked == true;
-        Settings.KeyboardShortcuts.EnableTabCtrlShiftMouseAutoscrolling = TabCtrlShiftAutoscrollCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCodeShiftMouseAutoscrolling = CodeShiftAutoscrollCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCodeCtrlShiftMouseScrollbarLockedScrolling = CodeCtrlShiftScrollbarLockedScrollCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableTabCtrlShiftMouseAutoscrolling = Settings.KeyboardShortcuts.EnableCodeShiftMouseAutoscrolling;
         Settings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation = CodeViewHistoryNavigationCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableCtrlNumberViewSwitching = ViewSwitchingCtrlNumberCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCodeTabCtrlASNavigation = CodeTabCtrlASNavigationCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableDiagramCtrlQSidebarToggle = DiagramSidebarToggleCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableDiagramCtrlWWorkflowSidebar = DiagramWorkflowSidebarCheckBox.IsChecked == true;
     }
 
     private void SaveWorkbenchSettings()

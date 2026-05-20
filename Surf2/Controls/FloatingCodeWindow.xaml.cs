@@ -27,7 +27,8 @@ public partial class FloatingCodeWindow : UserControl
     private bool _isCtrlMouseScrolling;
     private bool _isShiftMouseScrolling;
     private bool _enableTabCtrlMouseScrolling = true;
-    private bool _enableTabCtrlShiftMouseAutoscrolling = true;
+    private bool _enableCodeShiftMouseAutoscrolling = true;
+    private bool _enableCodeCtrlShiftMouseScrollbarLockedScrolling = true;
     private Point _dragStartPoint;
     private Point _ctrlMouseScrollDocumentPoint;
     private Point _shiftMouseScrollOriginPoint;
@@ -67,7 +68,7 @@ public partial class FloatingCodeWindow : UserControl
         Editor.PreviewMouseLeftButtonUp += Editor_PreviewMouseLeftButtonUp;
         Editor.PreviewMouseDoubleClick += Editor_PreviewMouseDoubleClick;
         PreviewKeyDown += FloatingCodeWindow_PreviewKeyDown;
-        PreviewMouseMove += FloatingCodeWindow_PreviewMouseMove;
+        AddHandler(Mouse.PreviewMouseMoveEvent, new MouseEventHandler(FloatingCodeWindow_PreviewMouseMove), true);
         PreviewMouseWheel += FloatingCodeWindow_PreviewMouseWheel;
         Unloaded += (_, _) => StopShiftMouseScroll();
     }
@@ -95,14 +96,15 @@ public partial class FloatingCodeWindow : UserControl
     public void ApplyKeyboardShortcutSettings(KeyboardShortcutSettings settings)
     {
         _enableTabCtrlMouseScrolling = settings.EnableTabCtrlMouseScrolling;
-        _enableTabCtrlShiftMouseAutoscrolling = settings.EnableTabCtrlShiftMouseAutoscrolling;
+        _enableCodeShiftMouseAutoscrolling = settings.EnableCodeShiftMouseAutoscrolling;
+        _enableCodeCtrlShiftMouseScrollbarLockedScrolling = settings.EnableCodeCtrlShiftMouseScrollbarLockedScrolling;
 
         if (!_enableTabCtrlMouseScrolling)
         {
             _isCtrlMouseScrolling = false;
         }
 
-        if (!_enableTabCtrlShiftMouseAutoscrolling)
+        if (!_enableCodeShiftMouseAutoscrolling)
         {
             StopShiftMouseScroll();
         }
@@ -477,7 +479,7 @@ public partial class FloatingCodeWindow : UserControl
 
     private void FloatingCodeWindow_PreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_isDocked || Editor.Document == null || !Editor.IsMouseOver)
+        if (Editor.Document == null || !Editor.IsMouseOver)
         {
             _isCtrlMouseScrolling = false;
             StopShiftMouseScroll();
@@ -488,7 +490,16 @@ public partial class FloatingCodeWindow : UserControl
         bool isCtrlDown = (modifiers & ModifierKeys.Control) == ModifierKeys.Control;
         bool isShiftDown = (modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
 
-        if (isCtrlDown && isShiftDown && _enableTabCtrlShiftMouseAutoscrolling)
+        if (isCtrlDown && isShiftDown && _enableCodeCtrlShiftMouseScrollbarLockedScrolling)
+        {
+            _isCtrlMouseScrolling = false;
+            StopShiftMouseScroll();
+            HandleCtrlShiftScrollbarLockedScroll(e);
+            e.Handled = true;
+            return;
+        }
+
+        if (!isCtrlDown && isShiftDown && _enableCodeShiftMouseAutoscrolling)
         {
             _isCtrlMouseScrolling = false;
             HandleShiftMouseScroll(e);
@@ -496,7 +507,7 @@ public partial class FloatingCodeWindow : UserControl
             return;
         }
 
-        if (isCtrlDown && _enableTabCtrlMouseScrolling)
+        if (_isDocked && isCtrlDown && !isShiftDown && _enableTabCtrlMouseScrolling)
         {
             StopShiftMouseScroll();
             HandleCtrlMouseScroll(e);
@@ -546,11 +557,12 @@ public partial class FloatingCodeWindow : UserControl
 
     private void ShiftMouseScrollTimer_Tick(object? sender, EventArgs e)
     {
-        if (!_isDocked ||
-            Editor.Document == null ||
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if (Editor.Document == null ||
             !Editor.IsMouseOver ||
-            (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != (ModifierKeys.Control | ModifierKeys.Shift) ||
-            !_enableTabCtrlShiftMouseAutoscrolling)
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            (modifiers & ModifierKeys.Control) == ModifierKeys.Control ||
+            !_enableCodeShiftMouseAutoscrolling)
         {
             StopShiftMouseScroll();
             return;
@@ -572,6 +584,53 @@ public partial class FloatingCodeWindow : UserControl
         ScrollEditorToOffsets(
             Editor.HorizontalOffset + horizontalChange,
             Editor.VerticalOffset + verticalChange);
+    }
+
+    private void HandleCtrlShiftScrollbarLockedScroll(MouseEventArgs e)
+    {
+        Point mousePoint = e.GetPosition(Editor);
+        double width = Math.Max(1, Editor.ActualWidth);
+        double height = Math.Max(1, Editor.ActualHeight);
+        double horizontalRatio = Math.Clamp(mousePoint.X / width, 0, 1);
+        double verticalRatio = Math.Clamp(mousePoint.Y / height, 0, 1);
+
+        ScrollViewer? scrollViewer = GetEditorScrollViewer();
+        if (scrollViewer != null)
+        {
+            scrollViewer.ScrollToHorizontalOffset(scrollViewer.ScrollableWidth * horizontalRatio);
+            scrollViewer.ScrollToVerticalOffset(scrollViewer.ScrollableHeight * verticalRatio);
+            return;
+        }
+
+        ScrollEditorToOffsets(
+            GetEstimatedHorizontalScrollableWidth() * horizontalRatio,
+            GetEstimatedVerticalScrollableHeight() * verticalRatio);
+    }
+
+    private ScrollViewer? GetEditorScrollViewer()
+    {
+        return FindVisualChildren<ScrollViewer>(Editor).FirstOrDefault();
+    }
+
+    private double GetEstimatedVerticalScrollableHeight()
+    {
+        double lineHeight = Math.Max(1, Editor.TextArea.TextView.DefaultLineHeight);
+        return Math.Max(0, (Editor.Document?.LineCount ?? 0) * lineHeight - Editor.ActualHeight);
+    }
+
+    private double GetEstimatedHorizontalScrollableWidth()
+    {
+        if (Editor.Document == null)
+        {
+            return 0;
+        }
+
+        int longestLineLength = Editor.Document.Lines
+            .Select(line => line.Length)
+            .DefaultIfEmpty(0)
+            .Max();
+        double estimatedCharacterWidth = Math.Max(1, Editor.FontSize * 0.62);
+        return Math.Max(0, (longestLineLength * estimatedCharacterWidth) - Editor.ActualWidth);
     }
 
     private void StopShiftMouseScroll()

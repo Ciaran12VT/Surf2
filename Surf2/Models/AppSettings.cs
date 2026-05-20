@@ -83,7 +83,7 @@ public sealed class AppSettings
 
 public sealed class KeyboardShortcutSettings
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 4;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -93,9 +93,19 @@ public sealed class KeyboardShortcutSettings
 
     public bool EnableTabCtrlShiftMouseAutoscrolling { get; set; } = true;
 
+    public bool EnableCodeShiftMouseAutoscrolling { get; set; } = true;
+
+    public bool EnableCodeCtrlShiftMouseScrollbarLockedScrolling { get; set; } = true;
+
     public bool EnableCodeViewCtrlPlusMinusNavigation { get; set; } = true;
 
     public bool EnableCtrlNumberViewSwitching { get; set; } = true;
+
+    public bool EnableCodeTabCtrlASNavigation { get; set; } = true;
+
+    public bool EnableDiagramCtrlQSidebarToggle { get; set; } = true;
+
+    public bool EnableDiagramCtrlWWorkflowSidebar { get; set; } = true;
 
     public bool EnsureDefaults()
     {
@@ -104,8 +114,21 @@ public sealed class KeyboardShortcutSettings
             return false;
         }
 
-        EnableCodeViewCtrlPlusMinusNavigation = true;
-        EnableCtrlNumberViewSwitching = true;
+        if (Version < 2)
+        {
+            EnableCodeViewCtrlPlusMinusNavigation = true;
+            EnableCtrlNumberViewSwitching = true;
+        }
+
+        EnableCodeTabCtrlASNavigation = true;
+        EnableDiagramCtrlQSidebarToggle = true;
+        EnableDiagramCtrlWWorkflowSidebar = true;
+        if (Version < 4)
+        {
+            EnableCodeShiftMouseAutoscrolling = EnableTabCtrlShiftMouseAutoscrolling;
+            EnableCodeCtrlShiftMouseScrollbarLockedScrolling = true;
+        }
+
         Version = CurrentVersion;
         return true;
     }
@@ -118,8 +141,13 @@ public sealed class KeyboardShortcutSettings
             EnableCanvasCtrlMousePanning = EnableCanvasCtrlMousePanning,
             EnableTabCtrlMouseScrolling = EnableTabCtrlMouseScrolling,
             EnableTabCtrlShiftMouseAutoscrolling = EnableTabCtrlShiftMouseAutoscrolling,
+            EnableCodeShiftMouseAutoscrolling = EnableCodeShiftMouseAutoscrolling,
+            EnableCodeCtrlShiftMouseScrollbarLockedScrolling = EnableCodeCtrlShiftMouseScrollbarLockedScrolling,
             EnableCodeViewCtrlPlusMinusNavigation = EnableCodeViewCtrlPlusMinusNavigation,
-            EnableCtrlNumberViewSwitching = EnableCtrlNumberViewSwitching
+            EnableCtrlNumberViewSwitching = EnableCtrlNumberViewSwitching,
+            EnableCodeTabCtrlASNavigation = EnableCodeTabCtrlASNavigation,
+            EnableDiagramCtrlQSidebarToggle = EnableDiagramCtrlQSidebarToggle,
+            EnableDiagramCtrlWWorkflowSidebar = EnableDiagramCtrlWWorkflowSidebar
         };
     }
 }
