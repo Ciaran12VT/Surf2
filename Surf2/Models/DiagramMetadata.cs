@@ -89,6 +89,8 @@ public sealed class WorkflowDocument
 
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
+    public bool AreMarkersVisible { get; set; }
+
     public List<WorkflowItem> Items { get; set; } = [];
 
     public WorkflowDocument Clone()
@@ -99,6 +101,7 @@ public sealed class WorkflowDocument
             WorkflowName = WorkflowName,
             CreatedAtUtc = CreatedAtUtc,
             UpdatedAtUtc = UpdatedAtUtc,
+            AreMarkersVisible = AreMarkersVisible,
             Items = Items.Select(item => item.Clone()).ToList()
         };
     }

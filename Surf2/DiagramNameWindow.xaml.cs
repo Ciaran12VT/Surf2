@@ -4,9 +4,10 @@ namespace Surf2;
 
 public partial class DiagramNameWindow : Window
 {
-    public DiagramNameWindow(string initialName, string prompt = "Diagram name")
+    public DiagramNameWindow(string initialName, string prompt = "Diagram name", string title = "Save Diagram")
     {
         InitializeComponent();
+        Title = title;
         PromptTextBlock.Text = prompt;
         NameTextBox.Text = initialName;
         NameTextBox.SelectAll();

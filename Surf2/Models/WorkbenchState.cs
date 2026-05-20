@@ -4,6 +4,14 @@ public sealed class WorkbenchState
 {
     public string WorkbenchId { get; set; } = Guid.NewGuid().ToString("N");
 
+    public string Name { get; set; } = string.Empty;
+
+    public bool IsDefaultForScope { get; set; }
+
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
     public DateTimeOffset SavedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
     public string ScopeId { get; set; } = string.Empty;
@@ -42,7 +50,28 @@ public sealed class WorkbenchState
 
     public double DiagramViewportVerticalOffset { get; set; }
 
-    public string DisplayName => $"{ScopeName} - {SavedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+    public string DisplayName
+    {
+        get
+        {
+            string name = !string.IsNullOrWhiteSpace(Name)
+                ? Name
+                : !string.IsNullOrWhiteSpace(ScopeName)
+                    ? ScopeName
+                    : "Workbench";
+
+            DateTimeOffset updatedAt = UpdatedAtUtc == default
+                ? SavedAtUtc
+                : UpdatedAtUtc;
+
+            if (updatedAt == default)
+            {
+                updatedAt = DateTimeOffset.UtcNow;
+            }
+
+            return $"{name} - {updatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+        }
+    }
 }
 
 public sealed class WorkbenchLibrary

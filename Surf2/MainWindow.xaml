@@ -61,6 +61,12 @@
             <Setter Property="Background" Value="#DC2626" />
         </Style>
 
+        <Style x:Key="BlueToolbarButtonStyle"
+               BasedOn="{StaticResource RoundedToolbarButtonStyle}"
+               TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#1E3A8A" />
+        </Style>
+
         <Style x:Key="CircleToolbarButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Width" Value="32" />
             <Setter Property="Height" Value="32" />
@@ -252,6 +258,40 @@
             </Setter>
         </Style>
 
+        <Style x:Key="WorkflowSidebarToggleStyle" TargetType="{x:Type ToggleButton}">
+            <Setter Property="Foreground" Value="#111827" />
+            <Setter Property="Background" Value="#FFFFFF" />
+            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E0ECFF" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#93C5FD" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="#BFDBFE" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#2563EB" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="SplitOrientationButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Width" Value="32" />
             <Setter Property="Height" Value="32" />
@@ -313,7 +353,7 @@
             <DockPanel Margin="10,8">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <ComboBox x:Name="WorkbenchSelector"
-                              Width="260"
+                              Width="240"
                               Height="30"
                               Margin="0,0,8,0"
                               DisplayMemberPath="DisplayName"
@@ -322,10 +362,24 @@
                               ToolTip="Load saved Workbench" />
                     <Button Width="138"
                             Height="30"
-                            Margin="0,0,10,0"
+                            Margin="0,0,8,0"
                             Style="{StaticResource GreenToolbarButtonStyle}"
                             Click="SaveWorkbenchButton_Click"
                             Content="Save Workbench" />
+                    <Button Width="82"
+                            Height="30"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource BlueToolbarButtonStyle}"
+                            Click="SaveWorkbenchAsButton_Click"
+                            Content="Save As" />
+                    <Button x:Name="DeleteWorkbenchButton"
+                            Width="76"
+                            Height="30"
+                            Margin="0,0,10,0"
+                            Style="{StaticResource RedToolbarButtonStyle}"
+                            Click="DeleteWorkbenchButton_Click"
+                            Content="Delete"
+                            IsEnabled="False" />
                     <Button Style="{StaticResource SettingsCogButtonStyle}"
                             Click="SettingsButton_Click"
                             Content="&#xE713;"
@@ -663,6 +717,7 @@
                           Grid.Row="0"
                           Grid.Column="0"
                           PreviewMouseDown="CodeViewHost_PreviewMouseDown"
+                          PreviewMouseMove="CodeViewHost_PreviewMouseMove"
                           PreviewMouseWheel="CodeViewHost_PreviewMouseWheel">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="34" />
@@ -752,6 +807,7 @@
                           Grid.Row="2"
                           Grid.Column="0"
                           PreviewMouseDown="DiagramViewHost_PreviewMouseDown"
+                          PreviewMouseMove="DiagramViewHost_PreviewMouseMove"
                           PreviewMouseWheel="DiagramViewHost_PreviewMouseWheel"
                           Visibility="Collapsed">
                         <Grid.ColumnDefinitions>
@@ -1541,6 +1597,7 @@
                                                               Grid.Row="2"
                                                               Height="30"
                                                               HorizontalAlignment="Stretch"
+                                                              Style="{StaticResource WorkflowSidebarToggleStyle}"
                                                               Click="WorkflowAddItemsToggleButton_Click"
                                                               Content="Add Items: OFF" />
 

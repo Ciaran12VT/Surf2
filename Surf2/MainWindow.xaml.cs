@@ -201,6 +201,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private double _diagramCanvasZoom = 1;
     private bool _isCanvasPanning;
     private bool _isDiagramCanvasPanning;
+    private bool _isControlPanningCodeCanvas;
+    private bool _isControlPanningDiagramCanvas;
     private bool _isDrawingDiagramShape;
     private bool _isDrawingDiagramImage;
     private bool _isDrawingDiagramLine;
@@ -220,6 +222,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _shutdownSaveCompleted;
     private Point _canvasPanStartPoint;
     private Point _diagramPanStartPoint;
+    private Point _controlCodeCanvasPanPoint;
+    private Point _controlDiagramCanvasPanPoint;
     private Point _objectExplorerDragStartPoint;
     private Point _diagramShapeDrawStartPoint;
     private Point _diagramImageDrawStartPoint;
@@ -322,10 +326,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _databaseSnapshots = await _databaseMetadataStore.LoadAsync();
             _diagramLibrary = await _diagramStore.LoadAsync();
             _workbenchLibrary = await _workbenchStore.LoadAsync();
+            bool workbenchLibraryChanged = NormalizeWorkbenchLibrary();
             _appSettings = await _settingsStore.LoadAsync();
             if (_appSettings.EnsureDefaults())
             {
                 await _settingsStore.SaveAsync(_appSettings);
+            }
+
+            if (workbenchLibraryChanged)
+            {
+                await _workbenchStore.SaveAsync(_workbenchLibrary);
             }
 
             RefreshDiagramImageToolMenu();
@@ -334,7 +344,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             WorkbenchState? startupWorkbench = _appSettings.LoadMostRecentWorkbenchOnStartup
                 ? _workbenchLibrary.Workbenches
-                    .OrderByDescending(workbench => workbench.SavedAtUtc)
+                    .OrderByDescending(GetWorkbenchUpdatedAtUtc)
                     .FirstOrDefault()
                 : null;
 
@@ -1669,6 +1679,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void CodeViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Code);
+        if (TryHandleControlCodeCanvasPan(e))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void CodeViewHost_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (TryHandleControlCodeCanvasPan(e))
+        {
+            e.Handled = true;
+        }
     }
 
     private void CodeViewHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -1679,11 +1701,153 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void DiagramViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        if (TryHandleControlDiagramCanvasPan(e))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void DiagramViewHost_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (TryHandleControlDiagramCanvasPan(e))
+        {
+            e.Handled = true;
+        }
     }
 
     private void DiagramViewHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+    }
+
+    private bool TryHandleControlCodeCanvasPan(MouseEventArgs e)
+    {
+        if (_codeViewMode != CodeViewMode.Canvas ||
+            WorkspaceScrollViewer == null ||
+            WorkspaceScrollViewer.Visibility != Visibility.Visible)
+        {
+            _isControlPanningCodeCanvas = false;
+            return false;
+        }
+
+        if (TryHandleControlPan(
+                e,
+                WorkspaceScrollViewer,
+                ref _isControlPanningCodeCanvas,
+                ref _controlCodeCanvasPanPoint))
+        {
+            SetActiveWorkspaceView(WorkspaceViewKind.Code);
+            CaptureViewportState();
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryHandleControlDiagramCanvasPan(MouseEventArgs e)
+    {
+        if (DiagramScrollViewer == null ||
+            DiagramScrollViewer.Visibility != Visibility.Visible)
+        {
+            _isControlPanningDiagramCanvas = false;
+            return false;
+        }
+
+        if (TryHandleControlPan(
+                e,
+                DiagramScrollViewer,
+                ref _isControlPanningDiagramCanvas,
+                ref _controlDiagramCanvasPanPoint))
+        {
+            SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryHandleControlPan(
+        MouseEventArgs e,
+        ScrollViewer scrollViewer,
+        ref bool isPanning,
+        ref Point previousPoint)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            !IsMouseEventInsideElement(e, scrollViewer))
+        {
+            isPanning = false;
+            return false;
+        }
+
+        Point currentPoint = e.GetPosition(scrollViewer);
+        if (!isPanning)
+        {
+            previousPoint = currentPoint;
+            isPanning = true;
+            return true;
+        }
+
+        Vector delta = currentPoint - previousPoint;
+        if (Math.Abs(delta.X) > 0.01 || Math.Abs(delta.Y) > 0.01)
+        {
+            scrollViewer.ScrollToHorizontalOffset(scrollViewer.HorizontalOffset - delta.X);
+            scrollViewer.ScrollToVerticalOffset(scrollViewer.VerticalOffset - delta.Y);
+            previousPoint = currentPoint;
+        }
+
+        return true;
+    }
+
+    private static bool IsMouseEventInsideElement(MouseEventArgs e, FrameworkElement element)
+    {
+        if (!element.IsVisible ||
+            element.ActualWidth <= 0 ||
+            element.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        if (e.OriginalSource is not DependencyObject originalSource ||
+            !IsDescendantOf(originalSource, element))
+        {
+            return false;
+        }
+
+        Point position = e.GetPosition(element);
+        return position.X >= 0 &&
+               position.Y >= 0 &&
+               position.X <= element.ActualWidth &&
+               position.Y <= element.ActualHeight;
+    }
+
+    private static bool IsDescendantOf(DependencyObject child, DependencyObject ancestor)
+    {
+        for (DependencyObject? current = child; current != null; current = GetDependencyParent(current))
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static DependencyObject? GetDependencyParent(DependencyObject dependencyObject)
+    {
+        try
+        {
+            DependencyObject? visualParent = VisualTreeHelper.GetParent(dependencyObject);
+            if (visualParent != null)
+            {
+                return visualParent;
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        return LogicalTreeHelper.GetParent(dependencyObject);
     }
 
     private void OpenDiagramSidebarButton_Click(object sender, RoutedEventArgs e)
@@ -2660,6 +2824,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private UIElement CreateWorkflowListItem(WorkflowDocument workflow)
     {
         bool hasUnresolvedQueries = DiagramQueryState.HasUnresolvedWorkflowQueries(workflow);
+        var markerVisibilityCheckBox = new CheckBox
+        {
+            Margin = new Thickness(0, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsChecked = workflow.AreMarkersVisible,
+            ToolTip = "Show workflow markers on the diagram"
+        };
+        markerVisibilityCheckBox.Checked += (_, _) =>
+        {
+            workflow.AreMarkersVisible = true;
+            workflow.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            ApplyWorkflowMarkerVisibility(workflow.WorkflowId);
+            StatusText = $"Showing markers for workflow '{workflow.WorkflowName}'.";
+        };
+        markerVisibilityCheckBox.Unchecked += (_, _) =>
+        {
+            workflow.AreMarkersVisible = false;
+            workflow.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            ApplyWorkflowMarkerVisibility(workflow.WorkflowId);
+            StatusText = $"Hid markers for workflow '{workflow.WorkflowName}'.";
+        };
+
         var nameTextBlock = new TextBlock
         {
             FontWeight = FontWeights.SemiBold,
@@ -2672,6 +2858,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             LastChildFill = true
         };
+        DockPanel.SetDock(markerVisibilityCheckBox, Dock.Left);
+        nameLayout.Children.Add(markerVisibilityCheckBox);
 
         if (hasUnresolvedQueries)
         {
@@ -2711,13 +2899,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Cursor = Cursors.Hand,
             Child = layout
         };
-        border.MouseLeftButtonDown += (_, _) =>
+        border.MouseLeftButtonDown += (_, e) =>
         {
+            if (e.OriginalSource is DependencyObject source &&
+                IsDescendantOf(source, markerVisibilityCheckBox))
+            {
+                return;
+            }
+
             CommitWorkflowEditorChanges(requireValidWorkflowName: false);
             ShowWorkflowDetails(workflow, isCreatingNewWorkflow: false, focusName: false);
         };
 
         return border;
+    }
+
+    private void ApplyWorkflowMarkerVisibility(string workflowId)
+    {
+        WorkflowDocument? workflow = FindWorkflow(workflowId);
+        bool isVisible = workflow?.AreMarkersVisible == true;
+
+        foreach (DiagramWorkflowMarkerControl marker in DiagramCanvas.Children.OfType<DiagramWorkflowMarkerControl>()
+                     .Where(marker => string.Equals(marker.WorkflowId, workflowId, StringComparison.OrdinalIgnoreCase)))
+        {
+            marker.Visibility = isVisible ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        if (!isVisible &&
+            _selectedDiagramObject is DiagramWorkflowMarkerControl selectedMarker &&
+            string.Equals(selectedMarker.WorkflowId, workflowId, StringComparison.OrdinalIgnoreCase))
+        {
+            SelectDiagramObject(null);
+        }
     }
 
     private void ShowWorkflowDetails(WorkflowDocument workflow, bool isCreatingNewWorkflow, bool focusName)
@@ -2843,16 +3056,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         summary.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         summary.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var itemNumberTextBlock = new TextBlock
-        {
-            MinWidth = 28,
-            Margin = new Thickness(0, 0, 6, 0),
-            VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = FontWeights.Bold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB)),
-            Text = item.ItemNumber.ToString(CultureInfo.InvariantCulture)
-        };
-        summary.Children.Add(itemNumberTextBlock);
+        Border itemNumberBadge = CreateWorkflowBadge(
+            item.ItemNumber.ToString(CultureInfo.InvariantCulture),
+            CreateFrozenBrush(Color.FromRgb(0xDB, 0xE7, 0xFF)),
+            CreateFrozenBrush(Color.FromRgb(0x1D, 0x4E, 0xD8)));
+        summary.Children.Add(itemNumberBadge);
 
         var descriptionTextBox = new TextBox
         {
@@ -2881,6 +3089,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Margin = new Thickness(6, 0, 0, 0),
             Content = isExpanded ? "Less" : "More"
         };
+        ApplyWorkflowSidebarButtonStyle(moreButton, CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB)));
         moreButton.Click += (_, _) =>
         {
             _expandedWorkflowItems[item.WorkflowItemId] = !isExpanded;
@@ -2895,12 +3104,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Width = 24,
             Height = 24,
             Margin = new Thickness(4, 0, 0, 0),
-            Background = CreateFrozenBrush(Color.FromRgb(0xDC, 0x26, 0x26)),
-            Foreground = Brushes.White,
-            BorderThickness = new Thickness(0),
             Content = "X",
             ToolTip = "Delete workflow item"
         };
+        ApplyWorkflowSidebarButtonStyle(deleteButton, CreateFrozenBrush(Color.FromRgb(0xDC, 0x26, 0x26)));
         deleteButton.Click += (_, _) =>
         {
             if (_workflowEditorTarget == null)
@@ -2931,6 +3138,44 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ? CreateFrozenBrush(Color.FromRgb(0xEF, 0xF6, 0xFF))
                 : CreateFrozenBrush(Color.FromRgb(0xF8, 0xFA, 0xFC)),
             Child = outerLayout
+        };
+    }
+
+    private void ApplyWorkflowSidebarButtonStyle(Button button, Brush background)
+    {
+        button.Background = background;
+        button.Foreground = Brushes.White;
+        button.BorderThickness = new Thickness(0);
+        button.FontWeight = FontWeights.SemiBold;
+        button.Cursor = Cursors.Hand;
+
+        if (TryFindResource("RoundedToolbarButtonStyle") is Style roundedButtonStyle)
+        {
+            button.Style = roundedButtonStyle;
+        }
+    }
+
+    private static Border CreateWorkflowBadge(string text, Brush background, Brush foreground, double minWidth = 28)
+    {
+        return new Border
+        {
+            MinWidth = minWidth,
+            Height = 22,
+            Margin = new Thickness(0, 0, 6, 0),
+            Padding = new Thickness(8, 0, 8, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = background,
+            CornerRadius = new CornerRadius(11),
+            Child = new TextBlock
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = foreground,
+                Text = text
+            }
         };
     }
 
@@ -2971,11 +3216,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             Width = 28,
             Height = 24,
-            Background = CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB)),
-            Foreground = Brushes.White,
-            BorderThickness = new Thickness(0),
             Content = "+"
         };
+        ApplyWorkflowSidebarButtonStyle(addQueryButton, CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB)));
         addQueryButton.Click += (_, _) =>
         {
             int nextQueryNumber = item.Queries.Count == 0 ? 1 : item.Queries.Max(query => query.QueryNumber) + 1;
@@ -3024,6 +3267,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             HorizontalAlignment = HorizontalAlignment.Stretch,
             Content = "Collapse"
         };
+        ApplyWorkflowSidebarButtonStyle(collapseButton, CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)));
         collapseButton.Click += (_, _) =>
         {
             item.ItemDocumentationXaml = SerializeRichTextBoxDocument(documentationBox);
@@ -3067,13 +3311,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DockPanel.SetDock(statusComboBox, Dock.Right);
         header.Children.Add(statusComboBox);
 
-        header.Children.Add(new TextBlock
-        {
-            VerticalAlignment = VerticalAlignment.Center,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
-            Text = $"Query {query.QueryNumber}"
-        });
+        header.Children.Add(CreateWorkflowBadge(
+            $"Query {query.QueryNumber}",
+            CreateFrozenBrush(Color.FromRgb(0xEE, 0xF2, 0xFF)),
+            CreateFrozenBrush(Color.FromRgb(0x37, 0x30, 0xA3)),
+            minWidth: 62));
 
         var descriptionTextBox = new TextBox
         {
@@ -3422,10 +3664,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         ApplyDefaultDiagramZIndex(marker);
         DiagramCanvas.Children.Add(marker);
+        ApplyWorkflowMarkerVisibility(workflow.WorkflowId);
         _expandedWorkflowItems[workflowItem.WorkflowItemId] = true;
         RebuildWorkflowItemsEditor();
         RefreshWorkflowList();
-        SelectDiagramObject(marker);
+        SelectDiagramObject(workflow.AreMarkersVisible ? marker : null);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(marker));
         FocusWorkflowItem(workflowItem.WorkflowItemId, focusDescription: true);
         StatusText = $"Added workflow item {workflowItem.ItemNumber}.";
@@ -3469,6 +3712,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         NormalizeDiagramZOrder(prioritizeTransparentObjects: !hasPersistedLayering);
+        foreach (WorkflowDocument workflow in _currentDiagramWorkflows)
+        {
+            ApplyWorkflowMarkerVisibility(workflow.WorkflowId);
+        }
+
         _diagramUndoStack.Clear();
         SelectDiagramObject(null);
         SetCurrentDiagramIdentity(diagram.DiagramId, diagram.Name);
@@ -6886,6 +7134,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             workflowItem?.ItemDescription ?? string.Empty,
             snapshot.Id);
         marker.SetHasUnresolvedQueries(DiagramQueryState.HasUnresolvedWorkflowQueries(workflowItem));
+        marker.Visibility = FindWorkflow(snapshot.WorkflowId)?.AreMarkersVisible == true
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         AttachDiagramWorkflowMarkerHandlers(marker);
         return marker;
     }
@@ -7520,14 +7771,112 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             WorkbenchState workbench = CaptureWorkbenchState();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            string defaultName = GetDefaultWorkbenchName(workbench);
+            WorkbenchState? existingDefault = _workbenchLibrary.Workbenches.FirstOrDefault(candidate =>
+                candidate.IsDefaultForScope &&
+                string.Equals(candidate.ScopeId, workbench.ScopeId, StringComparison.OrdinalIgnoreCase));
+
+            if (existingDefault != null)
+            {
+                workbench.WorkbenchId = existingDefault.WorkbenchId;
+                workbench.CreatedAtUtc = existingDefault.CreatedAtUtc == default
+                    ? now
+                    : existingDefault.CreatedAtUtc;
+                _workbenchLibrary.Workbenches.Remove(existingDefault);
+            }
+            else
+            {
+                workbench.CreatedAtUtc = now;
+            }
+
+            workbench.Name = defaultName;
+            workbench.IsDefaultForScope = true;
+            workbench.UpdatedAtUtc = now;
+            workbench.SavedAtUtc = now;
             _workbenchLibrary.Workbenches.Add(workbench);
             await _workbenchStore.SaveAsync(_workbenchLibrary);
             RefreshSavedWorkbenches(workbench.WorkbenchId);
-            StatusText = $"Saved Workbench '{workbench.DisplayName}'.";
+            StatusText = $"Saved default Workbench '{workbench.Name}'.";
         }
         catch (Exception ex)
         {
             StatusText = $"Could not save Workbench: {ex.Message}";
+        }
+    }
+
+    private async void SaveWorkbenchAsButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string initialName = GetSuggestedWorkbenchName();
+            string? name = PromptForWorkbenchName(initialName);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return;
+            }
+
+            if (_workbenchLibrary.Workbenches.Any(workbench =>
+                    string.Equals(workbench.Name, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show(
+                    this,
+                    "A Workbench with that name already exists. Choose a different name.",
+                    "Save Workbench As",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            WorkbenchState workbench = CaptureWorkbenchState();
+            workbench.Name = name;
+            workbench.IsDefaultForScope = false;
+            workbench.CreatedAtUtc = now;
+            workbench.UpdatedAtUtc = now;
+            workbench.SavedAtUtc = now;
+
+            _workbenchLibrary.Workbenches.Add(workbench);
+            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            RefreshSavedWorkbenches(workbench.WorkbenchId);
+            StatusText = $"Saved Workbench '{workbench.Name}'.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save Workbench: {ex.Message}";
+        }
+    }
+
+    private async void DeleteWorkbenchButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (WorkbenchSelector.SelectedItem is not WorkbenchState workbench)
+        {
+            return;
+        }
+
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            $"Delete saved Workbench '{workbench.Name}'?",
+            "Delete Workbench",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _workbenchLibrary.Workbenches.RemoveAll(candidate =>
+                string.Equals(candidate.WorkbenchId, workbench.WorkbenchId, StringComparison.OrdinalIgnoreCase));
+            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            RefreshSavedWorkbenches();
+            StatusText = $"Deleted Workbench '{workbench.Name}'.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not delete Workbench: {ex.Message}";
         }
     }
 
@@ -7536,9 +7885,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_isUpdatingWorkbenchSelection ||
             WorkbenchSelector.SelectedItem is not WorkbenchState workbench)
         {
+            UpdateWorkbenchCommandState();
             return;
         }
 
+        UpdateWorkbenchCommandState();
         await LoadWorkbenchAsync(workbench, updateSelector: false);
     }
 
@@ -7547,9 +7898,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         CaptureViewportState();
         SyncOpenDocumentStatesFromWindows();
 
+        DateTimeOffset now = DateTimeOffset.UtcNow;
         return new WorkbenchState
         {
-            SavedAtUtc = DateTimeOffset.UtcNow,
+            Name = _activeScope?.Name ?? "No Scope",
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now,
+            SavedAtUtc = now,
             ScopeId = _activeScope?.ScopeId ?? string.Empty,
             ScopeName = _activeScope?.Name ?? "No scope",
             IsCodeViewVisible = CodeViewToggle.IsChecked == true,
@@ -7571,6 +7926,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
             DiagramViewportVerticalOffset = DiagramScrollViewer.VerticalOffset
         };
+    }
+
+    private string GetDefaultWorkbenchName(WorkbenchState workbench)
+    {
+        if (!string.IsNullOrWhiteSpace(workbench.ScopeName) &&
+            !string.Equals(workbench.ScopeName, "No scope", StringComparison.OrdinalIgnoreCase))
+        {
+            return workbench.ScopeName;
+        }
+
+        return "No Scope";
+    }
+
+    private string GetSuggestedWorkbenchName()
+    {
+        string baseName = _activeScope?.Name ?? "Workbench";
+        string candidate = $"{baseName} Setup";
+        int index = 2;
+
+        while (_workbenchLibrary.Workbenches.Any(workbench =>
+                   string.Equals(workbench.Name, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidate = $"{baseName} Setup {index}";
+            index++;
+        }
+
+        return candidate;
+    }
+
+    private string? PromptForWorkbenchName(string initialName)
+    {
+        var dialog = new DiagramNameWindow(initialName, "Workbench name", "Save Workbench As")
+        {
+            Owner = this
+        };
+
+        return dialog.ShowDialog() == true ? dialog.DiagramName : null;
     }
 
     private async Task LoadWorkbenchAsync(WorkbenchState workbench, bool updateSelector)
@@ -7710,7 +8102,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             SavedWorkbenches.Clear();
             foreach (WorkbenchState workbench in _workbenchLibrary.Workbenches
-                         .OrderByDescending(workbench => workbench.SavedAtUtc))
+                         .OrderByDescending(GetWorkbenchUpdatedAtUtc))
             {
                 SavedWorkbenches.Add(workbench);
             }
@@ -7724,7 +8116,85 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         finally
         {
             _isUpdatingWorkbenchSelection = false;
+            UpdateWorkbenchCommandState();
         }
+    }
+
+    private void UpdateWorkbenchCommandState()
+    {
+        if (DeleteWorkbenchButton != null)
+        {
+            DeleteWorkbenchButton.IsEnabled = WorkbenchSelector?.SelectedItem is WorkbenchState;
+        }
+    }
+
+    private bool NormalizeWorkbenchLibrary()
+    {
+        bool changed = false;
+        HashSet<string> seenIds = new(StringComparer.OrdinalIgnoreCase);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        foreach (WorkbenchState workbench in _workbenchLibrary.Workbenches)
+        {
+            if (string.IsNullOrWhiteSpace(workbench.WorkbenchId) ||
+                !seenIds.Add(workbench.WorkbenchId))
+            {
+                workbench.WorkbenchId = Guid.NewGuid().ToString("N");
+                seenIds.Add(workbench.WorkbenchId);
+                changed = true;
+            }
+
+            DateTimeOffset savedAt = workbench.SavedAtUtc == default ? now : workbench.SavedAtUtc;
+            if (workbench.CreatedAtUtc == default)
+            {
+                workbench.CreatedAtUtc = savedAt;
+                changed = true;
+            }
+
+            if (workbench.UpdatedAtUtc == default)
+            {
+                workbench.UpdatedAtUtc = savedAt;
+                changed = true;
+            }
+
+            if (workbench.SavedAtUtc == default ||
+                workbench.SavedAtUtc != workbench.UpdatedAtUtc)
+            {
+                workbench.SavedAtUtc = workbench.UpdatedAtUtc;
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(workbench.Name))
+            {
+                workbench.Name = !string.IsNullOrWhiteSpace(workbench.ScopeName)
+                    ? workbench.ScopeName
+                    : "Workbench";
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(workbench.ScopeName))
+            {
+                workbench.ScopeName = "No scope";
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    private static DateTimeOffset GetWorkbenchUpdatedAtUtc(WorkbenchState workbench)
+    {
+        if (workbench.UpdatedAtUtc != default)
+        {
+            return workbench.UpdatedAtUtc;
+        }
+
+        if (workbench.SavedAtUtc != default)
+        {
+            return workbench.SavedAtUtc;
+        }
+
+        return workbench.CreatedAtUtc;
     }
 
     private void SyncOpenDocumentStatesFromWindows()
