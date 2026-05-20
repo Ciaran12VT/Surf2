@@ -114,6 +114,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double DiagramSidebarDefaultWidth = 420;
     private const double DiagramSidebarMinimumWidth = 280;
     private const double WorkflowMarkerSize = 36;
+    private const int DiagramLayerStep = 10;
     private const string ObjectExplorerDragDataFormat = "Surf2.ObjectExplorerNode";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
@@ -3133,6 +3134,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Link = node.FullPath
         });
 
+        ApplyDefaultDiagramZIndex(image);
         DiagramCanvas.Children.Add(image);
         SelectDiagramObject(image);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(image));
@@ -3282,6 +3284,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             WorkflowMarkerSize,
             WorkflowMarkerSize);
 
+        ApplyDefaultDiagramZIndex(marker);
         DiagramCanvas.Children.Add(marker);
         _expandedWorkflowItems[workflowItem.WorkflowItemId] = true;
         RebuildWorkflowItemsEditor();
@@ -3319,6 +3322,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ResetWorkflowEditor();
         RefreshWorkflowList();
 
+        bool hasPersistedLayering = diagram.Objects.Any(snapshot => snapshot.ZIndex != 0);
         foreach (DiagramObjectSnapshot snapshot in diagram.Objects)
         {
             FrameworkElement? diagramObject = CreateDiagramObjectFromSnapshot(snapshot);
@@ -3328,6 +3332,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
         }
 
+        NormalizeDiagramZOrder(prioritizeTransparentObjects: !hasPersistedLayering);
         _diagramUndoStack.Clear();
         SelectDiagramObject(null);
         SetCurrentDiagramIdentity(diagram.DiagramId, diagram.Name);
@@ -3354,7 +3359,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         CommitMetadataEditorChanges();
 
         var snapshots = new List<DiagramObjectSnapshot>();
-        foreach (FrameworkElement child in DiagramCanvas.Children.OfType<FrameworkElement>())
+        foreach (FrameworkElement child in DiagramCanvas.Children
+                     .OfType<FrameworkElement>()
+                     .Where(IsDiagramObject)
+                     .OrderBy(Panel.GetZIndex)
+                     .ThenBy(child => DiagramCanvas.Children.IndexOf(child)))
         {
             DiagramObjectSnapshot? snapshot = CreateDiagramObjectSnapshot(child);
             if (snapshot != null)
@@ -5725,6 +5734,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 imageSize.Width,
                 imageSize.Height);
 
+            ApplyDefaultDiagramZIndex(image);
             DiagramCanvas.Children.Add(image);
             SelectDiagramObject(image);
             PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(image));
@@ -5824,6 +5834,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        ApplyDefaultDiagramZIndex(pastedObject);
+        pastedSnapshot.ZIndex = Panel.GetZIndex(pastedObject);
         DiagramCanvas.Children.Add(pastedObject);
         SelectDiagramObject(pastedObject);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: pastedSnapshot);
@@ -5904,6 +5916,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         shape.SetCanvasBounds(startPoint.X, startPoint.Y, 1, 1);
 
         _activeDiagramDrawingShape = shape;
+        ApplyDefaultDiagramZIndex(shape);
         DiagramCanvas.Children.Add(shape);
         DiagramCanvas.CaptureMouse();
         DiagramCanvas.Cursor = Cursors.Cross;
@@ -5930,6 +5943,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         image.SetCanvasBounds(startPoint.X, startPoint.Y, 1, 1);
 
         _activeDiagramDrawingImage = image;
+        ApplyDefaultDiagramZIndex(image);
         DiagramCanvas.Children.Add(image);
         DiagramCanvas.CaptureMouse();
         DiagramCanvas.Cursor = Cursors.Cross;
@@ -5945,6 +5959,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         line.SetAbsoluteEndpoints(startPoint, startPoint);
 
         _activeDiagramDrawingLine = line;
+        ApplyDefaultDiagramZIndex(line);
         DiagramCanvas.Children.Add(line);
         DiagramCanvas.CaptureMouse();
         DiagramCanvas.Cursor = Cursors.Cross;
@@ -5956,6 +5971,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         AttachDiagramLabelHandlers(label);
         label.PlaceAt(anchorPoint);
 
+        ApplyDefaultDiagramZIndex(label);
         DiagramCanvas.Children.Add(label);
         SelectDiagramObject(label);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(label));
@@ -6114,6 +6130,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         shape.LabelChanged += DiagramObject_LabelChanged;
         shape.EditRequested += DiagramShape_EditRequested;
         shape.DeleteRequested += DiagramShape_DeleteRequested;
+        shape.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
     private void AttachDiagramImageHandlers(DiagramImageControl image)
@@ -6125,6 +6142,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         image.LabelChanged += DiagramObject_LabelChanged;
         image.EditRequested += DiagramImage_EditRequested;
         image.DeleteRequested += DiagramImage_DeleteRequested;
+        image.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
     private void AttachDiagramLineHandlers(DiagramLineControl line)
@@ -6136,6 +6154,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         line.LooseStateToggleRequested += DiagramLine_LooseStateToggleRequested;
         line.EditRequested += DiagramLine_EditRequested;
         line.DeleteRequested += DiagramLine_DeleteRequested;
+        line.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
     private void AttachDiagramLabelHandlers(DiagramLabelControl label)
@@ -6148,6 +6167,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         label.EditRequested += DiagramLabel_EditRequested;
         label.DeleteRequested += DiagramLabel_DeleteRequested;
         label.TetherChangedRequested += DiagramLabel_TetherChangedRequested;
+        label.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
     private void AttachDiagramWorkflowMarkerHandlers(DiagramWorkflowMarkerControl marker)
@@ -6157,6 +6177,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         marker.InteractionCompleted += DiagramObject_InteractionCompleted;
         marker.OpenRequested += DiagramWorkflowMarker_OpenRequested;
         marker.DeleteRequested += DiagramWorkflowMarker_DeleteRequested;
+        marker.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
     private void DetachDiagramShapeHandlers(DiagramShapeControl shape)
@@ -6168,6 +6189,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         shape.LabelChanged -= DiagramObject_LabelChanged;
         shape.EditRequested -= DiagramShape_EditRequested;
         shape.DeleteRequested -= DiagramShape_DeleteRequested;
+        shape.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private void DetachDiagramImageHandlers(DiagramImageControl image)
@@ -6179,6 +6201,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         image.LabelChanged -= DiagramObject_LabelChanged;
         image.EditRequested -= DiagramImage_EditRequested;
         image.DeleteRequested -= DiagramImage_DeleteRequested;
+        image.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private void DetachDiagramLineHandlers(DiagramLineControl line)
@@ -6190,6 +6213,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         line.LooseStateToggleRequested -= DiagramLine_LooseStateToggleRequested;
         line.EditRequested -= DiagramLine_EditRequested;
         line.DeleteRequested -= DiagramLine_DeleteRequested;
+        line.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private void DetachDiagramLabelHandlers(DiagramLabelControl label)
@@ -6202,6 +6226,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         label.EditRequested -= DiagramLabel_EditRequested;
         label.DeleteRequested -= DiagramLabel_DeleteRequested;
         label.TetherChangedRequested -= DiagramLabel_TetherChangedRequested;
+        label.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private void DetachDiagramWorkflowMarkerHandlers(DiagramWorkflowMarkerControl marker)
@@ -6211,6 +6236,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         marker.InteractionCompleted -= DiagramObject_InteractionCompleted;
         marker.OpenRequested -= DiagramWorkflowMarker_OpenRequested;
         marker.DeleteRequested -= DiagramWorkflowMarker_DeleteRequested;
+        marker.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private async void DiagramObject_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -6247,6 +6273,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void DiagramObject_Selected(object? sender, EventArgs e)
     {
         SelectDiagramObject(sender as FrameworkElement);
+    }
+
+    private void DiagramObject_LayerChangeRequested(object? sender, DiagramLayerChangeRequestedEventArgs e)
+    {
+        if (sender is not FrameworkElement diagramObject)
+        {
+            return;
+        }
+
+        SelectDiagramObject(diagramObject);
+
+        DiagramObjectSnapshot? before = CreateDiagramObjectSnapshot(diagramObject);
+        bool changed = e.Action switch
+        {
+            DiagramLayerChangeAction.BringForward => BringDiagramObjectForward(diagramObject),
+            DiagramLayerChangeAction.SendBackward => SendDiagramObjectBackward(diagramObject),
+            DiagramLayerChangeAction.SendToBack => SendDiagramObjectToBack(diagramObject),
+            _ => false
+        };
+
+        if (!changed)
+        {
+            StatusText = "Diagram object is already at that layer.";
+            return;
+        }
+
+        DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(diagramObject);
+        if (before != null && after != null)
+        {
+            PushDiagramUndo(DiagramUndoActionKind.Modified, before, after);
+        }
+
+        StatusText = e.Action switch
+        {
+            DiagramLayerChangeAction.BringForward => "Brought diagram object forward.",
+            DiagramLayerChangeAction.SendBackward => "Sent diagram object backward.",
+            DiagramLayerChangeAction.SendToBack => "Sent diagram object to back.",
+            _ => "Updated diagram object layer."
+        };
     }
 
     private void DiagramObject_InteractionStarted(object? sender, EventArgs e)
@@ -6344,6 +6409,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Id = shape.DiagramObjectId,
                 ObjectType = DiagramObjectType.Shape,
                 Metadata = shape.Metadata.Clone(),
+                ZIndex = Panel.GetZIndex(shape),
                 ShapeKind = shape.ShapeKind,
                 LabelText = shape.LabelText,
                 OutlineColorText = shape.OutlineColorText,
@@ -6358,6 +6424,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Id = image.DiagramObjectId,
                 ObjectType = DiagramObjectType.Image,
                 Metadata = image.Metadata.Clone(),
+                ZIndex = Panel.GetZIndex(image),
                 ImageDefinitionId = image.ImageDefinitionId,
                 ImageName = image.ImageName,
                 ImageDataBase64 = image.ImageDataBase64,
@@ -6373,6 +6440,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Id = line.DiagramObjectId,
                 ObjectType = DiagramObjectType.Line,
                 Metadata = line.Metadata.Clone(),
+                ZIndex = Panel.GetZIndex(line),
                 OutlineColorText = line.ColorText,
                 HasEndArrow = line.HasEndArrow,
                 IsLineLoose = line.IsLoose,
@@ -6390,6 +6458,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Id = label.DiagramObjectId,
                 ObjectType = DiagramObjectType.Label,
                 Metadata = label.Metadata.Clone(),
+                ZIndex = Panel.GetZIndex(label),
                 LabelText = label.LabelText,
                 OutlineColorText = label.OutlineColorText,
                 BackColorText = label.BackColorText,
@@ -6409,6 +6478,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 Id = marker.DiagramObjectId,
                 ObjectType = DiagramObjectType.WorkflowMarker,
+                ZIndex = Panel.GetZIndex(marker),
                 WorkflowId = marker.WorkflowId,
                 WorkflowItemId = marker.WorkflowItemId,
                 Left = GetCanvasLeft(marker),
@@ -6520,6 +6590,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static void ApplyDiagramObjectSnapshot(FrameworkElement diagramObject, DiagramObjectSnapshot snapshot)
     {
+        Panel.SetZIndex(diagramObject, snapshot.ZIndex);
+
         switch (diagramObject)
         {
             case DiagramShapeControl shape:
@@ -6620,6 +6692,126 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineControl or
             DiagramLabelControl or
             DiagramWorkflowMarkerControl;
+    }
+
+    private List<FrameworkElement> GetDiagramObjectsInLayerOrder()
+    {
+        return DiagramCanvas.Children
+            .OfType<FrameworkElement>()
+            .Where(IsDiagramObject)
+            .Select(child => new
+            {
+                Element = child,
+                ChildIndex = DiagramCanvas.Children.IndexOf(child)
+            })
+            .OrderBy(item => Panel.GetZIndex(item.Element))
+            .ThenBy(item => item.ChildIndex)
+            .Select(item => item.Element)
+            .ToList();
+    }
+
+    private void NormalizeDiagramZOrder(bool prioritizeTransparentObjects = false)
+    {
+        var orderedObjects = DiagramCanvas.Children
+            .OfType<FrameworkElement>()
+            .Where(IsDiagramObject)
+            .Select(child => new
+            {
+                Element = child,
+                ChildIndex = DiagramCanvas.Children.IndexOf(child)
+            })
+            .OrderBy(item => prioritizeTransparentObjects && HasTransparentDiagramBackground(item.Element) ? 0 : 1)
+            .ThenBy(item => Panel.GetZIndex(item.Element))
+            .ThenBy(item => item.ChildIndex)
+            .Select(item => item.Element)
+            .ToList();
+
+        for (int i = 0; i < orderedObjects.Count; i++)
+        {
+            Panel.SetZIndex(orderedObjects[i], i * DiagramLayerStep);
+        }
+    }
+
+    private void ApplyDefaultDiagramZIndex(FrameworkElement diagramObject)
+    {
+        List<FrameworkElement> existingObjects = DiagramCanvas.Children
+            .OfType<FrameworkElement>()
+            .Where(IsDiagramObject)
+            .Where(child => !ReferenceEquals(child, diagramObject))
+            .ToList();
+
+        if (existingObjects.Count == 0)
+        {
+            Panel.SetZIndex(diagramObject, 0);
+            return;
+        }
+
+        int zIndex = HasTransparentDiagramBackground(diagramObject)
+            ? existingObjects.Min(Panel.GetZIndex) - DiagramLayerStep
+            : existingObjects.Max(Panel.GetZIndex) + DiagramLayerStep;
+        Panel.SetZIndex(diagramObject, zIndex);
+    }
+
+    private void ApplyTransparentDiagramObjectLayerDefault(FrameworkElement diagramObject)
+    {
+        if (HasTransparentDiagramBackground(diagramObject))
+        {
+            ApplyDefaultDiagramZIndex(diagramObject);
+        }
+    }
+
+    private static bool HasTransparentDiagramBackground(FrameworkElement diagramObject)
+    {
+        return diagramObject switch
+        {
+            DiagramShapeControl shape => IsTransparentDiagramColor(shape.BackColorText),
+            DiagramLabelControl label => IsTransparentDiagramColor(label.BackColorText),
+            _ => false
+        };
+    }
+
+    private bool BringDiagramObjectForward(FrameworkElement diagramObject)
+    {
+        List<FrameworkElement> orderedObjects = GetDiagramObjectsInLayerOrder();
+        int objectIndex = orderedObjects.FindIndex(child => ReferenceEquals(child, diagramObject));
+        if (objectIndex < 0 || objectIndex >= orderedObjects.Count - 1)
+        {
+            return false;
+        }
+
+        Panel.SetZIndex(diagramObject, Panel.GetZIndex(orderedObjects[objectIndex + 1]) + 1);
+        return true;
+    }
+
+    private bool SendDiagramObjectBackward(FrameworkElement diagramObject)
+    {
+        List<FrameworkElement> orderedObjects = GetDiagramObjectsInLayerOrder();
+        int objectIndex = orderedObjects.FindIndex(child => ReferenceEquals(child, diagramObject));
+        if (objectIndex <= 0)
+        {
+            return false;
+        }
+
+        Panel.SetZIndex(diagramObject, Panel.GetZIndex(orderedObjects[objectIndex - 1]) - 1);
+        return true;
+    }
+
+    private bool SendDiagramObjectToBack(FrameworkElement diagramObject)
+    {
+        List<FrameworkElement> orderedObjects = GetDiagramObjectsInLayerOrder();
+        int objectIndex = orderedObjects.FindIndex(child => ReferenceEquals(child, diagramObject));
+        if (objectIndex <= 0)
+        {
+            return false;
+        }
+
+        int backMostZIndex = orderedObjects
+            .Where(child => !ReferenceEquals(child, diagramObject))
+            .Select(Panel.GetZIndex)
+            .DefaultIfEmpty(0)
+            .Min();
+        Panel.SetZIndex(diagramObject, backMostZIndex - DiagramLayerStep);
+        return true;
     }
 
     private void RemoveDiagramObject(FrameworkElement? diagramObject, bool pushUndo)
@@ -6728,6 +6920,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 dialog.LabelText,
                 dialog.OutlineColorText,
                 dialog.BackColorText);
+            ApplyTransparentDiagramObjectLayerDefault(shape);
             DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(shape);
             if (before != null && after != null)
             {

@@ -95,6 +95,8 @@ public sealed class DiagramLineControl : UserControl
 
     public event EventHandler? DeleteRequested;
 
+    public event EventHandler<DiagramLayerChangeRequestedEventArgs>? LayerChangeRequested;
+
     public event EventHandler? LooseStateToggleRequested;
 
     public string DiagramObjectId { get; }
@@ -264,12 +266,25 @@ public sealed class DiagramLineControl : UserControl
         var editItem = new MenuItem { Header = "Edit" };
         editItem.Click += (_, _) => EditRequested?.Invoke(this, EventArgs.Empty);
 
+        var bringForwardItem = new MenuItem { Header = "Bring Forward" };
+        bringForwardItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.BringForward));
+
+        var sendBackwardItem = new MenuItem { Header = "Send Backward" };
+        sendBackwardItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.SendBackward));
+
+        var sendToBackItem = new MenuItem { Header = "Send to Back" };
+        sendToBackItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.SendToBack));
+
         var deleteItem = new MenuItem { Header = "Delete" };
         deleteItem.Click += (_, _) => DeleteRequested?.Invoke(this, EventArgs.Empty);
 
         var contextMenu = new ContextMenu();
         contextMenu.Opened += (_, _) => UpdateContextMenuItems();
         contextMenu.Items.Add(_looseStateItem);
+        contextMenu.Items.Add(new Separator());
+        contextMenu.Items.Add(bringForwardItem);
+        contextMenu.Items.Add(sendBackwardItem);
+        contextMenu.Items.Add(sendToBackItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(editItem);
         contextMenu.Items.Add(deleteItem);

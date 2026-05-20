@@ -100,6 +100,15 @@ public sealed class DiagramLabelControl : UserControl
         var deleteItem = new MenuItem { Header = "Delete" };
         deleteItem.Click += (_, _) => DeleteRequested?.Invoke(this, EventArgs.Empty);
 
+        var bringForwardItem = new MenuItem { Header = "Bring Forward" };
+        bringForwardItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.BringForward));
+
+        var sendBackwardItem = new MenuItem { Header = "Send Backward" };
+        sendBackwardItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.SendBackward));
+
+        var sendToBackItem = new MenuItem { Header = "Send to Back" };
+        sendToBackItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.SendToBack));
+
         _tetheredMenuItem = new MenuItem
         {
             Header = "Tethered",
@@ -112,6 +121,11 @@ public sealed class DiagramLabelControl : UserControl
         var contextMenu = new ContextMenu();
         contextMenu.Opened += (_, _) => _tetheredMenuItem.IsChecked = IsTethered;
         contextMenu.Items.Add(editItem);
+        contextMenu.Items.Add(new Separator());
+        contextMenu.Items.Add(bringForwardItem);
+        contextMenu.Items.Add(sendBackwardItem);
+        contextMenu.Items.Add(sendToBackItem);
+        contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(deleteItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(_tetheredMenuItem);
@@ -132,6 +146,8 @@ public sealed class DiagramLabelControl : UserControl
     public event EventHandler? EditRequested;
 
     public event EventHandler? DeleteRequested;
+
+    public event EventHandler<DiagramLayerChangeRequestedEventArgs>? LayerChangeRequested;
 
     public event EventHandler<DiagramLabelTetherChangedEventArgs>? TetherChangedRequested;
 

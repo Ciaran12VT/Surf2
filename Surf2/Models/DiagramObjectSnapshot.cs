@@ -17,6 +17,8 @@ public sealed class DiagramObjectSnapshot
 
     public DiagramObjectMetadata Metadata { get; set; } = new();
 
+    public int ZIndex { get; set; }
+
     public string WorkflowId { get; set; } = string.Empty;
 
     public string WorkflowItemId { get; set; } = string.Empty;
@@ -78,6 +80,7 @@ public sealed class DiagramObjectSnapshot
             Id = Id,
             ObjectType = ObjectType,
             Metadata = Metadata.Clone(),
+            ZIndex = ZIndex,
             WorkflowId = WorkflowId,
             WorkflowItemId = WorkflowItemId,
             ShapeKind = ShapeKind,
