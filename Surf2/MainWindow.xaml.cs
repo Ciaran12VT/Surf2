@@ -77,6 +77,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string Link,
         int? LineNumber);
 
+    private sealed record PendingPortalPairPlacement(
+        string SourceDiagramId,
+        string SourcePortalObjectId);
+
     private sealed record ReferenceResourceContext(
         string Key,
         string DisplayName,
@@ -254,6 +258,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<string, FrameworkElement> _workflowItemContainers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBox> _workflowItemDescriptionEditors = new(StringComparer.OrdinalIgnoreCase);
     private string? _selectedDiagramImageId;
+    private string? _pendingPortalName;
+    private PendingPortalPairPlacement? _pendingPortalPairPlacement;
     private bool _diagramLineHasEndArrow;
     private string? _activeDiagramId;
     private string _currentDiagramName = "Unsaved Diagram";
@@ -643,19 +649,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private ContextMenu? CreateObjectExplorerContextMenu(FileSystemNode node)
     {
-        if (!CanOpenContainingFolder(node))
+        bool canCreateDiagram = string.Equals(node.FullPath, DiagramDocumentService.DiagramRootPath, StringComparison.OrdinalIgnoreCase);
+        bool canOpenContainingFolder = CanOpenContainingFolder(node);
+        if (!canCreateDiagram && !canOpenContainingFolder)
         {
             return null;
         }
 
         var contextMenu = new ContextMenu();
-        var openContainingFolderItem = new MenuItem
+        if (canCreateDiagram)
         {
-            Header = "Open Containing Folder"
-        };
+            var newDiagramItem = new MenuItem
+            {
+                Header = "New Diagram"
+            };
+            newDiagramItem.Click += (_, _) => CreateNewBlankDiagram();
+            contextMenu.Items.Add(newDiagramItem);
+        }
 
-        openContainingFolderItem.Click += (_, _) => OpenContainingFolder(node);
-        contextMenu.Items.Add(openContainingFolderItem);
+        if (canOpenContainingFolder)
+        {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
+            var openContainingFolderItem = new MenuItem
+            {
+                Header = "Open Containing Folder"
+            };
+
+            openContainingFolderItem.Click += (_, _) => OpenContainingFolder(node);
+            contextMenu.Items.Add(openContainingFolderItem);
+        }
+
         return contextMenu;
     }
 
@@ -826,7 +853,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramEllipseToolButton == null ||
             DiagramImageToolButton == null ||
             DiagramLineToolButton == null ||
-            DiagramLabelToolButton == null)
+            DiagramLabelToolButton == null ||
+            DiagramPortalToolButton == null)
         {
             return;
         }
@@ -840,7 +868,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
         }
         else if (ReferenceEquals(sender, DiagramEllipseToolButton))
         {
@@ -848,7 +879,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
         }
         else if (ReferenceEquals(sender, DiagramImageToolButton))
         {
@@ -856,6 +890,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramEllipseToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
         }
         else if (ReferenceEquals(sender, DiagramLineToolButton))
         {
@@ -863,7 +900,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramEllipseToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
         }
         else if (ReferenceEquals(sender, DiagramLabelToolButton))
         {
@@ -871,6 +911,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramEllipseToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
+            _selectedDiagramImageId = null;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
+        }
+        else if (ReferenceEquals(sender, DiagramPortalToolButton))
+        {
+            DiagramRectangleToolButton.IsChecked = false;
+            DiagramEllipseToolButton.IsChecked = false;
+            DiagramImageToolButton.IsChecked = false;
+            DiagramLineToolButton.IsChecked = false;
+            DiagramLabelToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
         }
 
@@ -916,6 +968,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         RefreshDiagramImageToolMenu();
         OpenDiagramImageToolMenu();
+    }
+
+    private void DiagramPortalToolButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DiagramPortalToolButton.IsChecked != true)
+        {
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
+            StatusText = "Portal tool cleared.";
+            return;
+        }
+
+        if (_pendingPortalPairPlacement != null)
+        {
+            StatusText = "Click the diagram canvas to place the paired portal point.";
+            return;
+        }
+
+        string? portalName = PromptForPortalName("Portal", "Portal name");
+        if (string.IsNullOrWhiteSpace(portalName))
+        {
+            DiagramPortalToolButton.IsChecked = false;
+            return;
+        }
+
+        _pendingPortalName = portalName;
+        StatusText = $"Portal tool: click the diagram canvas to place '{portalName}'.";
     }
 
     private void DiagramImageToolMenu_Closed(object sender, RoutedEventArgs e)
@@ -1082,6 +1161,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await SaveDiagramFromUiAsync();
     }
 
+    private void NewDiagramButton_Click(object sender, RoutedEventArgs e)
+    {
+        CreateNewBlankDiagram();
+    }
+
     private async void DiagramSidebarSaveButton_Click(object sender, RoutedEventArgs e)
     {
         await SaveDiagramFromUiAsync();
@@ -1213,22 +1297,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task SaveCurrentDiagramAsync(string diagramId, string diagramName)
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        DiagramDocument? existingDiagram = _diagramLibrary.Find(diagramId);
-        var diagram = new DiagramDocument
-        {
-            DiagramId = diagramId,
-            Name = diagramName,
-            CreatedAtUtc = existingDiagram?.CreatedAtUtc ?? now,
-            UpdatedAtUtc = now,
-            CanvasZoom = _diagramCanvasZoom,
-            ViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
-            ViewportVerticalOffset = DiagramScrollViewer.VerticalOffset,
-            Objects = CaptureDiagramObjects(),
-            Workflows = _currentDiagramWorkflows
-                .Select(workflow => workflow.Clone())
-                .ToList()
-        };
+        DiagramDocument diagram = CreateCurrentDiagramDocument(diagramId, diagramName);
 
         _diagramLibrary.Upsert(diagram);
         EnsureActiveScopeContainsDiagram(diagram);
@@ -1247,6 +1316,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SetCurrentDiagramIdentity(diagram.DiagramId, diagram.Name);
         await RefreshObjectExplorerAfterDiagramChangeAsync();
         StatusText = $"Saved diagram '{diagram.Name}'.";
+    }
+
+    private DiagramDocument CreateCurrentDiagramDocument(string diagramId, string diagramName)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DiagramDocument? existingDiagram = _diagramLibrary.Find(diagramId);
+        return new DiagramDocument
+        {
+            DiagramId = diagramId,
+            Name = diagramName,
+            CreatedAtUtc = existingDiagram?.CreatedAtUtc ?? now,
+            UpdatedAtUtc = now,
+            CanvasZoom = _diagramCanvasZoom,
+            ViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
+            ViewportVerticalOffset = DiagramScrollViewer.VerticalOffset,
+            Objects = CaptureDiagramObjects(),
+            Workflows = _currentDiagramWorkflows
+                .Select(workflow => workflow.Clone())
+                .ToList()
+        };
     }
 
     private async Task RefreshObjectExplorerAfterDiagramChangeAsync()
@@ -1295,9 +1384,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         resource.DetailsOverride = details;
     }
 
-    private string? PromptForDiagramName(string initialName, string prompt)
+    private string? PromptForDiagramName(string initialName, string prompt, string title = "Save Diagram")
     {
-        var dialog = new DiagramNameWindow(initialName, prompt)
+        var dialog = new DiagramNameWindow(initialName, prompt, title)
         {
             Owner = this
         };
@@ -2873,7 +2962,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramEllipseToolButton == null ||
             DiagramImageToolButton == null ||
             DiagramLineToolButton == null ||
-            DiagramLabelToolButton == null)
+            DiagramLabelToolButton == null ||
+            DiagramPortalToolButton == null)
         {
             return;
         }
@@ -2884,7 +2974,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramImageToolButton.IsChecked = false;
         DiagramLineToolButton.IsChecked = false;
         DiagramLabelToolButton.IsChecked = false;
+        DiagramPortalToolButton.IsChecked = false;
         _selectedDiagramImageId = null;
+        _pendingPortalName = null;
+        _pendingPortalPairPlacement = null;
         _isUpdatingDiagramToolToggles = false;
     }
 
@@ -3893,6 +3986,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isDrawingDiagramLine = false;
         _selectedDiagramObject = null;
         _pendingDiagramInteractionSnapshot = null;
+        _pendingPortalName = null;
+        _pendingPortalPairPlacement = null;
         _metadataEditorTarget = null;
         LoadMetadataEditorForSelection();
     }
@@ -6249,6 +6344,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (TryPlaceDiagramPortal(e.GetPosition(DiagramCanvas)))
+        {
+            e.Handled = true;
+            return;
+        }
+
         DiagramImageDefinition? selectedImage = GetSelectedDiagramImageDefinition();
         if (selectedImage != null)
         {
@@ -6684,11 +6785,599 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return DiagramLabelToolButton?.IsChecked == true;
     }
 
+    private bool TryPlaceDiagramPortal(Point canvasPoint)
+    {
+        if (DiagramPortalToolButton?.IsChecked != true &&
+            _pendingPortalPairPlacement == null)
+        {
+            return false;
+        }
+
+        string? portalName = _pendingPortalName;
+        if (string.IsNullOrWhiteSpace(portalName))
+        {
+            portalName = PromptForPortalName("Portal", "Portal name");
+            if (string.IsNullOrWhiteSpace(portalName))
+            {
+                ClearPortalToolSelection();
+                return true;
+            }
+        }
+
+        PendingPortalPairPlacement? pendingPair = _pendingPortalPairPlacement;
+        var portal = new DiagramPortalControl(portalName);
+        AttachDiagramPortalHandlers(portal);
+        portal.SetCanvasBounds(canvasPoint.X - 15, canvasPoint.Y - 15, 30, 30);
+
+        ApplyDefaultDiagramZIndex(portal);
+        DiagramCanvas.Children.Add(portal);
+        SelectDiagramObject(portal);
+        PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(portal));
+
+        ClearPortalToolSelection();
+
+        if (pendingPair != null)
+        {
+            _ = CompletePendingPortalPairAsync(pendingPair, portal);
+        }
+        else
+        {
+            StatusText = $"Added unpaired portal '{portalName}'.";
+        }
+
+        return true;
+    }
+
+    private void ClearPortalToolSelection()
+    {
+        _pendingPortalName = null;
+        _pendingPortalPairPlacement = null;
+        if (DiagramPortalToolButton == null)
+        {
+            return;
+        }
+
+        _isUpdatingDiagramToolToggles = true;
+        DiagramPortalToolButton.IsChecked = false;
+        _isUpdatingDiagramToolToggles = false;
+    }
+
+    private void ArmPortalPlacement(string portalName, PendingPortalPairPlacement? pendingPair)
+    {
+        if (DiagramRectangleToolButton == null ||
+            DiagramEllipseToolButton == null ||
+            DiagramImageToolButton == null ||
+            DiagramLineToolButton == null ||
+            DiagramLabelToolButton == null ||
+            DiagramPortalToolButton == null)
+        {
+            return;
+        }
+
+        _pendingPortalName = portalName;
+        _pendingPortalPairPlacement = pendingPair;
+        _selectedDiagramImageId = null;
+
+        _isUpdatingDiagramToolToggles = true;
+        DiagramRectangleToolButton.IsChecked = false;
+        DiagramEllipseToolButton.IsChecked = false;
+        DiagramImageToolButton.IsChecked = false;
+        DiagramLineToolButton.IsChecked = false;
+        DiagramLabelToolButton.IsChecked = false;
+        DiagramPortalToolButton.IsChecked = true;
+        _isUpdatingDiagramToolToggles = false;
+        SetWorkflowAddItemsMode(false);
+    }
+
+    private string? PromptForPortalName(string initialName, string prompt, string? diagramId = null, string? excludePortalId = null)
+    {
+        string suggestedName = initialName;
+        while (true)
+        {
+            string? name = PromptForDiagramName(suggestedName, prompt, "Portal");
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return null;
+            }
+
+            if (!PortalNameExists(name, diagramId ?? _activeDiagramId, excludePortalId))
+            {
+                return name;
+            }
+
+            MessageBox.Show(
+                this,
+                $"A portal named '{name}' already exists in this diagram. Portal addresses use the portal name and diagram name, so names need to be unique per diagram.",
+                "Portal Name",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            suggestedName = name;
+        }
+    }
+
+    private bool PortalNameExists(string portalName, string? diagramId, string? excludePortalId = null)
+    {
+        if (string.IsNullOrWhiteSpace(portalName))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(diagramId) ||
+            string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            return DiagramCanvas.Children
+                .OfType<DiagramPortalControl>()
+                .Any(portal =>
+                    !string.Equals(portal.DiagramObjectId, excludePortalId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(portal.PortalName, portalName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return _diagramLibrary.Find(diagramId)?.Objects
+            .Where(snapshot => snapshot.ObjectType == DiagramObjectType.Portal)
+            .Any(snapshot =>
+                !string.Equals(snapshot.Id, excludePortalId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(snapshot.PortalName, portalName, StringComparison.OrdinalIgnoreCase)) == true;
+    }
+
+    private async Task CompletePendingPortalPairAsync(PendingPortalPairPlacement pendingPair, DiagramPortalControl targetPortal)
+    {
+        if (string.IsNullOrWhiteSpace(_activeDiagramId))
+        {
+            StatusText = "Save the target diagram before pairing portals.";
+            return;
+        }
+
+        if (await PairPortalsAsync(
+                pendingPair.SourceDiagramId,
+                pendingPair.SourcePortalObjectId,
+                _activeDiagramId,
+                targetPortal.DiagramObjectId))
+        {
+            ScrollDiagramObjectIntoView(targetPortal.DiagramObjectId);
+            StatusText = $"Paired portal '{targetPortal.PortalName}'.";
+        }
+    }
+
+    private async void DiagramPortal_OpenRequested(object? sender, EventArgs e)
+    {
+        if (sender is not DiagramPortalControl portal)
+        {
+            return;
+        }
+
+        SelectDiagramObject(portal);
+        if (portal.IsPaired)
+        {
+            await NavigateToPairedPortalAsync(portal);
+            return;
+        }
+
+        await BeginPortalPairingAsync(portal);
+    }
+
+    private async Task BeginPortalPairingAsync(DiagramPortalControl sourcePortal)
+    {
+        if (_activeScope == null)
+        {
+            StatusText = "Open a scope before pairing portals.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_activeDiagramId))
+        {
+            MessageBox.Show(
+                this,
+                "Save the current diagram before pairing portals. Portal links need a saved diagram identity.",
+                "Pair Portal",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        DiagramDocument? targetDiagram = PromptForPortalTargetDiagram();
+        if (targetDiagram == null)
+        {
+            return;
+        }
+
+        string sourceDiagramId = _activeDiagramId;
+        string sourcePortalId = sourcePortal.DiagramObjectId;
+
+        if (!await PersistActiveDiagramSilentlyAsync())
+        {
+            return;
+        }
+
+        bool targetIsCurrentDiagram = string.Equals(targetDiagram.DiagramId, sourceDiagramId, StringComparison.OrdinalIgnoreCase);
+        if (!targetIsCurrentDiagram)
+        {
+            LoadDiagram(targetDiagram);
+            SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        }
+
+        List<PortalPickerItem> unpairedPortals = GetCurrentUnpairedPortalPickerItems(
+            targetIsCurrentDiagram ? sourcePortalId : null);
+
+        var choiceDialog = new PortalTargetChoiceWindow(CurrentDiagramName, unpairedPortals.Count > 0)
+        {
+            Owner = this
+        };
+
+        if (choiceDialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        if (choiceDialog.Choice == PortalTargetChoice.SelectExisting)
+        {
+            var picker = new PortalPickerWindow(unpairedPortals, CurrentDiagramName)
+            {
+                Owner = this
+            };
+
+            if (picker.ShowDialog() == true &&
+                !string.IsNullOrWhiteSpace(picker.SelectedPortalObjectId) &&
+                await PairPortalsAsync(sourceDiagramId, sourcePortalId, _activeDiagramId!, picker.SelectedPortalObjectId))
+            {
+                ScrollDiagramObjectIntoView(picker.SelectedPortalObjectId);
+                StatusText = "Paired portal points.";
+            }
+
+            return;
+        }
+
+        if (choiceDialog.Choice == PortalTargetChoice.PlaceNew)
+        {
+            string? pairedPortalName = PromptForPortalName(
+                sourcePortal.PortalName,
+                "New portal name",
+                _activeDiagramId);
+            if (string.IsNullOrWhiteSpace(pairedPortalName))
+            {
+                return;
+            }
+
+            ArmPortalPlacement(pairedPortalName, new PendingPortalPairPlacement(sourceDiagramId, sourcePortalId));
+            StatusText = $"Click the diagram canvas to place the portal paired with '{sourcePortal.PortalName}'.";
+        }
+    }
+
+    private DiagramDocument? PromptForPortalTargetDiagram()
+    {
+        List<LinkableResource> diagrams = GetScopedDiagramDocuments()
+            .Select(diagram => new LinkableResource(
+                diagram.Name,
+                "Diagram",
+                DiagramDocumentService.CreateDiagramDocumentPath(diagram.DiagramId),
+                LinkableResourceKind.Diagram))
+            .ToList();
+
+        if (diagrams.Count == 0)
+        {
+            StatusText = "The current scope does not contain any saved diagrams.";
+            return null;
+        }
+
+        var dialog = new ResourcePickerWindow(diagrams)
+        {
+            Owner = this,
+            Title = "Select Portal Target Diagram"
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return null;
+        }
+
+        string diagramId = DiagramDocumentService.GetDiagramId(dialog.SelectedResourcePath);
+        return _diagramLibrary.Find(diagramId);
+    }
+
+    private List<DiagramDocument> GetScopedDiagramDocuments()
+    {
+        if (_activeScope == null)
+        {
+            return [];
+        }
+
+        return _activeScope.Resources
+            .Where(resource => resource.Kind == ResourceKind.Diagram)
+            .Select(resource => _diagramLibrary.Find(resource.Path))
+            .OfType<DiagramDocument>()
+            .OrderBy(diagram => diagram.Name)
+            .ToList();
+    }
+
+    private List<PortalPickerItem> GetCurrentUnpairedPortalPickerItems(string? excludePortalId)
+    {
+        return DiagramCanvas.Children
+            .OfType<DiagramPortalControl>()
+            .Where(portal =>
+                !portal.IsPaired &&
+                !string.Equals(portal.DiagramObjectId, excludePortalId, StringComparison.OrdinalIgnoreCase))
+            .Select(portal => new PortalPickerItem(
+                portal.DiagramObjectId,
+                portal.PortalName,
+                GetCanvasLeft(portal),
+                GetCanvasTop(portal)))
+            .ToList();
+    }
+
+    private async Task NavigateToPairedPortalAsync(DiagramPortalControl portal)
+    {
+        if (string.IsNullOrWhiteSpace(portal.PairedPortalDiagramId) ||
+            string.IsNullOrWhiteSpace(portal.PairedPortalObjectId))
+        {
+            StatusText = "This portal is not paired.";
+            return;
+        }
+
+        if (string.Equals(portal.PairedPortalDiagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ScrollDiagramObjectIntoView(portal.PairedPortalObjectId))
+            {
+                StatusText = $"Moved to portal {ResolvePortalAddress(portal.PairedPortalDiagramId, portal.PairedPortalObjectId)}.";
+            }
+            else
+            {
+                StatusText = "The paired portal could not be found in this diagram.";
+            }
+
+            return;
+        }
+
+        if (!IsDiagramInActiveScope(portal.PairedPortalDiagramId))
+        {
+            StatusText = "The paired portal diagram is not in the current scope.";
+            return;
+        }
+
+        if (!await PersistActiveDiagramSilentlyAsync())
+        {
+            return;
+        }
+
+        DiagramDocument? targetDiagram = _diagramLibrary.Find(portal.PairedPortalDiagramId);
+        if (targetDiagram == null)
+        {
+            StatusText = "The paired portal diagram could not be found in this scope.";
+            return;
+        }
+
+        EnsureDiagramViewVisible();
+        LoadDiagram(targetDiagram);
+        SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        ScrollDiagramObjectIntoViewAfterLayout(portal.PairedPortalObjectId);
+        StatusText = $"Opened portal target {ResolvePortalAddress(portal.PairedPortalDiagramId, portal.PairedPortalObjectId)}.";
+    }
+
+    private async Task<bool> PairPortalsAsync(
+        string firstDiagramId,
+        string firstPortalObjectId,
+        string secondDiagramId,
+        string secondPortalObjectId)
+    {
+        if (string.Equals(firstDiagramId, secondDiagramId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(firstPortalObjectId, secondPortalObjectId, StringComparison.OrdinalIgnoreCase))
+        {
+            StatusText = "A portal cannot be paired with itself.";
+            return false;
+        }
+
+        string firstAddress = ResolvePortalAddress(firstDiagramId, firstPortalObjectId);
+        string secondAddress = ResolvePortalAddress(secondDiagramId, secondPortalObjectId);
+
+        ApplyPortalPairingToActiveDiagram(firstDiagramId, firstPortalObjectId, secondDiagramId, secondPortalObjectId, secondAddress);
+        ApplyPortalPairingToActiveDiagram(secondDiagramId, secondPortalObjectId, firstDiagramId, firstPortalObjectId, firstAddress);
+        ApplyPortalPairingToStoredDiagram(firstDiagramId, firstPortalObjectId, secondDiagramId, secondPortalObjectId);
+        ApplyPortalPairingToStoredDiagram(secondDiagramId, secondPortalObjectId, firstDiagramId, firstPortalObjectId);
+
+        if (!string.IsNullOrWhiteSpace(_activeDiagramId))
+        {
+            _diagramLibrary.Upsert(CreateCurrentDiagramDocument(_activeDiagramId, CurrentDiagramName));
+        }
+
+        try
+        {
+            await _diagramStore.SaveAsync(_diagramLibrary);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save portal pairing: {ex.Message}";
+            return false;
+        }
+    }
+
+    private void ApplyPortalPairingToActiveDiagram(
+        string diagramId,
+        string portalObjectId,
+        string pairedDiagramId,
+        string pairedPortalObjectId,
+        string pairedAddress)
+    {
+        if (!string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (FindDiagramObjectById(portalObjectId) is DiagramPortalControl portal)
+        {
+            portal.ApplyPairing(pairedDiagramId, pairedPortalObjectId, pairedAddress);
+        }
+    }
+
+    private void ApplyPortalPairingToStoredDiagram(
+        string diagramId,
+        string portalObjectId,
+        string pairedDiagramId,
+        string pairedPortalObjectId)
+    {
+        if (string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        DiagramDocument? diagram = _diagramLibrary.Find(diagramId);
+        DiagramObjectSnapshot? snapshot = diagram?.Objects.FirstOrDefault(item =>
+            item.ObjectType == DiagramObjectType.Portal &&
+            string.Equals(item.Id, portalObjectId, StringComparison.OrdinalIgnoreCase));
+        if (snapshot == null)
+        {
+            return;
+        }
+
+        snapshot.PairedPortalDiagramId = pairedDiagramId;
+        snapshot.PairedPortalObjectId = pairedPortalObjectId;
+        diagram!.UpdatedAtUtc = DateTimeOffset.UtcNow;
+    }
+
+    private async Task ClearPairedPortalReferenceAsync(DiagramPortalControl portal)
+    {
+        if (!portal.IsPaired)
+        {
+            return;
+        }
+
+        ClearPortalPairingInActiveDiagram(portal.PairedPortalDiagramId, portal.PairedPortalObjectId);
+        ClearPortalPairingInStoredDiagram(portal.PairedPortalDiagramId, portal.PairedPortalObjectId);
+
+        try
+        {
+            await _diagramStore.SaveAsync(_diagramLibrary);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not update paired portal: {ex.Message}";
+        }
+    }
+
+    private void ClearPortalPairingInActiveDiagram(string diagramId, string portalObjectId)
+    {
+        if (!string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (FindDiagramObjectById(portalObjectId) is DiagramPortalControl portal)
+        {
+            portal.ClearPairing();
+        }
+    }
+
+    private void ClearPortalPairingInStoredDiagram(string diagramId, string portalObjectId)
+    {
+        if (string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        DiagramDocument? diagram = _diagramLibrary.Find(diagramId);
+        DiagramObjectSnapshot? snapshot = diagram?.Objects.FirstOrDefault(item =>
+            item.ObjectType == DiagramObjectType.Portal &&
+            string.Equals(item.Id, portalObjectId, StringComparison.OrdinalIgnoreCase));
+        if (snapshot == null)
+        {
+            return;
+        }
+
+        snapshot.PairedPortalDiagramId = string.Empty;
+        snapshot.PairedPortalObjectId = string.Empty;
+        diagram!.UpdatedAtUtc = DateTimeOffset.UtcNow;
+    }
+
+    private bool IsDiagramInActiveScope(string diagramId)
+    {
+        return _activeScope?.Resources.Any(resource =>
+            resource.Kind == ResourceKind.Diagram &&
+            string.Equals(resource.Path, diagramId, StringComparison.OrdinalIgnoreCase)) == true;
+    }
+
+    private string ResolvePortalAddress(string diagramId, string portalObjectId)
+    {
+        string diagramName = _diagramLibrary.Find(diagramId)?.Name ?? "Missing Diagram";
+        string portalName = string.Empty;
+
+        if (string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase) &&
+            FindDiagramObjectById(portalObjectId) is DiagramPortalControl activePortal)
+        {
+            portalName = activePortal.PortalName;
+        }
+
+        if (string.IsNullOrWhiteSpace(portalName))
+        {
+            portalName = _diagramLibrary.Find(diagramId)?.Objects
+                .FirstOrDefault(snapshot =>
+                    snapshot.ObjectType == DiagramObjectType.Portal &&
+                    string.Equals(snapshot.Id, portalObjectId, StringComparison.OrdinalIgnoreCase))
+                ?.PortalName ?? "Missing Portal";
+        }
+
+        return $"{portalName} @ {diagramName}";
+    }
+
+    private bool ScrollDiagramObjectIntoView(string diagramObjectId)
+    {
+        FrameworkElement? diagramObject = FindDiagramObjectById(diagramObjectId);
+        if (diagramObject == null)
+        {
+            return false;
+        }
+
+        DiagramScrollViewer.UpdateLayout();
+        double objectWidth = diagramObject.ActualWidth > 0 ? diagramObject.ActualWidth : diagramObject.Width;
+        double objectHeight = diagramObject.ActualHeight > 0 ? diagramObject.ActualHeight : diagramObject.Height;
+        double centerX = (GetCanvasLeft(diagramObject) + (objectWidth / 2)) * _diagramCanvasZoom;
+        double centerY = (GetCanvasTop(diagramObject) + (objectHeight / 2)) * _diagramCanvasZoom;
+        double viewportWidth = DiagramScrollViewer.ViewportWidth > 0 ? DiagramScrollViewer.ViewportWidth : DiagramScrollViewer.ActualWidth;
+        double viewportHeight = DiagramScrollViewer.ViewportHeight > 0 ? DiagramScrollViewer.ViewportHeight : DiagramScrollViewer.ActualHeight;
+
+        DiagramScrollViewer.ScrollToHorizontalOffset(Math.Max(0, centerX - (viewportWidth / 2)));
+        DiagramScrollViewer.ScrollToVerticalOffset(Math.Max(0, centerY - (viewportHeight / 2)));
+        SelectDiagramObject(diagramObject);
+        return true;
+    }
+
+    private void ScrollDiagramObjectIntoViewAfterLayout(string diagramObjectId)
+    {
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            DiagramScrollViewer.UpdateLayout();
+            ScrollDiagramObjectIntoView(diagramObjectId);
+        }), DispatcherPriority.ApplicationIdle);
+    }
+
+    private async Task<bool> PersistActiveDiagramSilentlyAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_activeDiagramId))
+        {
+            return false;
+        }
+
+        try
+        {
+            _diagramLibrary.Upsert(CreateCurrentDiagramDocument(_activeDiagramId, CurrentDiagramName));
+            await _diagramStore.SaveAsync(_diagramLibrary);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save current diagram state: {ex.Message}";
+            return false;
+        }
+    }
+
     private void CopySelectedDiagramObject()
     {
         if (_selectedDiagramObject is DiagramWorkflowMarkerControl)
         {
             StatusText = "Workflow markers are tied to workflow items and cannot be copied.";
+            return;
+        }
+
+        if (_selectedDiagramObject is DiagramPortalControl)
+        {
+            StatusText = "Portal links are unique and cannot be copied.";
             return;
         }
 
@@ -6708,6 +7397,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_selectedDiagramObject is DiagramWorkflowMarkerControl)
         {
             StatusText = "Delete the workflow item to remove its marker.";
+            return;
+        }
+
+        if (_selectedDiagramObject is DiagramPortalControl)
+        {
+            StatusText = "Use the portal context menu to delete portal links.";
             return;
         }
 
@@ -7220,6 +7915,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         marker.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
+    private void AttachDiagramPortalHandlers(DiagramPortalControl portal)
+    {
+        portal.Selected += DiagramObject_Selected;
+        portal.InteractionStarted += DiagramObject_InteractionStarted;
+        portal.InteractionCompleted += DiagramObject_InteractionCompleted;
+        portal.OpenRequested += DiagramPortal_OpenRequested;
+        portal.DeleteRequested += DiagramPortal_DeleteRequested;
+        portal.LayerChangeRequested += DiagramObject_LayerChangeRequested;
+    }
+
     private void DetachDiagramShapeHandlers(DiagramShapeControl shape)
     {
         shape.PreviewMouseLeftButtonDown -= DiagramObject_PreviewMouseLeftButtonDown;
@@ -7277,6 +7982,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         marker.OpenRequested -= DiagramWorkflowMarker_OpenRequested;
         marker.DeleteRequested -= DiagramWorkflowMarker_DeleteRequested;
         marker.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
+    }
+
+    private void DetachDiagramPortalHandlers(DiagramPortalControl portal)
+    {
+        portal.Selected -= DiagramObject_Selected;
+        portal.InteractionStarted -= DiagramObject_InteractionStarted;
+        portal.InteractionCompleted -= DiagramObject_InteractionCompleted;
+        portal.OpenRequested -= DiagramPortal_OpenRequested;
+        portal.DeleteRequested -= DiagramPortal_DeleteRequested;
+        portal.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private async void DiagramObject_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -7437,6 +8152,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             case DiagramWorkflowMarkerControl marker:
                 marker.IsSelected = isSelected;
                 break;
+
+            case DiagramPortalControl portal:
+                portal.IsSelected = isSelected;
+                break;
         }
     }
 
@@ -7526,6 +8245,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Width = marker.ActualWidth > 0 ? marker.ActualWidth : marker.Width,
                 Height = marker.ActualHeight > 0 ? marker.ActualHeight : marker.Height
             },
+            DiagramPortalControl portal => new DiagramObjectSnapshot
+            {
+                Id = portal.DiagramObjectId,
+                ObjectType = DiagramObjectType.Portal,
+                ZIndex = Panel.GetZIndex(portal),
+                PortalName = portal.PortalName,
+                PairedPortalDiagramId = portal.PairedPortalDiagramId,
+                PairedPortalObjectId = portal.PairedPortalObjectId,
+                Left = GetCanvasLeft(portal),
+                Top = GetCanvasTop(portal),
+                Width = portal.ActualWidth > 0 ? portal.ActualWidth : portal.Width,
+                Height = portal.ActualHeight > 0 ? portal.ActualHeight : portal.Height
+            },
             _ => null
         };
     }
@@ -7539,6 +8271,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramObjectType.Line => CreateDiagramLineFromSnapshot(snapshot),
             DiagramObjectType.Label => CreateDiagramLabelFromSnapshot(snapshot),
             DiagramObjectType.WorkflowMarker => CreateDiagramWorkflowMarkerFromSnapshot(snapshot),
+            DiagramObjectType.Portal => CreateDiagramPortalFromSnapshot(snapshot),
             _ => null
         };
 
@@ -7631,7 +8364,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return marker;
     }
 
-    private static void ApplyDiagramObjectSnapshot(FrameworkElement diagramObject, DiagramObjectSnapshot snapshot)
+    private DiagramPortalControl CreateDiagramPortalFromSnapshot(DiagramObjectSnapshot snapshot)
+    {
+        var portal = new DiagramPortalControl(
+            snapshot.PortalName,
+            snapshot.PairedPortalDiagramId,
+            snapshot.PairedPortalObjectId,
+            ResolvePortalAddress(snapshot.PairedPortalDiagramId, snapshot.PairedPortalObjectId),
+            snapshot.Id);
+        AttachDiagramPortalHandlers(portal);
+        return portal;
+    }
+
+    private void ApplyDiagramObjectSnapshot(FrameworkElement diagramObject, DiagramObjectSnapshot snapshot)
     {
         Panel.SetZIndex(diagramObject, snapshot.ZIndex);
 
@@ -7669,6 +8414,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             case DiagramWorkflowMarkerControl marker:
                 marker.SetCanvasBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height);
+                break;
+
+            case DiagramPortalControl portal:
+                portal.SetCanvasBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height);
+                portal.ApplyDetails(snapshot.PortalName);
+                portal.ApplyPairing(
+                    snapshot.PairedPortalDiagramId,
+                    snapshot.PairedPortalObjectId,
+                    ResolvePortalAddress(snapshot.PairedPortalDiagramId, snapshot.PairedPortalObjectId));
                 break;
         }
     }
@@ -7711,6 +8465,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 return marker;
             }
+
+            if (child is DiagramPortalControl portal &&
+                string.Equals(portal.DiagramObjectId, diagramObjectId, StringComparison.OrdinalIgnoreCase))
+            {
+                return portal;
+            }
         }
 
         return null;
@@ -7734,7 +8494,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageControl or
             DiagramLineControl or
             DiagramLabelControl or
-            DiagramWorkflowMarkerControl;
+            DiagramWorkflowMarkerControl or
+            DiagramPortalControl;
     }
 
     private List<FrameworkElement> GetDiagramObjectsInLayerOrder()
@@ -7891,6 +8652,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             case DiagramWorkflowMarkerControl marker:
                 DetachDiagramWorkflowMarkerHandlers(marker);
+                break;
+
+            case DiagramPortalControl portal:
+                DetachDiagramPortalHandlers(portal);
                 break;
         }
 
@@ -8144,6 +8909,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RemoveWorkflowItemAndMarker(marker.WorkflowId, marker.WorkflowItemId);
     }
 
+    private async void DiagramPortal_DeleteRequested(object? sender, EventArgs e)
+    {
+        if (sender is not DiagramPortalControl portal)
+        {
+            return;
+        }
+
+        await ClearPairedPortalReferenceAsync(portal);
+        RemoveDiagramObject(portal, pushUndo: true);
+        StatusText = "Deleted diagram portal.";
+    }
+
     private void RemoveWorkflowItemAndMarker(string workflowId, string workflowItemId)
     {
         WorkflowDocument? workflow = FindWorkflow(workflowId);
@@ -8185,7 +8962,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async void CloseAllButton_Click(object sender, RoutedEventArgs e)
     {
         CloseAllOpenWindows();
-        StatusText = "Closed all windows.";
+        ClearLoadedDiagram();
+        StatusText = "Closed all windows and unloaded the diagram.";
         await SaveWorkspaceStateAsync();
     }
 
@@ -8575,7 +9353,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _currentDiagramWorkflows = [];
         ResetWorkflowEditor();
         RefreshWorkflowList();
+        _diagramUndoStack.Clear();
         SetCurrentDiagramIdentity(null, "Unsaved Diagram");
+        _diagramCanvasZoom = 1;
+        ApplyDiagramCanvasZoom();
+        _diagramViewportInitialized = false;
+        _ = Dispatcher.BeginInvoke(new Action(RestoreDiagramViewport), DispatcherPriority.ContextIdle);
+    }
+
+    private void CreateNewBlankDiagram()
+    {
+        ClearLoadedDiagram();
+        EnsureDiagramViewVisible();
+        StatusText = "Created a new blank diagram. Use Save to name and persist it.";
     }
 
     private void RefreshSavedWorkbenches(string? selectedWorkbenchId = null)

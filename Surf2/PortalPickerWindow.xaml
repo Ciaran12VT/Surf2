@@ -1,0 +1,66 @@
+<Window x:Class="Surf2.PortalPickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Portal"
+        Width="540"
+        Height="420"
+        MinWidth="420"
+        MinHeight="300"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock VerticalAlignment="Center"
+                       FontWeight="SemiBold"
+                       Text="Filter:" />
+            <TextBox x:Name="FilterTextBox"
+                     Grid.Column="1"
+                     Height="26"
+                     Margin="8,0,0,0"
+                     VerticalContentAlignment="Center"
+                     TextChanged="FilterTextBox_TextChanged" />
+        </Grid>
+
+        <ListView x:Name="PortalsListView"
+                  Grid.Row="1"
+                  MouseDoubleClick="PortalsListView_MouseDoubleClick"
+                  SelectionChanged="PortalsListView_SelectionChanged">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Width="230"
+                                    DisplayMemberBinding="{Binding Name}"
+                                    Header="Name" />
+                    <GridViewColumn Width="220"
+                                    DisplayMemberBinding="{Binding Position}"
+                                    Header="Position" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <DockPanel Grid.Row="2" Margin="0,12,0,0">
+            <TextBlock x:Name="StatusTextBlock"
+                       VerticalAlignment="Center"
+                       Foreground="#64748B" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button x:Name="SelectButton"
+                        Width="84"
+                        Margin="0,0,8,0"
+                        Click="SelectButton_Click"
+                        Content="Select"
+                        IsEnabled="False" />
+                <Button Width="84"
+                        Click="CancelButton_Click"
+                        Content="Cancel" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

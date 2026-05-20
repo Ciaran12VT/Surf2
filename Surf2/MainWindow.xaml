@@ -841,6 +841,16 @@
                                                      Maximum="100"
                                                      Minimum="0"
                                                      Visibility="Collapsed" />
+                                        <Button x:Name="NewDiagramButton"
+                                                Width="64"
+                                                Height="26"
+                                                Margin="0,0,8,0"
+                                                Padding="8,0"
+                                                Background="#1E3A8A"
+                                                Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                Click="NewDiagramButton_Click"
+                                                Content="New"
+                                                ToolTip="Create a new blank diagram" />
                                         <Button x:Name="ExportDiagramPngButton"
                                                 Width="92"
                                                 Height="26"
@@ -1011,7 +1021,29 @@
                                                        FontWeight="Bold"
                                                        Foreground="#111827"
                                                        Text="T" />
-                                        </Canvas>
+                                                </Canvas>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="DiagramPortalToolButton"
+                                                  Margin="6,0,0,0"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  Click="DiagramPortalToolButton_Click"
+                                                  ToolTip="Portal">
+                                        <Grid Width="22"
+                                              Height="17">
+                                            <Ellipse Width="16"
+                                                     Height="16"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="#E5E7EB"
+                                                     Stroke="#111827"
+                                                     StrokeThickness="1.6" />
+                                            <Ellipse Width="6"
+                                                     Height="6"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="#111827" />
+                                        </Grid>
                                     </ToggleButton>
                                     <Border Width="1"
                                             Height="22"

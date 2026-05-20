@@ -6,7 +6,8 @@ public enum DiagramObjectType
     Image,
     Line,
     Label,
-    WorkflowMarker
+    WorkflowMarker,
+    Portal
 }
 
 public sealed class DiagramObjectSnapshot
@@ -22,6 +23,12 @@ public sealed class DiagramObjectSnapshot
     public string WorkflowId { get; set; } = string.Empty;
 
     public string WorkflowItemId { get; set; } = string.Empty;
+
+    public string PortalName { get; set; } = string.Empty;
+
+    public string PairedPortalDiagramId { get; set; } = string.Empty;
+
+    public string PairedPortalObjectId { get; set; } = string.Empty;
 
     public DiagramShapeKind ShapeKind { get; set; }
 
@@ -83,6 +90,9 @@ public sealed class DiagramObjectSnapshot
             ZIndex = ZIndex,
             WorkflowId = WorkflowId,
             WorkflowItemId = WorkflowItemId,
+            PortalName = PortalName,
+            PairedPortalDiagramId = PairedPortalDiagramId,
+            PairedPortalObjectId = PairedPortalObjectId,
             ShapeKind = ShapeKind,
             ImageDefinitionId = ImageDefinitionId,
             ImageName = ImageName,

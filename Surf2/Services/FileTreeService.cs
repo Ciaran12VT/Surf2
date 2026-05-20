@@ -471,11 +471,6 @@ public sealed class FileTreeService
             .OrderBy(resource => GetDiagramDisplayName(resource, diagramLibrary?.Find(resource.Path)))
             .ToList();
 
-        if (diagramResources.Count == 0)
-        {
-            return null;
-        }
-
         var root = new FileSystemNode(DiagramDocumentService.DiagramRootPath, isDirectory: true, displayName: "Diagrams")
         {
             IsLoaded = true
