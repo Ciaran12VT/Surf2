@@ -351,12 +351,14 @@
                                   Checked="ViewToggle_CheckedChanged"
                                   Content="Code"
                                   IsChecked="True"
+                                  MouseDoubleClick="ViewToggle_MouseDoubleClick"
                                   Unchecked="ViewToggle_CheckedChanged" />
                     <ToggleButton x:Name="DiagramViewToggle"
                                   Margin="12,0,0,0"
                                   Style="{StaticResource ViewModeToggleStyle}"
                                   Checked="ViewToggle_CheckedChanged"
                                   Content="Diagram"
+                                  MouseDoubleClick="ViewToggle_MouseDoubleClick"
                                   Unchecked="ViewToggle_CheckedChanged" />
                     <Button x:Name="SplitOrientationButton"
                             Margin="10,0,0,0"

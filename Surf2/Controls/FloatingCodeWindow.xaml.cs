@@ -9,6 +9,7 @@ using System.Windows.Threading;
 using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.Highlighting;
 using ICSharpCode.AvalonEdit.Rendering;
+using ICSharpCode.AvalonEdit.Search;
 using Surf2.Models;
 
 namespace Surf2.Controls;
@@ -24,6 +25,7 @@ public partial class FloatingCodeWindow : UserControl
     private double _dragStartLeft;
     private double _dragStartTop;
     private ReferenceHighlightColorizer? _referenceHighlightColorizer;
+    private readonly SearchPanel _searchPanel;
     private bool _suppressCursorPositionChanged;
 
     public FloatingCodeWindow(OpenDocumentState state, string content, IHighlightingDefinition? highlighting)
@@ -43,10 +45,12 @@ public partial class FloatingCodeWindow : UserControl
         Editor.SyntaxHighlighting = highlighting;
         Editor.FontSize = Math.Clamp(initialFontSize, MinimumFontSize, MaximumFontSize);
         State.FontSize = Editor.FontSize;
+        _searchPanel = SearchPanel.Install(Editor);
 
         Editor.TextArea.Caret.PositionChanged += Caret_PositionChanged;
         Editor.PreviewMouseLeftButtonUp += Editor_PreviewMouseLeftButtonUp;
         Editor.PreviewMouseDoubleClick += Editor_PreviewMouseDoubleClick;
+        PreviewKeyDown += FloatingCodeWindow_PreviewKeyDown;
         PreviewMouseWheel += FloatingCodeWindow_PreviewMouseWheel;
     }
 
@@ -63,6 +67,8 @@ public partial class FloatingCodeWindow : UserControl
     public event EventHandler<CursorPositionChangedEventArgs>? CursorPositionChanged;
 
     public event EventHandler<CodeWindowContextMenuOpeningEventArgs>? ContextMenuOpeningRequested;
+
+    public event EventHandler? ScopeFindRequested;
 
     public OpenDocumentState State { get; }
 
@@ -403,6 +409,35 @@ public partial class FloatingCodeWindow : UserControl
         State.FontSize = Editor.FontSize;
         e.Handled = true;
         BoundsChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void FloatingCodeWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.F || (Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
+        {
+            return;
+        }
+
+        BringToFrontRequested?.Invoke(this, EventArgs.Empty);
+        if (!_searchPanel.IsClosed)
+        {
+            _searchPanel.Close();
+            ScopeFindRequested?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+
+        string selectedText = Editor.SelectedText.Trim();
+        if (!string.IsNullOrWhiteSpace(selectedText) &&
+            !selectedText.Contains('\r', StringComparison.Ordinal) &&
+            !selectedText.Contains('\n', StringComparison.Ordinal))
+        {
+            _searchPanel.SearchPattern = selectedText;
+        }
+
+        _searchPanel.Open();
+        _searchPanel.Reactivate();
+        e.Handled = true;
     }
 
     private void Editor_PreviewMouseDoubleClick(object sender, MouseButtonEventArgs e)

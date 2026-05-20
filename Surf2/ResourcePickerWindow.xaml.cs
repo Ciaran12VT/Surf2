@@ -1,10 +1,8 @@
 using System.Collections.ObjectModel;
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Surf2.Models;
-using Surf2.Services;
 
 namespace Surf2;
 
@@ -13,10 +11,16 @@ public partial class ResourcePickerWindow : Window
     private readonly List<ResourcePickerItem> _allItems;
     private readonly ObservableCollection<ResourcePickerItem> _filteredItems = [];
 
-    public ResourcePickerWindow(IEnumerable<FileSystemNode> rootNodes)
+    public ResourcePickerWindow(IEnumerable<LinkableResource> resources)
     {
         InitializeComponent();
-        _allItems = FlattenNodes(rootNodes).ToList();
+        _allItems = resources
+            .Select(resource => new ResourcePickerItem(
+                resource.Name,
+                resource.Type,
+                resource.Path,
+                resource.Kind))
+            .ToList();
         ResourcesListView.ItemsSource = _filteredItems;
         ApplyFilter();
         FilterTextBox.Focus();
@@ -26,61 +30,7 @@ public partial class ResourcePickerWindow : Window
 
     public string SelectedResourceName { get; private set; } = string.Empty;
 
-    private static IEnumerable<ResourcePickerItem> FlattenNodes(IEnumerable<FileSystemNode> nodes)
-    {
-        foreach (FileSystemNode node in nodes)
-        {
-            if (IsLoadingPlaceholder(node))
-            {
-                continue;
-            }
-
-            yield return new ResourcePickerItem(
-                node.Name,
-                GetNodeType(node),
-                node.FullPath,
-                IsSelectable(node));
-
-            foreach (ResourcePickerItem child in FlattenNodes(node.Children))
-            {
-                yield return child;
-            }
-        }
-    }
-
-    private static bool IsLoadingPlaceholder(FileSystemNode node)
-    {
-        return !node.IsDirectory &&
-            string.Equals(node.Name, "Loading...", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsSelectable(FileSystemNode node)
-    {
-        return node.Exists && !node.IsDirectory;
-    }
-
-    private static string GetNodeType(FileSystemNode node)
-    {
-        if (DiagramDocumentService.IsDiagramDocumentPath(node.FullPath))
-        {
-            return "Diagram";
-        }
-
-        if (DatabaseDocumentService.IsDatabaseDocumentPath(node.FullPath))
-        {
-            return "Database Object";
-        }
-
-        if (node.IsDirectory)
-        {
-            return "Folder";
-        }
-
-        string extension = Path.GetExtension(node.FullPath);
-        return string.IsNullOrWhiteSpace(extension)
-            ? "File"
-            : extension.TrimStart('.').ToUpperInvariant();
-    }
+    public LinkableResourceKind? SelectedResourceKind { get; private set; }
 
     private void FilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
@@ -140,18 +90,19 @@ public partial class ResourcePickerWindow : Window
 
     private void UpdatePickButton()
     {
-        PickButton.IsEnabled = ResourcesListView.SelectedItem is ResourcePickerItem { IsSelectable: true };
+        PickButton.IsEnabled = ResourcesListView.SelectedItem is ResourcePickerItem;
     }
 
     private void TryPickSelectedResource()
     {
-        if (ResourcesListView.SelectedItem is not ResourcePickerItem { IsSelectable: true } item)
+        if (ResourcesListView.SelectedItem is not ResourcePickerItem item)
         {
             return;
         }
 
         SelectedResourcePath = item.Path;
         SelectedResourceName = item.Name;
+        SelectedResourceKind = item.Kind;
         DialogResult = true;
         Close();
     }
@@ -160,5 +111,5 @@ public partial class ResourcePickerWindow : Window
         string Name,
         string Type,
         string Path,
-        bool IsSelectable);
+        LinkableResourceKind Kind);
 }

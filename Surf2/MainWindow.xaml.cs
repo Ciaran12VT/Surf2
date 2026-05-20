@@ -156,6 +156,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly ScopeReferenceIndexService _referenceIndexService = new();
     private readonly NavigationHistoryService _navigationHistoryService = new();
     private readonly SqlTraceService _sqlTraceService = new();
+    private readonly LinkableResourceService _linkableResourceService = new();
     private readonly IWorkspaceStore _workspaceStore = new SqlServerWorkspaceStore();
     private readonly IScopeStore _scopeStore = new SqlServerScopeStore();
     private readonly ISettingsStore _settingsStore = new SqlServerSettingsStore();
@@ -694,6 +695,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _isUpdatingViewToggles = false;
         }
 
+        ApplyWorkspaceViewLayout();
+    }
+
+    private void ViewToggle_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ReferenceEquals(sender, CodeViewToggle))
+        {
+            ShowSingleWorkspaceView(WorkspaceViewKind.Code);
+            e.Handled = true;
+            return;
+        }
+
+        if (ReferenceEquals(sender, DiagramViewToggle))
+        {
+            ShowSingleWorkspaceView(WorkspaceViewKind.Diagram);
+            e.Handled = true;
+        }
+    }
+
+    private void ShowSingleWorkspaceView(WorkspaceViewKind viewKind)
+    {
+        if (CodeViewToggle == null || DiagramViewToggle == null)
+        {
+            return;
+        }
+
+        _isUpdatingViewToggles = true;
+        CodeViewToggle.IsChecked = viewKind == WorkspaceViewKind.Code;
+        DiagramViewToggle.IsChecked = viewKind == WorkspaceViewKind.Diagram;
+        _isUpdatingViewToggles = false;
+
+        _activeWorkspaceView = viewKind;
         ApplyWorkspaceViewLayout();
     }
 
@@ -2181,6 +2214,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             string filePath = uri?.IsFile == true ? uri.LocalPath : link;
+            if (TryFocusInternalContainerLink(filePath))
+            {
+                return true;
+            }
+
             if (Directory.Exists(filePath))
             {
                 Process.Start(new ProcessStartInfo(filePath)
@@ -2211,31 +2249,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void MetadataPickResourceButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_activeScope == null || RootNodes.Count == 0)
+        if (_activeScope == null)
         {
             StatusText = "Open a scope before picking an internal resource.";
             return;
         }
 
-        bool isObjectExplorerFiltered = !string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text);
-        if (!isObjectExplorerFiltered)
+        IReadOnlyList<LinkableResource> linkableResources;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
         {
-            Mouse.OverrideCursor = Cursors.Wait;
-            try
-            {
-                var visitedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (FileSystemNode rootNode in RootNodes.ToList())
-                {
-                    LoadObjectExplorerChildrenForPicker(rootNode, visitedPaths);
-                }
-            }
-            finally
-            {
-                Mouse.OverrideCursor = null;
-            }
+            linkableResources = _linkableResourceService.CreateLinkableResources(_activeScope, _databaseSnapshots, _diagramLibrary);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
         }
 
-        var dialog = new ResourcePickerWindow(RootNodes)
+        if (linkableResources.Count == 0)
+        {
+            StatusText = "No linkable resources were found in the active scope.";
+            return;
+        }
+
+        var dialog = new ResourcePickerWindow(linkableResources)
         {
             Owner = this
         };
@@ -2249,17 +2286,115 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = $"Picked metadata resource '{dialog.SelectedResourceName}'.";
     }
 
-    private void LoadObjectExplorerChildrenForPicker(FileSystemNode node, HashSet<string> visitedPaths)
+    private bool TryFocusInternalContainerLink(string link)
     {
-        if (!node.IsDirectory || !node.Exists || !visitedPaths.Add(node.FullPath))
+        if (_activeScope == null)
         {
-            return;
+            return false;
         }
 
-        _fileTreeService.LoadChildren(node);
-        foreach (FileSystemNode child in node.Children.ToList())
+        ScopedResource? databaseResource = _activeScope.Resources.FirstOrDefault(resource =>
+            resource.Kind == ResourceKind.DatabaseSnapshot &&
+            string.Equals(resource.Path, link, StringComparison.OrdinalIgnoreCase));
+        if (databaseResource != null)
         {
-            LoadObjectExplorerChildrenForPicker(child, visitedPaths);
+            FocusDatabaseResourceInObjectExplorer(databaseResource);
+            return true;
+        }
+
+        if (!Directory.Exists(link) || !IsDirectoryInActiveScope(link))
+        {
+            return false;
+        }
+
+        FocusFolderInObjectExplorer(link);
+        return true;
+    }
+
+    private void FocusDatabaseResourceInObjectExplorer(ScopedResource databaseResource)
+    {
+        ObjectExplorerSearchTextBox.Clear();
+        RootNodes.Clear();
+
+        foreach (FileSystemNode node in _fileTreeService.CreateRoots([databaseResource], _databaseSnapshots, _diagramLibrary))
+        {
+            node.IsExpanded = true;
+            CollapseChildren(node);
+            RootNodes.Add(node);
+        }
+
+        StatusText = $"Focused database resource '{databaseResource.DisplayName}'.";
+    }
+
+    private void FocusFolderInObjectExplorer(string folderPath)
+    {
+        ObjectExplorerSearchTextBox.Clear();
+        string displayName = GetFolderLinkDisplayName(folderPath);
+        var node = new FileSystemNode(folderPath, isDirectory: true, displayName: displayName)
+        {
+            IsExpanded = true
+        };
+
+        _fileTreeService.LoadChildren(node);
+
+        RootNodes.Clear();
+        RootNodes.Add(node);
+        StatusText = $"Focused folder resource '{displayName}'.";
+    }
+
+    private static void CollapseChildren(FileSystemNode node)
+    {
+        foreach (FileSystemNode child in node.Children)
+        {
+            child.IsExpanded = false;
+        }
+    }
+
+    private string GetFolderLinkDisplayName(string folderPath)
+    {
+        ScopedResource? scopedResource = _activeScope?.Resources.FirstOrDefault(resource =>
+            resource.Kind == ResourceKind.Folder &&
+            string.Equals(NormalizePath(resource.Path), NormalizePath(folderPath), StringComparison.OrdinalIgnoreCase));
+        if (scopedResource != null)
+        {
+            return scopedResource.DisplayName;
+        }
+
+        string name = Path.GetFileName(folderPath);
+        return string.IsNullOrWhiteSpace(name) ? folderPath : name;
+    }
+
+    private bool IsDirectoryInActiveScope(string directoryPath)
+    {
+        if (_activeScope == null)
+        {
+            return false;
+        }
+
+        string normalizedDirectory = NormalizePath(directoryPath);
+        return _activeScope.Resources.Any(resource =>
+        {
+            if (resource.Kind != ResourceKind.Folder || !Directory.Exists(resource.Path))
+            {
+                return false;
+            }
+
+            string normalizedScopePath = NormalizePath(resource.Path);
+            return string.Equals(normalizedDirectory, normalizedScopePath, StringComparison.OrdinalIgnoreCase) ||
+                normalizedDirectory.StartsWith(normalizedScopePath + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                normalizedDirectory.StartsWith(normalizedScopePath + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    private static string NormalizePath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
     }
 
@@ -3400,6 +3535,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ReferencePreviewRequested += FloatingWindow_ReferencePreviewRequested;
         window.CursorPositionChanged += FloatingWindow_CursorPositionChanged;
         window.ContextMenuOpeningRequested += FloatingWindow_ContextMenuOpeningRequested;
+        window.ScopeFindRequested += FloatingWindow_ScopeFindRequested;
 
         if (targetReference != null && existingState == null)
         {
@@ -3593,6 +3729,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 CreateSqlTraceContextMenu(window),
                 CreateSqlReferencesContextMenu(window));
         }
+    }
+
+    private void FloatingWindow_ScopeFindRequested(object? sender, EventArgs e)
+    {
+        ObjectExplorerSearchTextBox.Focus();
+        Keyboard.Focus(ObjectExplorerSearchTextBox);
+        ObjectExplorerSearchTextBox.SelectAll();
+        StatusText = "Object Explorer search focused.";
     }
 
     private MenuItem CreateCSharpReferencesContextMenu(FloatingCodeWindow window)
