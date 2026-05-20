@@ -29,6 +29,8 @@ public sealed class DiagramObjectSnapshot
 
     public string ImageDataBase64 { get; set; } = string.Empty;
 
+    public string PastedImageFileName { get; set; } = string.Empty;
+
     public string LabelText { get; set; } = string.Empty;
 
     public string OutlineColorText { get; set; } = "#000000";
@@ -82,6 +84,7 @@ public sealed class DiagramObjectSnapshot
             ImageDefinitionId = ImageDefinitionId,
             ImageName = ImageName,
             ImageDataBase64 = ImageDataBase64,
+            PastedImageFileName = PastedImageFileName,
             LabelText = LabelText,
             OutlineColorText = OutlineColorText,
             BackColorText = BackColorText,

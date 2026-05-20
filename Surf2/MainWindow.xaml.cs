@@ -105,6 +105,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double PreviewFontZoomStep = 1.1;
     private const string TransparentDiagramColorText = "Transparent";
     private const double DiagramPasteOffset = 28;
+    private const string PastedDiagramImagesFolderName = "PastedDiagramImages";
     private const int MaximumDiagramUndoActions = 100;
     private const int DiagramExportTileSize = 2048;
     private const int MaximumDiagramExportDimension = 32767;
@@ -5413,7 +5414,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     return;
                 }
 
-                PasteDiagramObject();
+                PasteDiagramClipboardContent();
                 e.Handled = true;
                 break;
 
@@ -5524,6 +5525,116 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _diagramClipboardSnapshot = snapshot.Clone();
         RemoveDiagramObject(_selectedDiagramObject, pushUndo: true);
         StatusText = "Cut diagram object.";
+    }
+
+    private void PasteDiagramClipboardContent()
+    {
+        BitmapSource? clipboardImage = TryGetClipboardImage();
+        if (clipboardImage != null)
+        {
+            PasteClipboardImage(clipboardImage);
+            return;
+        }
+
+        PasteDiagramObject();
+    }
+
+    private static BitmapSource? TryGetClipboardImage()
+    {
+        try
+        {
+            return Clipboard.ContainsImage() ? Clipboard.GetImage() : null;
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            return null;
+        }
+    }
+
+    private void PasteClipboardImage(BitmapSource clipboardImage)
+    {
+        try
+        {
+            string pastedImageFileName = SavePastedDiagramImage(clipboardImage);
+            BitmapImage? imageSource = CreateImageSourceFromFile(GetPastedDiagramImagePath(pastedImageFileName));
+            if (imageSource == null)
+            {
+                StatusText = "Could not load pasted image.";
+                return;
+            }
+
+            Size imageSize = GetPastedImageDisplaySize(imageSource);
+            Point centerPoint = GetDiagramPasteCenterPoint();
+            var image = new DiagramImageControl(
+                imageDefinitionId: string.Empty,
+                imageName: "Pasted Image",
+                imageSource: imageSource,
+                imageDataBase64: string.Empty,
+                pastedImageFileName: pastedImageFileName);
+            AttachDiagramImageHandlers(image);
+            image.SetCanvasBounds(
+                centerPoint.X - (imageSize.Width / 2),
+                centerPoint.Y - (imageSize.Height / 2),
+                imageSize.Width,
+                imageSize.Height);
+
+            DiagramCanvas.Children.Add(image);
+            SelectDiagramObject(image);
+            PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(image));
+            StatusText = "Pasted image onto diagram.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            StatusText = $"Could not paste image: {ex.Message}";
+        }
+    }
+
+    private static Size GetPastedImageDisplaySize(BitmapSource imageSource)
+    {
+        double width = Math.Max(1, imageSource.Width);
+        double height = Math.Max(1, imageSource.Height);
+        const double maximumSize = 360;
+        const double minimumSize = 48;
+
+        double scale = Math.Min(1, maximumSize / Math.Max(width, height));
+        width = Math.Max(minimumSize, width * scale);
+        height = Math.Max(minimumSize, height * scale);
+        return new Size(width, height);
+    }
+
+    private Point GetDiagramPasteCenterPoint()
+    {
+        DiagramScrollViewer.UpdateLayout();
+        double viewportWidth = DiagramScrollViewer.ViewportWidth > 0 ? DiagramScrollViewer.ViewportWidth : DiagramScrollViewer.ActualWidth;
+        double viewportHeight = DiagramScrollViewer.ViewportHeight > 0 ? DiagramScrollViewer.ViewportHeight : DiagramScrollViewer.ActualHeight;
+
+        return new Point(
+            (DiagramScrollViewer.HorizontalOffset + (viewportWidth / 2)) / _diagramCanvasZoom,
+            (DiagramScrollViewer.VerticalOffset + (viewportHeight / 2)) / _diagramCanvasZoom);
+    }
+
+    private static string SavePastedDiagramImage(BitmapSource imageSource)
+    {
+        string fileName = $"pasted-{DateTime.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}.png";
+        string path = GetPastedDiagramImagePath(fileName);
+        Directory.CreateDirectory(GetPastedDiagramImagesDirectory());
+
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(imageSource));
+        using FileStream stream = File.Create(path);
+        encoder.Save(stream);
+        return fileName;
+    }
+
+    private static string GetPastedDiagramImagesDirectory()
+    {
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appData, "Surf2", PastedDiagramImagesFolderName);
+    }
+
+    private static string GetPastedDiagramImagePath(string fileName)
+    {
+        return Path.Combine(GetPastedDiagramImagesDirectory(), Path.GetFileName(fileName));
     }
 
     private void PasteDiagramObject()
@@ -6103,6 +6214,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ImageDefinitionId = image.ImageDefinitionId,
                 ImageName = image.ImageName,
                 ImageDataBase64 = image.ImageDataBase64,
+                PastedImageFileName = image.PastedImageFileName,
                 LabelText = image.LabelText,
                 Left = GetCanvasLeft(image),
                 Top = GetCanvasTop(image),
@@ -6195,23 +6307,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private DiagramImageControl? CreateDiagramImageFromSnapshot(DiagramObjectSnapshot snapshot)
     {
         string imageData = snapshot.ImageDataBase64;
-        if (string.IsNullOrWhiteSpace(imageData))
+        ImageSource? imageSource = null;
+
+        if (!string.IsNullOrWhiteSpace(snapshot.PastedImageFileName))
+        {
+            imageSource = CreateImageSourceFromFile(GetPastedDiagramImagePath(snapshot.PastedImageFileName));
+        }
+
+        if (imageSource == null && string.IsNullOrWhiteSpace(imageData))
         {
             imageData = FindDiagramImageDefinition(snapshot.ImageDefinitionId)?.ImageDataBase64 ?? string.Empty;
         }
 
-        ImageSource? imageSource = CreateImageSource(imageData);
+        imageSource ??= CreateImageSource(imageData);
         if (imageSource == null)
         {
             return null;
         }
 
         var image = new DiagramImageControl(
-            snapshot.ImageDefinitionId,
-            snapshot.ImageName,
-            imageSource,
-            imageData,
-            snapshot.Id);
+            imageDefinitionId: snapshot.ImageDefinitionId,
+            imageName: snapshot.ImageName,
+            imageSource: imageSource,
+            imageDataBase64: imageData,
+            pastedImageFileName: snapshot.PastedImageFileName,
+            diagramObjectId: snapshot.Id);
         AttachDiagramImageHandlers(image);
         return image;
     }
@@ -7625,6 +7745,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return bitmap;
         }
         catch (Exception ex) when (ex is FormatException or NotSupportedException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static BitmapImage? CreateImageSourceFromFile(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using FileStream stream = File.OpenRead(imagePath);
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            return bitmap;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
             return null;
         }

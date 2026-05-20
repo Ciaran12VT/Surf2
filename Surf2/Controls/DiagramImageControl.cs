@@ -31,6 +31,7 @@ public sealed class DiagramImageControl : UserControl
         string imageName,
         ImageSource imageSource,
         string imageDataBase64 = "",
+        string pastedImageFileName = "",
         string? diagramObjectId = null)
     {
         DiagramObjectId = string.IsNullOrWhiteSpace(diagramObjectId)
@@ -39,6 +40,7 @@ public sealed class DiagramImageControl : UserControl
         ImageDefinitionId = imageDefinitionId;
         ImageName = imageName;
         ImageDataBase64 = imageDataBase64;
+        PastedImageFileName = pastedImageFileName;
 
         Width = 120;
         Height = 96;
@@ -145,6 +147,8 @@ public sealed class DiagramImageControl : UserControl
     public string ImageName { get; }
 
     public string ImageDataBase64 { get; }
+
+    public string PastedImageFileName { get; }
 
     public string LabelText { get; private set; } = string.Empty;
 
