@@ -138,6 +138,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const int DiagramLayerStep = 10;
     private const double DiagramShiftPanDeadZone = 3;
     private const double DiagramShiftPanSpeedFactor = 0.12;
+    private const double DiagramCtrlShiftZoomDeadZone = 3;
+    private const double DiagramCtrlShiftZoomSpeedFactor = 0.00008;
     private const string ObjectExplorerDragDataFormat = "Surf2.ObjectExplorerNode";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
@@ -240,6 +242,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _controlDiagramCanvasPanPoint;
     private Point _diagramShiftPanOriginPoint;
     private Point _diagramShiftPanCurrentPoint;
+    private Point _diagramCtrlShiftZoomOriginPoint;
+    private Point _diagramCtrlShiftZoomCurrentPoint;
+    private Point _diagramCtrlShiftZoomAnchorViewportPoint;
+    private Point _diagramCtrlShiftZoomAnchorCanvasPoint;
     private Point _objectExplorerDragStartPoint;
     private Point _diagramShapeDrawStartPoint;
     private Point _diagramImageDrawStartPoint;
@@ -280,7 +286,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private int _objectExplorerLoadingDepth;
     private int _scopeLoadVersion;
     private bool _isRestoringObjectExplorerExpansion;
+    private bool _isCtrlShiftZoomingDiagramCanvas;
     private readonly DispatcherTimer _diagramShiftPanTimer;
+    private readonly DispatcherTimer _diagramCtrlShiftZoomTimer;
 
     public MainWindow()
     {
@@ -292,6 +300,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Interval = TimeSpan.FromMilliseconds(16)
         };
         _diagramShiftPanTimer.Tick += DiagramShiftPanTimer_Tick;
+        _diagramCtrlShiftZoomTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _diagramCtrlShiftZoomTimer.Tick += DiagramCtrlShiftZoomTimer_Tick;
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         InitializeMetadataEditorControls();
         ApplyWorkspaceViewLayout();
@@ -2288,6 +2301,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
         StopDiagramShiftPan();
+        StopDiagramCtrlShiftZoom();
         if (TryHandleControlDiagramCanvasPan(e))
         {
             e.Handled = true;
@@ -2296,6 +2310,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramViewHost_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (TryHandleDiagramCtrlShiftZoom(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (TryHandleDiagramShiftPan(e))
         {
             e.Handled = true;
@@ -2312,6 +2332,57 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
         StopDiagramShiftPan();
+        StopDiagramCtrlShiftZoom();
+    }
+
+    private bool TryHandleDiagramCtrlShiftZoom(MouseEventArgs e)
+    {
+        if (_appSettings.KeyboardShortcuts.EnableDiagramCtrlShiftMouseZooming != true ||
+            DiagramScrollViewer == null ||
+            DiagramScrollViewer.Visibility != Visibility.Visible ||
+            _isDrawingDiagramShape ||
+            _isDrawingDiagramImage ||
+            _isDrawingDiagramLine ||
+            _isDiagramCanvasPanning ||
+            e.LeftButton != MouseButtonState.Released ||
+            e.MiddleButton != MouseButtonState.Released ||
+            e.RightButton != MouseButtonState.Released)
+        {
+            StopDiagramCtrlShiftZoom();
+            return false;
+        }
+
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if ((modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            !IsMouseEventInsideElement(e, DiagramScrollViewer))
+        {
+            StopDiagramCtrlShiftZoom();
+            return false;
+        }
+
+        Point currentPoint = e.GetPosition(DiagramScrollViewer);
+        if (!_isCtrlShiftZoomingDiagramCanvas)
+        {
+            StopDiagramShiftPan();
+            _diagramCtrlShiftZoomOriginPoint = currentPoint;
+            _diagramCtrlShiftZoomCurrentPoint = currentPoint;
+            _diagramCtrlShiftZoomAnchorViewportPoint = currentPoint;
+            _diagramCtrlShiftZoomAnchorCanvasPoint = e.GetPosition(DiagramCanvas);
+            _isCtrlShiftZoomingDiagramCanvas = true;
+            DiagramViewHost.Cursor = Cursors.SizeNS;
+            if (!_diagramCtrlShiftZoomTimer.IsEnabled)
+            {
+                _diagramCtrlShiftZoomTimer.Start();
+            }
+        }
+        else
+        {
+            _diagramCtrlShiftZoomCurrentPoint = currentPoint;
+        }
+
+        SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+        return true;
     }
 
     private bool TryHandleDiagramShiftPan(MouseEventArgs e)
@@ -2392,12 +2463,67 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramScrollViewer.ScrollToVerticalOffset(DiagramScrollViewer.VerticalOffset + verticalChange);
     }
 
+    private void DiagramCtrlShiftZoomTimer_Tick(object? sender, EventArgs e)
+    {
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if (!_isCtrlShiftZoomingDiagramCanvas ||
+            DiagramScrollViewer == null ||
+            DiagramScrollViewer.Visibility != Visibility.Visible ||
+            !DiagramScrollViewer.IsMouseOver ||
+            (modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift)
+        {
+            StopDiagramCtrlShiftZoom();
+            return;
+        }
+
+        double verticalDistance = _diagramCtrlShiftZoomCurrentPoint.Y - _diagramCtrlShiftZoomOriginPoint.Y;
+        if (Math.Abs(verticalDistance) <= DiagramCtrlShiftZoomDeadZone)
+        {
+            return;
+        }
+
+        double previousZoom = _diagramCanvasZoom;
+        double multiplier = Math.Exp(-verticalDistance * DiagramCtrlShiftZoomSpeedFactor);
+        _diagramCanvasZoom = NormalizeCanvasZoom(_diagramCanvasZoom * multiplier);
+        if (Math.Abs(_diagramCanvasZoom - previousZoom) <= 0.0001)
+        {
+            return;
+        }
+
+        ApplyDiagramCanvasZoom();
+        DiagramScrollViewer.UpdateLayout();
+
+        DiagramScrollViewer.ScrollToHorizontalOffset(
+            (_diagramCtrlShiftZoomAnchorCanvasPoint.X * _diagramCanvasZoom) -
+            _diagramCtrlShiftZoomAnchorViewportPoint.X);
+        DiagramScrollViewer.ScrollToVerticalOffset(
+            (_diagramCtrlShiftZoomAnchorCanvasPoint.Y * _diagramCanvasZoom) -
+            _diagramCtrlShiftZoomAnchorViewportPoint.Y);
+
+        StatusText = $"Diagram zoom: {_diagramCanvasZoom:P0}";
+    }
+
     private void StopDiagramShiftPan()
     {
         _isShiftPanningDiagramCanvas = false;
         if (_diagramShiftPanTimer.IsEnabled)
         {
             _diagramShiftPanTimer.Stop();
+        }
+
+        if (DiagramViewHost != null)
+        {
+            DiagramViewHost.Cursor = null;
+        }
+    }
+
+    private void StopDiagramCtrlShiftZoom()
+    {
+        _isCtrlShiftZoomingDiagramCanvas = false;
+        if (_diagramCtrlShiftZoomTimer.IsEnabled)
+        {
+            _diagramCtrlShiftZoomTimer.Stop();
         }
 
         if (DiagramViewHost != null)
@@ -11332,6 +11458,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _shutdownRequested = true;
         StopDiagramShiftPan();
+        StopDiagramCtrlShiftZoom();
         IsEnabled = false;
         StatusText = "Saving application state...";
 

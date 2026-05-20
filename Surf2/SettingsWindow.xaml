@@ -680,7 +680,10 @@
                               Margin="0,0,0,12"
                               Content="Diagram View: Ctrl + W for Open Sidebar on Workflow Tab" />
                     <CheckBox x:Name="DiagramShiftMousePanningCheckBox"
+                              Margin="0,0,0,12"
                               Content="Diagram View: Shift + Mouse for Canvas Autopanning" />
+                    <CheckBox x:Name="DiagramCtrlShiftMouseZoomingCheckBox"
+                              Content="Diagram View: Ctrl + Shift + Mouse for Zoom" />
                 </StackPanel>
 
                 <Border Grid.Row="2"

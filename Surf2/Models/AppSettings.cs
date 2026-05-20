@@ -83,7 +83,7 @@ public sealed class AppSettings
 
 public sealed class KeyboardShortcutSettings
 {
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -109,6 +109,8 @@ public sealed class KeyboardShortcutSettings
 
     public bool EnableDiagramShiftMousePanning { get; set; } = true;
 
+    public bool EnableDiagramCtrlShiftMouseZooming { get; set; } = true;
+
     public bool EnsureDefaults()
     {
         if (Version >= CurrentVersion)
@@ -132,6 +134,11 @@ public sealed class KeyboardShortcutSettings
         }
 
         EnableDiagramShiftMousePanning = true;
+        if (Version < 6)
+        {
+            EnableDiagramCtrlShiftMouseZooming = true;
+        }
+
         Version = CurrentVersion;
         return true;
     }
@@ -151,7 +158,8 @@ public sealed class KeyboardShortcutSettings
             EnableCodeTabCtrlASNavigation = EnableCodeTabCtrlASNavigation,
             EnableDiagramCtrlQSidebarToggle = EnableDiagramCtrlQSidebarToggle,
             EnableDiagramCtrlWWorkflowSidebar = EnableDiagramCtrlWWorkflowSidebar,
-            EnableDiagramShiftMousePanning = EnableDiagramShiftMousePanning
+            EnableDiagramShiftMousePanning = EnableDiagramShiftMousePanning,
+            EnableDiagramCtrlShiftMouseZooming = EnableDiagramCtrlShiftMouseZooming
         };
     }
 }
