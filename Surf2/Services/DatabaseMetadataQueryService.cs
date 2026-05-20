@@ -194,12 +194,29 @@ END;
     private static string CreateChunkedOutputFooter()
     {
         return """
-;WITH NumberSource AS
+DECLARE @Surf2MaxChunkCount int;
+
+SELECT @Surf2MaxChunkCount = ISNULL(MAX(
+    CASE
+        WHEN LEN(PayloadJson) = 0 THEN 1
+        ELSE CONVERT(int, CEILING(CONVERT(decimal(19, 4), LEN(PayloadJson)) / @Surf2ChunkSize))
+    END), 0)
+FROM #Surf2Payloads;
+
+;WITH Digit AS
 (
-    SELECT TOP (100000)
+    SELECT Value
+    FROM (VALUES (0), (0), (0), (0), (0), (0), (0), (0), (0), (0)) AS DigitSource(Value)
+),
+NumberSource AS
+(
+    SELECT TOP (@Surf2MaxChunkCount)
         ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS ChunkIndex
-    FROM sys.all_objects a
-    CROSS JOIN sys.all_objects b
+    FROM Digit a
+    CROSS JOIN Digit b
+    CROSS JOIN Digit c
+    CROSS JOIN Digit d
+    CROSS JOIN Digit e
 ),
 Payloads AS
 (

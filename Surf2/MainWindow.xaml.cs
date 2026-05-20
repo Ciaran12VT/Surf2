@@ -149,6 +149,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private static readonly Brush ActiveCodeCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xEE, 0xF1, 0xF5));
     private static readonly Brush ActiveDiagramCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xF4, 0xF6, 0xF8));
     private static readonly Brush InactiveCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xD1, 0xD5, 0xDB));
+    private static readonly TimeSpan ShutdownSaveTimeout = TimeSpan.FromSeconds(10);
 
     private readonly FileTreeService _fileTreeService = new();
     private readonly SyntaxHighlightingService _syntaxHighlightingService = new();
@@ -194,6 +195,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isUpdatingViewToggles;
     private bool _isUpdatingDiagramToolToggles;
     private bool _diagramViewportInitialized;
+    private bool _shutdownRequested;
+    private bool _shutdownSaveCompleted;
     private Point _canvasPanStartPoint;
     private Point _diagramPanStartPoint;
     private Point _objectExplorerDragStartPoint;
@@ -7922,19 +7925,62 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void Window_Closing(object? sender, CancelEventArgs e)
+    private async Task SaveApplicationStateForShutdownAsync()
     {
+        var cancellation = new CancellationTokenSource(ShutdownSaveTimeout);
+        Task saveTask = Task.Run(() => SaveApplicationStateAsync(cancellation.Token), cancellation.Token);
+        _ = saveTask.ContinueWith(_ => cancellation.Dispose(), TaskScheduler.Default);
+        _ = saveTask.ContinueWith(task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
+        Task completedTask = await Task.WhenAny(saveTask, Task.Delay(ShutdownSaveTimeout));
+        if (completedTask != saveTask)
+        {
+            cancellation.Cancel();
+            return;
+        }
+
+        await saveTask;
+    }
+
+    private Task SaveApplicationStateAsync(CancellationToken cancellationToken)
+    {
+        return Task.WhenAll(
+            _scopeStore.SaveAsync(_scopeLibrary, cancellationToken),
+            _databaseMetadataStore.SaveAsync(_databaseSnapshots, cancellationToken),
+            _diagramStore.SaveAsync(_diagramLibrary, cancellationToken),
+            _settingsStore.SaveAsync(_appSettings, cancellationToken),
+            _workspaceStore.SaveAsync(_workspaceState, cancellationToken));
+    }
+
+    private async void Window_Closing(object? sender, CancelEventArgs e)
+    {
+        if (_shutdownSaveCompleted)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        if (_shutdownRequested)
+        {
+            return;
+        }
+
+        _shutdownRequested = true;
+        IsEnabled = false;
+        StatusText = "Saving application state...";
+
         try
         {
-            _scopeStore.SaveAsync(_scopeLibrary).GetAwaiter().GetResult();
-            _databaseMetadataStore.SaveAsync(_databaseSnapshots).GetAwaiter().GetResult();
-            _diagramStore.SaveAsync(_diagramLibrary).GetAwaiter().GetResult();
-            _settingsStore.SaveAsync(_appSettings).GetAwaiter().GetResult();
-            _workspaceStore.SaveAsync(_workspaceState).GetAwaiter().GetResult();
+            await SaveApplicationStateForShutdownAsync();
         }
         catch
         {
             // Avoid blocking application shutdown if persistence fails.
+        }
+        finally
+        {
+            _shutdownSaveCompleted = true;
+            Close();
         }
     }
 
