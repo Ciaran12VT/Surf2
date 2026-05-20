@@ -9018,7 +9018,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     new Point(snapshot.LabelAnchorX, snapshot.LabelAnchorY),
                     new Rect(snapshot.LabelBoxLeft, snapshot.LabelBoxTop, snapshot.LabelBoxWidth, snapshot.LabelBoxHeight),
                     snapshot.IsTethered);
-                label.ApplyDetails(snapshot.LabelText, snapshot.OutlineColorText, snapshot.BackColorText);
+                label.ApplyDetails(
+                    snapshot.LabelText,
+                    snapshot.OutlineColorText,
+                    snapshot.BackColorText,
+                    resizeToText: false);
                 label.ApplyMetadata(snapshot.Metadata);
                 break;
 

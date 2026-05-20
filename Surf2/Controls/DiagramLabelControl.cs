@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -14,6 +15,10 @@ public sealed class DiagramLabelControl : UserControl
     private const double DefaultBoxHeight = 36;
     private const double MinimumBoxWidth = 70;
     private const double MinimumBoxHeight = 28;
+    private const double TextMeasureHorizontalPadding = 18;
+    private const double TextMeasureVerticalPadding = 12;
+    private const double ResizeHandleSize = 9;
+    private const double ResizeHandleHitSize = 14;
 
     private readonly Canvas _layout;
     private readonly Line _connectorLine;
@@ -23,9 +28,11 @@ public sealed class DiagramLabelControl : UserControl
     private readonly TextBox _labelTextBox;
     private readonly MenuItem _tetheredMenuItem;
     private readonly Border _queryWarningBadge;
+    private readonly Rectangle _resizeHandle;
 
     private bool _isLabelEditing;
     private bool _isDragging;
+    private bool _isResizing;
     private Point _interactionStartPoint;
     private Point _startAnchorPoint;
     private Rect _startBoxRect;
@@ -84,7 +91,18 @@ public sealed class DiagramLabelControl : UserControl
         };
         _labelTextBox.LostKeyboardFocus += LabelTextBox_LostKeyboardFocus;
         _labelTextBox.KeyDown += LabelTextBox_KeyDown;
+        _labelTextBox.TextChanged += LabelTextBox_TextChanged;
         _queryWarningBadge = CreateQueryWarningBadge();
+        _resizeHandle = new Rectangle
+        {
+            Width = ResizeHandleSize,
+            Height = ResizeHandleSize,
+            Fill = Brushes.White,
+            Stroke = Brushes.DodgerBlue,
+            StrokeThickness = 1,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed
+        };
 
         _layout.Children.Add(_connectorLine);
         _layout.Children.Add(_boxRectangle);
@@ -92,6 +110,7 @@ public sealed class DiagramLabelControl : UserControl
         _layout.Children.Add(_labelTextBlock);
         _layout.Children.Add(_labelTextBox);
         _layout.Children.Add(_queryWarningBadge);
+        _layout.Children.Add(_resizeHandle);
         Content = _layout;
 
         var editItem = new MenuItem { Header = "Edit" };
@@ -170,7 +189,11 @@ public sealed class DiagramLabelControl : UserControl
     public bool IsSelected
     {
         get => _selectionRectangle.Visibility == Visibility.Visible;
-        set => _selectionRectangle.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        set
+        {
+            _selectionRectangle.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+            UpdateResizeHandleVisibility();
+        }
     }
 
     public void PlaceAt(Point anchorPoint)
@@ -199,12 +222,18 @@ public sealed class DiagramLabelControl : UserControl
         _labelTextBox.Text = LabelText;
         _labelTextBlock.Visibility = Visibility.Collapsed;
         _labelTextBox.Visibility = Visibility.Visible;
+        UpdateResizeHandleVisibility();
+        ResizeBoxToText(_labelTextBox.Text);
         _labelTextBox.Focus();
         Keyboard.Focus(_labelTextBox);
         _labelTextBox.SelectAll();
     }
 
-    public void ApplyDetails(string labelText, string outlineColorText, string backColorText)
+    public void ApplyDetails(
+        string labelText,
+        string outlineColorText,
+        string backColorText,
+        bool resizeToText = true)
     {
         CommitLabelEdit(notifyChange: false);
         LabelText = labelText;
@@ -212,6 +241,10 @@ public sealed class DiagramLabelControl : UserControl
         OutlineColorText = NormalizeColorText(outlineColorText, "#000000");
         BackColorText = NormalizeColorText(backColorText, "#FFFFFF");
         ApplyColors();
+        if (resizeToText)
+        {
+            ResizeBoxToText(LabelText);
+        }
     }
 
     public void ApplyMetadata(DiagramObjectMetadata metadata)
@@ -229,6 +262,7 @@ public sealed class DiagramLabelControl : UserControl
     {
         IsTethered = isTethered;
         UpdateDashStyle();
+        UpdateResizeHandleVisibility();
     }
 
     public void RetetherAtCurrentAnchor()
@@ -245,7 +279,8 @@ public sealed class DiagramLabelControl : UserControl
         }
 
         Point localPoint = e.GetPosition(this);
-        if (!IsPointInLocalBox(localPoint))
+        bool isResizeHandle = IsPointInResizeHandle(localPoint);
+        if (!isResizeHandle && !IsPointInLocalBox(localPoint))
         {
             base.OnMouseLeftButtonDown(e);
             return;
@@ -254,10 +289,21 @@ public sealed class DiagramLabelControl : UserControl
         Focus();
         Selected?.Invoke(this, EventArgs.Empty);
 
-        _isDragging = true;
         _interactionStartPoint = e.GetPosition(parentCanvas);
         _startAnchorPoint = AnchorPoint;
         _startBoxRect = BoxRect;
+
+        if (isResizeHandle)
+        {
+            _isResizing = true;
+            Cursor = Cursors.SizeNWSE;
+            InteractionStarted?.Invoke(this, EventArgs.Empty);
+            CaptureMouse();
+            e.Handled = true;
+            return;
+        }
+
+        _isDragging = true;
 
         InteractionStarted?.Invoke(this, EventArgs.Empty);
         CaptureMouse();
@@ -266,6 +312,13 @@ public sealed class DiagramLabelControl : UserControl
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        if (_isResizing && e.LeftButton == MouseButtonState.Pressed)
+        {
+            UpdateResize(e);
+            e.Handled = true;
+            return;
+        }
+
         if (_isDragging && e.LeftButton == MouseButtonState.Pressed)
         {
             UpdateDrag(e);
@@ -273,19 +326,35 @@ public sealed class DiagramLabelControl : UserControl
             return;
         }
 
-        Cursor = IsPointInLocalBox(e.GetPosition(this)) ? Cursors.SizeAll : null;
+        Point localPoint = e.GetPosition(this);
+        Cursor = IsPointInResizeHandle(localPoint)
+            ? Cursors.SizeNWSE
+            : IsPointInLocalBox(localPoint) ? Cursors.SizeAll : null;
         base.OnMouseMove(e);
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
-        EndDrag();
-        e.Handled = true;
+        if (_isResizing)
+        {
+            EndResize();
+            e.Handled = true;
+            return;
+        }
+
+        if (_isDragging)
+        {
+            EndDrag();
+            e.Handled = true;
+            return;
+        }
+
+        base.OnMouseLeftButtonUp(e);
     }
 
     protected override void OnMouseLeave(MouseEventArgs e)
     {
-        if (!_isDragging)
+        if (!_isDragging && !_isResizing)
         {
             Cursor = null;
         }
@@ -306,6 +375,22 @@ public sealed class DiagramLabelControl : UserControl
         SetGeometry(anchorPoint, boxRect, IsTethered);
     }
 
+    private void UpdateResize(MouseEventArgs e)
+    {
+        if (Parent is not Canvas parentCanvas)
+        {
+            return;
+        }
+
+        Vector delta = e.GetPosition(parentCanvas) - _interactionStartPoint;
+        double width = Math.Max(MinimumBoxWidth, _startBoxRect.Width + delta.X);
+        double height = Math.Max(MinimumBoxHeight, _startBoxRect.Height + delta.Y);
+        SetGeometry(
+            _startAnchorPoint,
+            new Rect(_startBoxRect.X, _startBoxRect.Y, width, height),
+            IsTethered);
+    }
+
     private void EndDrag()
     {
         if (!_isDragging)
@@ -320,6 +405,25 @@ public sealed class DiagramLabelControl : UserControl
             !AreClose(_startBoxRect.Y, BoxRect.Y);
 
         _isDragging = false;
+
+        if (IsMouseCaptured)
+        {
+            ReleaseMouseCapture();
+        }
+
+        if (changed)
+        {
+            InteractionCompleted?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void EndResize()
+    {
+        bool changed =
+            !AreClose(_startBoxRect.Width, BoxRect.Width) ||
+            !AreClose(_startBoxRect.Height, BoxRect.Height);
+
+        _isResizing = false;
 
         if (IsMouseCaptured)
         {
@@ -380,6 +484,9 @@ public sealed class DiagramLabelControl : UserControl
         Canvas.SetLeft(_queryWarningBadge, localBox.Right - 8);
         Canvas.SetTop(_queryWarningBadge, localBox.Top - 8);
 
+        Canvas.SetLeft(_resizeHandle, localBox.Right - (ResizeHandleSize / 2));
+        Canvas.SetTop(_resizeHandle, localBox.Bottom - (ResizeHandleSize / 2));
+
         UpdateDashStyle();
     }
 
@@ -434,10 +541,42 @@ public sealed class DiagramLabelControl : UserControl
 
     private bool IsPointInLocalBox(Point localPoint)
     {
+        Rect localBox = GetLocalBoxRect();
+        return localBox.Contains(localPoint);
+    }
+
+    private bool IsPointInResizeHandle(Point localPoint)
+    {
+        if (IsTethered || _isLabelEditing)
+        {
+            return false;
+        }
+
+        Rect localBox = GetLocalBoxRect();
+        var handleHitBox = new Rect(
+            localBox.Right - ResizeHandleHitSize,
+            localBox.Bottom - ResizeHandleHitSize,
+            ResizeHandleHitSize + (ResizeHandleSize / 2),
+            ResizeHandleHitSize + (ResizeHandleSize / 2));
+
+        return handleHitBox.Contains(localPoint);
+    }
+
+    private Rect GetLocalBoxRect()
+    {
         double left = Canvas.GetLeft(_boxRectangle);
         double top = Canvas.GetTop(_boxRectangle);
-        var localBox = new Rect(left, top, _boxRectangle.Width, _boxRectangle.Height);
-        return localBox.Contains(localPoint);
+        if (double.IsNaN(left))
+        {
+            left = 0;
+        }
+
+        if (double.IsNaN(top))
+        {
+            top = 0;
+        }
+
+        return new Rect(left, top, _boxRectangle.Width, _boxRectangle.Height);
     }
 
     private void ApplyColors()
@@ -454,6 +593,14 @@ public sealed class DiagramLabelControl : UserControl
         DoubleCollection? dashArray = IsTethered ? null : new DoubleCollection { 3, 3 };
         _connectorLine.StrokeDashArray = dashArray;
         _boxRectangle.StrokeDashArray = dashArray;
+        UpdateResizeHandleVisibility();
+    }
+
+    private void UpdateResizeHandleVisibility()
+    {
+        _resizeHandle.Visibility = !IsTethered && IsSelected && !_isLabelEditing
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void LabelTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
@@ -478,6 +625,14 @@ public sealed class DiagramLabelControl : UserControl
         }
     }
 
+    private void LabelTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_isLabelEditing)
+        {
+            ResizeBoxToText(_labelTextBox.Text);
+        }
+    }
+
     private void CommitLabelEdit(bool notifyChange = true)
     {
         if (!_isLabelEditing)
@@ -488,14 +643,52 @@ public sealed class DiagramLabelControl : UserControl
         string oldText = LabelText;
         LabelText = _labelTextBox.Text;
         _labelTextBlock.Text = LabelText;
+        ResizeBoxToText(LabelText);
         _labelTextBox.Visibility = Visibility.Collapsed;
         _labelTextBlock.Visibility = Visibility.Visible;
         _isLabelEditing = false;
+        UpdateResizeHandleVisibility();
 
         if (notifyChange && !string.Equals(oldText, LabelText, StringComparison.Ordinal))
         {
             LabelChanged?.Invoke(this, new DiagramObjectLabelChangedEventArgs(oldText, LabelText));
         }
+    }
+
+    private void ResizeBoxToText(string text)
+    {
+        Size textSize = MeasureLabelText(text);
+        double width = Math.Max(MinimumBoxWidth, Math.Ceiling(textSize.Width + TextMeasureHorizontalPadding));
+        double height = Math.Max(MinimumBoxHeight, Math.Ceiling(textSize.Height + TextMeasureVerticalPadding));
+
+        if (AreClose(BoxRect.Width, width) && AreClose(BoxRect.Height, height))
+        {
+            return;
+        }
+
+        SetGeometry(AnchorPoint, new Rect(BoxRect.X, BoxRect.Y, width, height), IsTethered);
+    }
+
+    private Size MeasureLabelText(string text)
+    {
+        string measureText = string.IsNullOrEmpty(text) ? " " : text;
+        double pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        var formattedText = new FormattedText(
+            measureText,
+            CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight,
+            new Typeface(
+                _labelTextBlock.FontFamily,
+                _labelTextBlock.FontStyle,
+                _labelTextBlock.FontWeight,
+                _labelTextBlock.FontStretch),
+            _labelTextBlock.FontSize,
+            Brushes.Black,
+            pixelsPerDip);
+
+        return new Size(
+            formattedText.WidthIncludingTrailingWhitespace,
+            formattedText.Height);
     }
 
     private static Brush CreateBrush(string colorText, Brush fallback)
