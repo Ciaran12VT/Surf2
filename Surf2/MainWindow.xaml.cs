@@ -65,6 +65,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramObjectSnapshot? Before,
         DiagramObjectSnapshot? After);
 
+    private sealed record MetadataLinkTarget(
+        string Link,
+        int? LineNumber);
+
     private sealed record ReferenceResourceContext(
         string Key,
         string DisplayName,
@@ -145,6 +149,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static readonly Regex SqlTableReferencePattern = new(
         @"\b(?:from|join)\s+(?<table>(?:\[[^\]\r\n]+\]|[A-Za-z_#][A-Za-z0-9_#$]*)(?:\s*\.\s*(?:\[[^\]\r\n]+\]|[A-Za-z_#][A-Za-z0-9_#$]*)){0,2})(?:\s+(?:as\s+)?(?<alias>\[[^\]\r\n]+\]|[A-Za-z_#][A-Za-z0-9_#$]*))?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    private static readonly Regex MetadataLinkLineSuffixPattern = new(
+        @"^(?<link>.+?)(?:(?:#L|#line=|:)(?<line>[1-9]\d*))$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static readonly Brush ActiveCodeCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xEE, 0xF1, 0xF5));
@@ -2196,9 +2204,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            if (Uri.TryCreate(link, UriKind.Absolute, out Uri? uri) &&
-                (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            link = link.Trim();
+            if (Uri.TryCreate(link, UriKind.Absolute, out Uri? externalUri) &&
+                (string.Equals(externalUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(externalUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
             {
                 Process.Start(new ProcessStartInfo(link)
                 {
@@ -2208,13 +2217,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return true;
             }
 
-            if (DiagramDocumentService.IsDiagramDocumentPath(link))
+            MetadataLinkTarget target = ParseMetadataLinkTarget(link);
+            string targetLink = target.Link;
+
+            if (Uri.TryCreate(targetLink, UriKind.Absolute, out Uri? uri) &&
+                (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
             {
-                await OpenDiagramAsync(link);
+                Process.Start(new ProcessStartInfo(targetLink)
+                {
+                    UseShellExecute = true
+                });
+                StatusText = $"Opened metadata link: {targetLink}";
                 return true;
             }
 
-            string filePath = uri?.IsFile == true ? uri.LocalPath : link;
+            if (DiagramDocumentService.IsDiagramDocumentPath(targetLink))
+            {
+                await OpenDiagramAsync(targetLink);
+                return true;
+            }
+
+            string filePath = uri?.IsFile == true ? uri.LocalPath : targetLink;
             if (TryFocusInternalContainerLink(filePath))
             {
                 return true;
@@ -2233,8 +2257,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (File.Exists(filePath) || DatabaseDocumentService.IsDatabaseDocumentPath(filePath))
             {
                 EnsureCodeViewVisible();
-                await OpenFileAsync(filePath);
-                StatusText = $"Opened metadata link: {filePath}";
+                await OpenFileAsync(filePath, targetLineNumber: target.LineNumber);
+                StatusText = target.LineNumber.HasValue
+                    ? $"Opened metadata link: {filePath} line {target.LineNumber.Value}"
+                    : $"Opened metadata link: {filePath}";
                 return true;
             }
 
@@ -2246,6 +2272,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = $"Could not open metadata link: {ex.Message}";
             return false;
         }
+    }
+
+    private static MetadataLinkTarget ParseMetadataLinkTarget(string link)
+    {
+        string trimmedLink = link.Trim();
+        Match match = MetadataLinkLineSuffixPattern.Match(trimmedLink);
+        if (!match.Success ||
+            !int.TryParse(match.Groups["line"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int lineNumber))
+        {
+            return new MetadataLinkTarget(trimmedLink, null);
+        }
+
+        string targetLink = match.Groups["link"].Value.TrimEnd();
+        return string.IsNullOrWhiteSpace(targetLink)
+            ? new MetadataLinkTarget(trimmedLink, null)
+            : new MetadataLinkTarget(targetLink, lineNumber);
     }
 
     private void MetadataPickResourceButton_Click(object sender, RoutedEventArgs e)
