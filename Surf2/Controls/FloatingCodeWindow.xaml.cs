@@ -74,6 +74,32 @@ public partial class FloatingCodeWindow : UserControl
 
     public string Text => Editor.Text;
 
+    public void SetDockedMode(bool isDocked)
+    {
+        HeaderRow.Height = isDocked ? new GridLength(0) : new GridLength(32);
+        HeaderBar.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
+        OuterBorder.BorderThickness = isDocked ? new Thickness(0) : new Thickness(1);
+
+        foreach (Thumb thumb in FindVisualChildren<Thumb>(this))
+        {
+            thumb.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        if (isDocked)
+        {
+            Width = double.NaN;
+            Height = double.NaN;
+            HorizontalAlignment = HorizontalAlignment.Stretch;
+            VerticalAlignment = VerticalAlignment.Stretch;
+            return;
+        }
+
+        Width = Math.Max(MinWidth, State.Width);
+        Height = Math.Max(MinHeight, State.Height);
+        HorizontalAlignment = HorizontalAlignment.Left;
+        VerticalAlignment = VerticalAlignment.Top;
+    }
+
     public bool TryGetSelectedTextOrReferenceToken(out string token, out int startOffset)
     {
         token = string.Empty;
@@ -849,6 +875,23 @@ public partial class FloatingCodeWindow : UserControl
         }
 
         return null;
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            DependencyObject child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T target)
+            {
+                yield return target;
+            }
+
+            foreach (T descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
+            }
+        }
     }
 }
 

@@ -89,6 +89,7 @@
                 <ListBoxItem Content="Code Windows" IsSelected="True" />
                 <ListBoxItem Content="Reference Highlights" />
                 <ListBoxItem Content="Diagram Images" />
+                <ListBoxItem Content="Workbench" />
                 <ListBoxItem Content="Persistence" />
             </ListBox>
         </Grid>
@@ -592,11 +593,13 @@
                     <StackPanel Grid.Row="2"
                                 Margin="0,10,0,0"
                                 Orientation="Horizontal">
-                        <Button Width="118"
+                        <Button Width="132"
                                 Margin="0,0,8,0"
+                                Style="{StaticResource SettingsPrimaryButtonStyle}"
                                 Click="TestConnectionButton_Click"
                                 Content="Test Connection" />
-                        <Button Width="104"
+                        <Button Width="116"
+                                Style="{StaticResource SettingsPrimaryButtonStyle}"
                                 Click="UseDefaultConnectionButton_Click"
                                 Content="Use Default" />
                     </StackPanel>
@@ -624,6 +627,49 @@
                                 Margin="0,0,8,0"
                                 Style="{StaticResource SettingsSaveButtonStyle}"
                                 Click="SavePersistenceButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
+
+            <Grid x:Name="WorkbenchSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Workbench" />
+
+                <CheckBox x:Name="LoadMostRecentWorkbenchCheckBox"
+                          Grid.Row="1"
+                          Margin="0,14,0,0"
+                          Content="Load the most recent saved Workbench on startup" />
+
+                <Border Grid.Row="2"
+                        Margin="0,14,0,0"
+                        Padding="10"
+                        BorderBrush="#D7DCE2"
+                        BorderThickness="1"
+                        Background="#F8FAFC">
+                    <TextBlock TextWrapping="Wrap"
+                               Text="When enabled, Surf2 starts from your newest explicitly saved Workbench. When disabled, Surf2 starts in its default empty state." />
+                </Border>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveWorkbenchSettingsButton_Click"
                                 Content="Save" />
                         <Button Width="86"
                                 Style="{StaticResource SettingsCloseButtonStyle}"

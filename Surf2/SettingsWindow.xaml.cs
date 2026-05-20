@@ -65,6 +65,7 @@ public partial class SettingsWindow : Window
         HighlightStyleList.ItemsSource = _highlightStyles;
         DiagramImageList.ItemsSource = _diagramImages;
         LoadConnectionSettings();
+        LoadMostRecentWorkbenchCheckBox.IsChecked = Settings.LoadMostRecentWorkbenchOnStartup;
 
         if (_backcolors.Count > 0)
         {
@@ -105,6 +106,7 @@ public partial class SettingsWindow : Window
         if (CodeWindowSettingsPanel == null ||
             ReferenceHighlightSettingsPanel == null ||
             DiagramImageSettingsPanel == null ||
+            WorkbenchSettingsPanel == null ||
             PersistenceSettingsPanel == null)
         {
             return;
@@ -113,7 +115,8 @@ public partial class SettingsWindow : Window
         CodeWindowSettingsPanel.Visibility = SectionList.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         ReferenceHighlightSettingsPanel.Visibility = SectionList.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         DiagramImageSettingsPanel.Visibility = SectionList.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
-        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
+        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -279,6 +282,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        SaveWorkbenchSettings();
         DialogResult = true;
         Close();
     }
@@ -387,6 +391,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        SaveWorkbenchSettings();
         DialogResult = true;
         Close();
     }
@@ -571,6 +576,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        SaveWorkbenchSettings();
         DialogResult = true;
         Close();
     }
@@ -655,9 +661,29 @@ public partial class SettingsWindow : Window
         ConnectionSettings.ConnectionString = connectionString;
         _connectionSettingsStore.Save(ConnectionSettings);
         ConnectionSettingsWereChanged = true;
+        SaveWorkbenchSettings();
 
         DialogResult = true;
         Close();
+    }
+
+    private void SaveWorkbenchSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveBackcolorSettings() ||
+            !SaveReferenceHighlightSettings(validateActive: false) ||
+            !SaveDiagramImageSettings(validateActive: false))
+        {
+            return;
+        }
+
+        SaveWorkbenchSettings();
+        DialogResult = true;
+        Close();
+    }
+
+    private void SaveWorkbenchSettings()
+    {
+        Settings.LoadMostRecentWorkbenchOnStartup = LoadMostRecentWorkbenchCheckBox.IsChecked == true;
     }
 
     private bool SaveBackcolorSettings()

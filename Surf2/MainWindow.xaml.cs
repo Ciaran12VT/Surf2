@@ -43,6 +43,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Diagram
     }
 
+    private enum CodeViewMode
+    {
+        Canvas,
+        Tabs
+    }
+
     private enum DiagramUndoActionKind
     {
         Added,
@@ -171,6 +177,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly ISettingsStore _settingsStore = new SqlServerSettingsStore();
     private readonly IDatabaseMetadataStore _databaseMetadataStore = new SqlServerDatabaseMetadataStore();
     private readonly IDiagramStore _diagramStore = new SqlServerDiagramStore();
+    private readonly IWorkbenchStore _workbenchStore = new SqlServerWorkbenchStore();
     private readonly DatabaseDocumentService _databaseDocumentService = new();
     private readonly Dictionary<string, FloatingCodeWindow> _openWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FloatingSpreadsheetWindow> _openSpreadsheetWindows = new(StringComparer.OrdinalIgnoreCase);
@@ -179,6 +186,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private ScopeLibrary _scopeLibrary = new();
     private DatabaseSnapshotLibrary _databaseSnapshots = new();
     private DiagramLibrary _diagramLibrary = new();
+    private WorkbenchLibrary _workbenchLibrary = new();
     private AppSettings _appSettings = new();
     private ScopeReferenceIndex _referenceIndex = ScopeReferenceIndex.Empty;
     private ReferenceHighlightColorizer? _previewReferenceHighlightColorizer;
@@ -188,6 +196,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private int _previewRequestVersion;
     private WorkspaceSplitOrientation _workspaceSplitOrientation = WorkspaceSplitOrientation.DiagramBottom;
     private WorkspaceViewKind _activeWorkspaceView = WorkspaceViewKind.Code;
+    private CodeViewMode _codeViewMode = CodeViewMode.Canvas;
     private double _canvasZoom = 1;
     private double _diagramCanvasZoom = 1;
     private bool _isCanvasPanning;
@@ -203,7 +212,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isCreatingNewWorkflow;
     private bool _isAddingWorkflowItems;
     private bool _isUpdatingViewToggles;
+    private bool _isUpdatingCodeViewMode;
     private bool _isUpdatingDiagramToolToggles;
+    private bool _isUpdatingWorkbenchSelection;
     private bool _diagramViewportInitialized;
     private bool _shutdownRequested;
     private bool _shutdownSaveCompleted;
@@ -260,6 +271,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public ObservableCollection<OpenWindowItem> OpenTabs { get; } = [];
 
+    public ObservableCollection<WorkbenchState> SavedWorkbenches { get; } = [];
+
     public IReadOnlyList<NavigationHistoryEntry> NavigationHistory => _navigationHistoryService.Entries;
 
     public bool CanNavigateBack => _navigationHistoryService.CanMoveBack;
@@ -308,6 +321,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _scopeLibrary = await _scopeStore.LoadAsync();
             _databaseSnapshots = await _databaseMetadataStore.LoadAsync();
             _diagramLibrary = await _diagramStore.LoadAsync();
+            _workbenchLibrary = await _workbenchStore.LoadAsync();
             _appSettings = await _settingsStore.LoadAsync();
             if (_appSettings.EnsureDefaults())
             {
@@ -315,24 +329,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             RefreshDiagramImageToolMenu();
+            RefreshSavedWorkbenches();
             await MigrateSavedFolderToDefaultScopeAsync();
 
-            _canvasZoom = NormalizeCanvasZoom(_workspaceState.CanvasZoom);
-            ApplyCanvasZoom();
-            ApplyDiagramCanvasZoom();
-            MigrateLegacyWindowCoordinates();
-            LoadLastActiveScope();
+            WorkbenchState? startupWorkbench = _appSettings.LoadMostRecentWorkbenchOnStartup
+                ? _workbenchLibrary.Workbenches
+                    .OrderByDescending(workbench => workbench.SavedAtUtc)
+                    .FirstOrDefault()
+                : null;
 
-            foreach (OpenDocumentState documentState in _workspaceState.OpenDocuments.ToList())
+            if (startupWorkbench != null)
             {
-                if (File.Exists(documentState.FilePath) || DatabaseDocumentService.IsDatabaseDocumentPath(documentState.FilePath))
-                {
-                    await OpenFileAsync(documentState.FilePath, documentState);
-                }
+                await LoadWorkbenchAsync(startupWorkbench, updateSelector: true);
             }
-
-            UpdateEmptyWorkspaceHint();
-            _ = Dispatcher.BeginInvoke(RestoreViewport);
+            else
+            {
+                InitializeDefaultStartupState();
+            }
         }
         catch (Exception ex)
         {
@@ -490,6 +503,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         LoadScope(activeScope);
+    }
+
+    private void InitializeDefaultStartupState()
+    {
+        _workspaceState = new WorkspaceState();
+        _canvasZoom = 1;
+        _diagramCanvasZoom = 1;
+        ApplyCanvasZoom();
+        ApplyDiagramCanvasZoom();
+        SetCodeViewMode(CodeViewMode.Canvas);
+        SetWorkspaceViewVisibility(showCode: true, showDiagram: false, WorkspaceViewKind.Code);
+        LoadScope(null);
+        UpdateEmptyWorkspaceHint();
+        _ = Dispatcher.BeginInvoke(RestoreViewport);
     }
 
     private async Task MigrateSavedFolderToDefaultScopeAsync()
@@ -736,6 +763,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isUpdatingViewToggles = false;
 
         _activeWorkspaceView = viewKind;
+        ApplyWorkspaceViewLayout();
+    }
+
+    private void SetWorkspaceViewVisibility(bool showCode, bool showDiagram, WorkspaceViewKind activeView)
+    {
+        if (CodeViewToggle == null || DiagramViewToggle == null)
+        {
+            return;
+        }
+
+        if (!showCode && !showDiagram)
+        {
+            showCode = true;
+            activeView = WorkspaceViewKind.Code;
+        }
+
+        _isUpdatingViewToggles = true;
+        try
+        {
+            CodeViewToggle.IsChecked = showCode;
+            DiagramViewToggle.IsChecked = showDiagram;
+        }
+        finally
+        {
+            _isUpdatingViewToggles = false;
+        }
+
+        _activeWorkspaceView = showDiagram && activeView == WorkspaceViewKind.Diagram
+            ? WorkspaceViewKind.Diagram
+            : WorkspaceViewKind.Code;
         ApplyWorkspaceViewLayout();
     }
 
@@ -1570,6 +1627,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
 
         ApplyWorkspaceViewLayout();
+    }
+
+    private void CodeViewModeToggle_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingCodeViewMode)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(sender, CodeCanvasModeToggle))
+        {
+            SetCodeViewMode(CodeViewMode.Canvas);
+            return;
+        }
+
+        if (ReferenceEquals(sender, CodeTabModeToggle))
+        {
+            SetCodeViewMode(CodeViewMode.Tabs);
+        }
+    }
+
+    private void CodeViewModeToggle_Unchecked(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingCodeViewMode)
+        {
+            return;
+        }
+
+        if (CodeCanvasModeToggle == null || CodeTabModeToggle == null)
+        {
+            return;
+        }
+
+        if (CodeCanvasModeToggle.IsChecked != true && CodeTabModeToggle.IsChecked != true)
+        {
+            SetCodeViewMode(_codeViewMode);
+        }
     }
 
     private void CodeViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -3600,14 +3694,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             state.Top = placement.Y;
         }
 
-        WorkspaceCanvas.Children.Add(window);
-        Canvas.SetLeft(window, state.Left);
-        Canvas.SetTop(window, state.Top);
-        BringToFront(window);
-        RevealWindow(window);
-
         _openWindows[documentPath] = window;
         AddOpenTab(state);
+        AddWindowToCodeView(window, state, select: true);
         _windowSequence++;
         StatusText = $"Opened {state.DisplayName}";
         UpdateEmptyWorkspaceHint();
@@ -3659,14 +3748,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             state.Top = placement.Y;
         }
 
-        WorkspaceCanvas.Children.Add(window);
-        Canvas.SetLeft(window, state.Left);
-        Canvas.SetTop(window, state.Top);
-        BringToFront(window);
-        RevealWindow(window);
-
         _openSpreadsheetWindows[documentPath] = window;
         AddOpenTab(state);
+        AddWindowToCodeView(window, state, select: true);
         _windowSequence++;
         StatusText = $"Opened {state.DisplayName}";
         UpdateEmptyWorkspaceHint();
@@ -3739,7 +3823,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseOpenWindow(FloatingCodeWindow window)
     {
-        WorkspaceCanvas.Children.Remove(window);
+        RemoveWindowFromCodeView(window);
         _openWindows.Remove(window.State.FilePath);
         _workspaceState.OpenDocuments.Remove(window.State);
         RemoveOpenTab(window.State.FilePath);
@@ -3749,12 +3833,152 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseSpreadsheetWindow(FloatingSpreadsheetWindow window)
     {
-        WorkspaceCanvas.Children.Remove(window);
+        RemoveWindowFromCodeView(window);
         _openSpreadsheetWindows.Remove(window.State.FilePath);
         _workspaceState.OpenDocuments.Remove(window.State);
         RemoveOpenTab(window.State.FilePath);
         StatusText = $"Closed {GetDocumentDisplayName(window.State)}";
         UpdateEmptyWorkspaceHint();
+    }
+
+    private void AddWindowToCodeView(FrameworkElement window, OpenDocumentState state, bool select)
+    {
+        if (_codeViewMode == CodeViewMode.Tabs)
+        {
+            AddWindowToCodeTabs(window, state, select);
+            return;
+        }
+
+        AddWindowToCodeCanvas(window, state, select);
+    }
+
+    private void AddWindowToCodeCanvas(FrameworkElement window, OpenDocumentState state, bool select)
+    {
+        DetachFromCurrentParent(window);
+        SetWindowDockedMode(window, isDocked: false);
+        WorkspaceCanvas.Children.Add(window);
+        Canvas.SetLeft(window, state.Left);
+        Canvas.SetTop(window, state.Top);
+
+        if (select)
+        {
+            BringToFront(window);
+            RevealWindow(window);
+        }
+    }
+
+    private void AddWindowToCodeTabs(FrameworkElement window, OpenDocumentState state, bool select)
+    {
+        DetachFromCurrentParent(window);
+        SetWindowDockedMode(window, isDocked: true);
+
+        TabItem tabItem = FindCodeDocumentTab(state.FilePath) ?? new TabItem
+        {
+            Tag = state.FilePath,
+            ToolTip = state.FilePath
+        };
+        tabItem.Header = GetDocumentDisplayName(state);
+        tabItem.Content = window;
+
+        if (!CodeDocumentsTabControl.Items.Contains(tabItem))
+        {
+            CodeDocumentsTabControl.Items.Add(tabItem);
+        }
+
+        if (select)
+        {
+            CodeDocumentsTabControl.SelectedItem = tabItem;
+        }
+    }
+
+    private void RemoveWindowFromCodeView(FrameworkElement window)
+    {
+        WorkspaceCanvas.Children.Remove(window);
+
+        string? filePath = GetWindowFilePath(window);
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            RemoveCodeDocumentTab(filePath);
+        }
+        else
+        {
+            DetachFromCurrentParent(window);
+        }
+    }
+
+    private void DetachFromCurrentParent(FrameworkElement element)
+    {
+        if (element.Parent is Panel panel)
+        {
+            panel.Children.Remove(element);
+            return;
+        }
+
+        if (LogicalTreeHelper.GetParent(element) is ContentControl contentControl &&
+            ReferenceEquals(contentControl.Content, element))
+        {
+            contentControl.Content = null;
+            return;
+        }
+
+        if (element.Parent is ContentControl parentContentControl &&
+            ReferenceEquals(parentContentControl.Content, element))
+        {
+            parentContentControl.Content = null;
+        }
+    }
+
+    private static void SetWindowDockedMode(FrameworkElement window, bool isDocked)
+    {
+        switch (window)
+        {
+            case FloatingCodeWindow codeWindow:
+                codeWindow.SetDockedMode(isDocked);
+                break;
+
+            case FloatingSpreadsheetWindow spreadsheetWindow:
+                spreadsheetWindow.SetDockedMode(isDocked);
+                break;
+        }
+    }
+
+    private static string? GetWindowFilePath(FrameworkElement window)
+    {
+        return window switch
+        {
+            FloatingCodeWindow codeWindow => codeWindow.State.FilePath,
+            FloatingSpreadsheetWindow spreadsheetWindow => spreadsheetWindow.State.FilePath,
+            _ => null
+        };
+    }
+
+    private TabItem? FindCodeDocumentTab(string filePath)
+    {
+        return CodeDocumentsTabControl.Items
+            .OfType<TabItem>()
+            .FirstOrDefault(tab => string.Equals(tab.Tag as string, filePath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void RemoveCodeDocumentTab(string filePath)
+    {
+        TabItem? tabItem = FindCodeDocumentTab(filePath);
+        if (tabItem == null)
+        {
+            return;
+        }
+
+        tabItem.Content = null;
+        CodeDocumentsTabControl.Items.Remove(tabItem);
+    }
+
+    private void ClearCodeDocumentTabs()
+    {
+        foreach (TabItem tabItem in CodeDocumentsTabControl.Items.OfType<TabItem>().ToList())
+        {
+            tabItem.Content = null;
+        }
+
+        CodeDocumentsTabControl.Items.Clear();
     }
 
     private void FloatingWindow_ContextMenuOpeningRequested(object? sender, CodeWindowContextMenuOpeningEventArgs e)
@@ -5313,18 +5537,54 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (sender is FloatingCodeWindow window)
         {
-            window.State.Left = Canvas.GetLeft(window);
-            window.State.Top = Canvas.GetTop(window);
-            window.State.Width = window.Width;
-            window.State.Height = window.Height;
+            double left = Canvas.GetLeft(window);
+            double top = Canvas.GetTop(window);
+            if (!double.IsNaN(left))
+            {
+                window.State.Left = left;
+            }
+
+            if (!double.IsNaN(top))
+            {
+                window.State.Top = top;
+            }
+
+            if (!double.IsNaN(window.Width) && window.Width > 0)
+            {
+                window.State.Width = window.Width;
+            }
+
+            if (!double.IsNaN(window.Height) && window.Height > 0)
+            {
+                window.State.Height = window.Height;
+            }
+
             window.State.FontSize = Math.Max(1, window.State.FontSize);
         }
         else if (sender is FloatingSpreadsheetWindow spreadsheetWindow)
         {
-            spreadsheetWindow.State.Left = Canvas.GetLeft(spreadsheetWindow);
-            spreadsheetWindow.State.Top = Canvas.GetTop(spreadsheetWindow);
-            spreadsheetWindow.State.Width = spreadsheetWindow.Width;
-            spreadsheetWindow.State.Height = spreadsheetWindow.Height;
+            double left = Canvas.GetLeft(spreadsheetWindow);
+            double top = Canvas.GetTop(spreadsheetWindow);
+            if (!double.IsNaN(left))
+            {
+                spreadsheetWindow.State.Left = left;
+            }
+
+            if (!double.IsNaN(top))
+            {
+                spreadsheetWindow.State.Top = top;
+            }
+
+            if (!double.IsNaN(spreadsheetWindow.Width) && spreadsheetWindow.Width > 0)
+            {
+                spreadsheetWindow.State.Width = spreadsheetWindow.Width;
+            }
+
+            if (!double.IsNaN(spreadsheetWindow.Height) && spreadsheetWindow.Height > 0)
+            {
+                spreadsheetWindow.State.Height = spreadsheetWindow.Height;
+            }
+
             spreadsheetWindow.State.FontSize = Math.Max(1, spreadsheetWindow.State.FontSize);
         }
     }
@@ -7255,9 +7515,339 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             : "Settings saved.";
     }
 
+    private async void SaveWorkbenchButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            WorkbenchState workbench = CaptureWorkbenchState();
+            _workbenchLibrary.Workbenches.Add(workbench);
+            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            RefreshSavedWorkbenches(workbench.WorkbenchId);
+            StatusText = $"Saved Workbench '{workbench.DisplayName}'.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save Workbench: {ex.Message}";
+        }
+    }
+
+    private async void WorkbenchSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isUpdatingWorkbenchSelection ||
+            WorkbenchSelector.SelectedItem is not WorkbenchState workbench)
+        {
+            return;
+        }
+
+        await LoadWorkbenchAsync(workbench, updateSelector: false);
+    }
+
+    private WorkbenchState CaptureWorkbenchState()
+    {
+        CaptureViewportState();
+        SyncOpenDocumentStatesFromWindows();
+
+        return new WorkbenchState
+        {
+            SavedAtUtc = DateTimeOffset.UtcNow,
+            ScopeId = _activeScope?.ScopeId ?? string.Empty,
+            ScopeName = _activeScope?.Name ?? "No scope",
+            IsCodeViewVisible = CodeViewToggle.IsChecked == true,
+            IsDiagramViewVisible = DiagramViewToggle.IsChecked == true,
+            ActiveWorkspaceView = _activeWorkspaceView.ToString(),
+            WorkspaceSplitOrientation = _workspaceSplitOrientation.ToString(),
+            CodeViewMode = _codeViewMode.ToString(),
+            CodeCanvasZoom = _canvasZoom,
+            CodeViewportHorizontalOffset = WorkspaceScrollViewer.HorizontalOffset,
+            CodeViewportVerticalOffset = WorkspaceScrollViewer.VerticalOffset,
+            OpenDocuments = OpenTabs
+                .Select(tab => CloneOpenDocumentState(tab.State))
+                .ToList(),
+            ActiveDocumentPath = GetActiveDocumentPath() ?? string.Empty,
+            ActiveDiagramId = _activeDiagramId ?? string.Empty,
+            ActiveDiagramName = CurrentDiagramName,
+            ActiveDiagramSnapshot = CaptureActiveDiagramSnapshot(),
+            DiagramCanvasZoom = _diagramCanvasZoom,
+            DiagramViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
+            DiagramViewportVerticalOffset = DiagramScrollViewer.VerticalOffset
+        };
+    }
+
+    private async Task LoadWorkbenchAsync(WorkbenchState workbench, bool updateSelector)
+    {
+        try
+        {
+            CloseAllOpenWindows();
+            ClearLoadedDiagram();
+
+            _workspaceState = CreateWorkspaceState(workbench);
+            _canvasZoom = NormalizeCanvasZoom(workbench.CodeCanvasZoom);
+            ApplyCanvasZoom();
+
+            _workspaceSplitOrientation = ParseWorkspaceSplitOrientation(workbench.WorkspaceSplitOrientation);
+            SetCodeViewMode(ParseCodeViewMode(workbench.CodeViewMode));
+
+            Scope? scope = _scopeLibrary.Scopes.FirstOrDefault(candidate =>
+                string.Equals(candidate.ScopeId, workbench.ScopeId, StringComparison.OrdinalIgnoreCase));
+            if (scope != null)
+            {
+                _scopeLibrary.LastActiveScopeId = scope.ScopeId;
+                LoadScope(scope);
+            }
+            else
+            {
+                LoadScope(null);
+            }
+
+            LoadWorkbenchDiagram(workbench);
+            SetWorkspaceViewVisibility(
+                workbench.IsCodeViewVisible,
+                workbench.IsDiagramViewVisible,
+                ParseWorkspaceViewKind(workbench.ActiveWorkspaceView));
+
+            foreach (OpenDocumentState documentState in _workspaceState.OpenDocuments.ToList())
+            {
+                if (File.Exists(documentState.FilePath) || DatabaseDocumentService.IsDatabaseDocumentPath(documentState.FilePath))
+                {
+                    await OpenFileAsync(documentState.FilePath, documentState);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(workbench.ActiveDocumentPath))
+            {
+                SelectOpenDocument(workbench.ActiveDocumentPath);
+            }
+
+            UpdateEmptyWorkspaceHint();
+            _ = Dispatcher.BeginInvoke(new Action(RestoreViewport), DispatcherPriority.ContextIdle);
+
+            if (updateSelector)
+            {
+                RefreshSavedWorkbenches(workbench.WorkbenchId);
+            }
+
+            StatusText = $"Loaded Workbench '{workbench.DisplayName}'.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not load Workbench: {ex.Message}";
+        }
+    }
+
+    private void LoadWorkbenchDiagram(WorkbenchState workbench)
+    {
+        DiagramDocument? diagram = workbench.ActiveDiagramSnapshot ?? _diagramLibrary.Find(workbench.ActiveDiagramId);
+        if (diagram == null)
+        {
+            ClearLoadedDiagram();
+            _diagramCanvasZoom = NormalizeCanvasZoom(workbench.DiagramCanvasZoom);
+            ApplyDiagramCanvasZoom();
+            return;
+        }
+
+        LoadDiagram(diagram);
+        _diagramCanvasZoom = NormalizeCanvasZoom(workbench.DiagramCanvasZoom);
+        ApplyDiagramCanvasZoom();
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            DiagramScrollViewer.UpdateLayout();
+            DiagramScrollViewer.ScrollToHorizontalOffset(Math.Max(0, workbench.DiagramViewportHorizontalOffset));
+            DiagramScrollViewer.ScrollToVerticalOffset(Math.Max(0, workbench.DiagramViewportVerticalOffset));
+        }), DispatcherPriority.ApplicationIdle);
+    }
+
+    private DiagramDocument? CaptureActiveDiagramSnapshot()
+    {
+        bool hasDiagramState =
+            !string.IsNullOrWhiteSpace(_activeDiagramId) ||
+            DiagramCanvas.Children.OfType<FrameworkElement>().Any(IsDiagramObject) ||
+            _currentDiagramWorkflows.Count > 0;
+
+        if (!hasDiagramState)
+        {
+            return null;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        DiagramDocument? existingDiagram = _diagramLibrary.Find(_activeDiagramId);
+        return new DiagramDocument
+        {
+            DiagramId = _activeDiagramId ?? string.Empty,
+            Name = CurrentDiagramName,
+            CreatedAtUtc = existingDiagram?.CreatedAtUtc ?? now,
+            UpdatedAtUtc = now,
+            CanvasZoom = _diagramCanvasZoom,
+            ViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
+            ViewportVerticalOffset = DiagramScrollViewer.VerticalOffset,
+            Objects = CaptureDiagramObjects(),
+            Workflows = _currentDiagramWorkflows
+                .Select(workflow => workflow.Clone())
+                .ToList()
+        };
+    }
+
+    private void ClearLoadedDiagram()
+    {
+        ClearDiagramObjects();
+        _currentDiagramWorkflows = [];
+        ResetWorkflowEditor();
+        RefreshWorkflowList();
+        SetCurrentDiagramIdentity(null, "Unsaved Diagram");
+    }
+
+    private void RefreshSavedWorkbenches(string? selectedWorkbenchId = null)
+    {
+        string? targetSelection = selectedWorkbenchId;
+        if (string.IsNullOrWhiteSpace(targetSelection) &&
+            WorkbenchSelector?.SelectedItem is WorkbenchState selectedWorkbench)
+        {
+            targetSelection = selectedWorkbench.WorkbenchId;
+        }
+
+        _isUpdatingWorkbenchSelection = true;
+        try
+        {
+            SavedWorkbenches.Clear();
+            foreach (WorkbenchState workbench in _workbenchLibrary.Workbenches
+                         .OrderByDescending(workbench => workbench.SavedAtUtc))
+            {
+                SavedWorkbenches.Add(workbench);
+            }
+
+            if (WorkbenchSelector != null)
+            {
+                WorkbenchSelector.SelectedItem = SavedWorkbenches.FirstOrDefault(workbench =>
+                    string.Equals(workbench.WorkbenchId, targetSelection, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        finally
+        {
+            _isUpdatingWorkbenchSelection = false;
+        }
+    }
+
+    private void SyncOpenDocumentStatesFromWindows()
+    {
+        foreach (FloatingCodeWindow window in _openWindows.Values)
+        {
+            SyncOpenDocumentStateFromWindow(window.State, window);
+        }
+
+        foreach (FloatingSpreadsheetWindow window in _openSpreadsheetWindows.Values)
+        {
+            SyncOpenDocumentStateFromWindow(window.State, window);
+        }
+    }
+
+    private void SyncOpenDocumentStateFromWindow(OpenDocumentState state, FrameworkElement window)
+    {
+        double left = Canvas.GetLeft(window);
+        double top = Canvas.GetTop(window);
+        if (!double.IsNaN(left))
+        {
+            state.Left = left;
+        }
+
+        if (!double.IsNaN(top))
+        {
+            state.Top = top;
+        }
+
+        if (!double.IsNaN(window.Width) && window.Width > 0)
+        {
+            state.Width = window.Width;
+        }
+
+        if (!double.IsNaN(window.Height) && window.Height > 0)
+        {
+            state.Height = window.Height;
+        }
+    }
+
+    private string? GetActiveDocumentPath()
+    {
+        if (_codeViewMode == CodeViewMode.Tabs &&
+            CodeDocumentsTabControl.SelectedItem is TabItem { Tag: string selectedPath })
+        {
+            return selectedPath;
+        }
+
+        return _openWindows.Values
+            .Cast<FrameworkElement>()
+            .Concat(_openSpreadsheetWindows.Values)
+            .OrderByDescending(Panel.GetZIndex)
+            .Select(GetWindowFilePath)
+            .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
+    }
+
+    private void SelectOpenDocument(string filePath)
+    {
+        if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? window))
+        {
+            BringToFront(window);
+            RevealWindow(window);
+            return;
+        }
+
+        if (_openSpreadsheetWindows.TryGetValue(filePath, out FloatingSpreadsheetWindow? spreadsheetWindow))
+        {
+            BringToFront(spreadsheetWindow);
+            RevealWindow(spreadsheetWindow);
+        }
+    }
+
+    private static WorkspaceState CreateWorkspaceState(WorkbenchState workbench)
+    {
+        return new WorkspaceState
+        {
+            CanvasZoom = workbench.CodeCanvasZoom,
+            ViewportHorizontalOffset = workbench.CodeViewportHorizontalOffset,
+            ViewportVerticalOffset = workbench.CodeViewportVerticalOffset,
+            OpenDocuments = new ObservableCollection<OpenDocumentState>(
+                workbench.OpenDocuments.Select(CloneOpenDocumentState))
+        };
+    }
+
+    private static OpenDocumentState CloneOpenDocumentState(OpenDocumentState state)
+    {
+        return new OpenDocumentState
+        {
+            FilePath = state.FilePath,
+            DisplayName = state.DisplayName,
+            Left = state.Left,
+            Top = state.Top,
+            Width = state.Width,
+            Height = state.Height,
+            FontSize = state.FontSize
+        };
+    }
+
+    private static CodeViewMode ParseCodeViewMode(string value)
+    {
+        return Enum.TryParse(value, ignoreCase: true, out CodeViewMode mode)
+            ? mode
+            : CodeViewMode.Canvas;
+    }
+
+    private static WorkspaceSplitOrientation ParseWorkspaceSplitOrientation(string value)
+    {
+        return Enum.TryParse(value, ignoreCase: true, out WorkspaceSplitOrientation orientation)
+            ? orientation
+            : WorkspaceSplitOrientation.DiagramBottom;
+    }
+
+    private static WorkspaceViewKind ParseWorkspaceViewKind(string value)
+    {
+        return Enum.TryParse(value, ignoreCase: true, out WorkspaceViewKind viewKind)
+            ? viewKind
+            : WorkspaceViewKind.Code;
+    }
+
     private void CloseAllOpenWindows()
     {
         WorkspaceCanvas.Children.Clear();
+        ClearCodeDocumentTabs();
         _openWindows.Clear();
         _openSpreadsheetWindows.Clear();
         _workspaceState.OpenDocuments.Clear();
@@ -7393,11 +7983,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void BringToFront(FrameworkElement window)
     {
+        if (_codeViewMode == CodeViewMode.Tabs && SelectCodeDocumentTab(window))
+        {
+            return;
+        }
+
         Panel.SetZIndex(window, ++_zIndex);
     }
 
     private void RevealWindow(FrameworkElement window)
     {
+        if (_codeViewMode == CodeViewMode.Tabs && SelectCodeDocumentTab(window))
+        {
+            return;
+        }
+
         double left = Canvas.GetLeft(window);
         double top = Canvas.GetTop(window);
 
@@ -7413,6 +8013,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         WorkspaceScrollViewer.ScrollToHorizontalOffset(targetHorizontalOffset);
         WorkspaceScrollViewer.ScrollToVerticalOffset(targetVerticalOffset);
         CaptureViewportState();
+    }
+
+    private bool SelectCodeDocumentTab(FrameworkElement window)
+    {
+        string? filePath = GetWindowFilePath(window);
+        return !string.IsNullOrWhiteSpace(filePath) && SelectCodeDocumentTab(filePath);
+    }
+
+    private bool SelectCodeDocumentTab(string filePath)
+    {
+        TabItem? tabItem = FindCodeDocumentTab(filePath);
+        if (tabItem == null)
+        {
+            return false;
+        }
+
+        CodeDocumentsTabControl.SelectedItem = tabItem;
+        return true;
     }
 
     private void ScrollWindowToPositionAndReveal(
@@ -7457,6 +8075,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         int lineNumber,
         int columnNumber)
     {
+        if (_codeViewMode == CodeViewMode.Tabs && SelectCodeDocumentTab(window))
+        {
+            return;
+        }
+
         double left = Canvas.GetLeft(window);
         double top = Canvas.GetTop(window);
 
@@ -7588,6 +8211,127 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         WorkspaceScaleTransform.ScaleX = _canvasZoom;
         WorkspaceScaleTransform.ScaleY = _canvasZoom;
+    }
+
+    private void SetCodeViewMode(CodeViewMode mode)
+    {
+        bool modeChanged = _codeViewMode != mode;
+        _codeViewMode = mode;
+
+        if (CodeCanvasModeToggle == null || CodeTabModeToggle == null)
+        {
+            return;
+        }
+
+        _isUpdatingCodeViewMode = true;
+        try
+        {
+            CodeCanvasModeToggle.IsChecked = mode == CodeViewMode.Canvas;
+            CodeTabModeToggle.IsChecked = mode == CodeViewMode.Tabs;
+        }
+        finally
+        {
+            _isUpdatingCodeViewMode = false;
+        }
+
+        if (modeChanged)
+        {
+            ApplyCodeViewMode();
+            StatusText = mode == CodeViewMode.Canvas
+                ? "Code View switched to canvas mode."
+                : "Code View switched to tab mode.";
+        }
+        else
+        {
+            UpdateEmptyWorkspaceHint();
+        }
+    }
+
+    private void ApplyCodeViewMode()
+    {
+        if (WorkspaceScrollViewer == null ||
+            CodeDocumentsTabControl == null)
+        {
+            return;
+        }
+
+        if (_codeViewMode == CodeViewMode.Tabs)
+        {
+            MoveOpenWindowsToCodeTabs();
+            WorkspaceScrollViewer.Visibility = Visibility.Collapsed;
+            CodeDocumentsTabControl.Visibility = Visibility.Visible;
+            UpdateEmptyWorkspaceHint();
+            return;
+        }
+
+        MoveOpenWindowsToCodeCanvas();
+        CodeDocumentsTabControl.Visibility = Visibility.Collapsed;
+        WorkspaceScrollViewer.Visibility = Visibility.Visible;
+        UpdateEmptyWorkspaceHint();
+    }
+
+    private void MoveOpenWindowsToCodeTabs()
+    {
+        ClearCodeDocumentTabs();
+
+        foreach (OpenWindowItem item in OpenTabs.ToList())
+        {
+            FrameworkElement? window = GetOpenWindowElement(item.FilePath);
+            if (window != null)
+            {
+                AddWindowToCodeTabs(window, item.State, select: false);
+            }
+        }
+
+        if (CodeDocumentsTabControl.Items.Count > 0 && CodeDocumentsTabControl.SelectedItem == null)
+        {
+            CodeDocumentsTabControl.SelectedIndex = 0;
+        }
+    }
+
+    private void MoveOpenWindowsToCodeCanvas()
+    {
+        foreach (OpenWindowItem item in OpenTabs.ToList())
+        {
+            FrameworkElement? window = GetOpenWindowElement(item.FilePath);
+            if (window != null)
+            {
+                AddWindowToCodeCanvas(window, item.State, select: false);
+            }
+        }
+
+        ClearCodeDocumentTabs();
+    }
+
+    private FrameworkElement? GetOpenWindowElement(string filePath)
+    {
+        if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? codeWindow))
+        {
+            return codeWindow;
+        }
+
+        if (_openSpreadsheetWindows.TryGetValue(filePath, out FloatingSpreadsheetWindow? spreadsheetWindow))
+        {
+            return spreadsheetWindow;
+        }
+
+        return null;
+    }
+
+    private void CodeDocumentsTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!ReferenceEquals(e.Source, CodeDocumentsTabControl) ||
+            CodeDocumentsTabControl.SelectedItem is not TabItem { Tag: string filePath })
+        {
+            return;
+        }
+
+        OpenWindowItem? openTab = OpenTabs.FirstOrDefault(tab =>
+            string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+        if (openTab != null && !ReferenceEquals(OpenTabsList.SelectedItem, openTab))
+        {
+            OpenTabsList.SelectedItem = openTab;
+        }
     }
 
     private void ApplyDiagramCanvasZoom()
@@ -8282,7 +9026,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UpdateEmptyWorkspaceHint()
     {
-        EmptyWorkspaceHint.Visibility = WorkspaceCanvas.Children.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        bool hasOpenWindows = _openWindows.Count > 0 || _openSpreadsheetWindows.Count > 0;
+        EmptyWorkspaceHint.Visibility = _codeViewMode == CodeViewMode.Canvas && !hasOpenWindows
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        EmptyCodeTabsHint.Visibility = _codeViewMode == CodeViewMode.Tabs && !hasOpenWindows
+            ? Visibility.Visible
+            : Visibility.Collapsed;
     }
 
     private void NotifyNavigationHistoryStateChanged()
@@ -8327,6 +9077,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _scopeStore.SaveAsync(_scopeLibrary, cancellationToken),
             _databaseMetadataStore.SaveAsync(_databaseSnapshots, cancellationToken),
             _diagramStore.SaveAsync(_diagramLibrary, cancellationToken),
+            _workbenchStore.SaveAsync(_workbenchLibrary, cancellationToken),
             _settingsStore.SaveAsync(_appSettings, cancellationToken),
             _workspaceStore.SaveAsync(_workspaceState, cancellationToken));
     }

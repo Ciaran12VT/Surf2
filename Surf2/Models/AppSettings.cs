@@ -8,6 +8,8 @@ public sealed class AppSettings
 
     public DiagramImageSettings DiagramImages { get; set; } = new();
 
+    public bool LoadMostRecentWorkbenchOnStartup { get; set; }
+
     public bool EnsureDefaults()
     {
         bool changed = false;
@@ -41,6 +43,7 @@ public sealed class AppSettings
 
         return new AppSettings
         {
+            LoadMostRecentWorkbenchOnStartup = LoadMostRecentWorkbenchOnStartup,
             CodeWindows = new CodeWindowSettings
             {
                 DefaultBackcolor = CodeWindows.DefaultBackcolor,

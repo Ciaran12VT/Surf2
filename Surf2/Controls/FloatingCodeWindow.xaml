@@ -13,13 +13,14 @@
         </ContextMenu>
     </UserControl.ContextMenu>
 
-    <Border BorderBrush="#687385"
+    <Border x:Name="OuterBorder"
+            BorderBrush="#687385"
             BorderThickness="1"
             Background="#FFFFFF"
             SnapsToDevicePixels="True">
         <Grid>
             <Grid.RowDefinitions>
-                <RowDefinition Height="32" />
+                <RowDefinition x:Name="HeaderRow" Height="32" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
