@@ -52,7 +52,10 @@
                         FontWeight="Bold" />
             </Grid>
 
-            <Grid Grid.Row="1">
+            <Border x:Name="EditorHost"
+                    Grid.Row="1"
+                    Padding="14,2,6,4"
+                    Background="#FFFFFF">
                 <avalonEdit:TextEditor x:Name="Editor"
                                        Background="#FFFFFF"
                                        FontFamily="Consolas"
@@ -68,7 +71,7 @@
                         </ContextMenu>
                     </avalonEdit:TextEditor.ContextMenu>
                 </avalonEdit:TextEditor>
-            </Grid>
+            </Border>
 
             <primitives:Thumb Grid.RowSpan="2"
                               Width="6"

@@ -98,6 +98,7 @@ public partial class FloatingCodeWindow : UserControl
 
     public void ApplyCodeBackcolor(Brush backcolor)
     {
+        EditorHost.Background = backcolor;
         Editor.Background = backcolor;
         Editor.TextArea.Background = backcolor;
     }
