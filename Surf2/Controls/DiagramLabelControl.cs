@@ -33,6 +33,7 @@ public sealed class DiagramLabelControl : UserControl
     private bool _isLabelEditing;
     private bool _isDragging;
     private bool _isResizing;
+    private bool _isLocked;
     private Point _interactionStartPoint;
     private Point _startAnchorPoint;
     private Rect _startBoxRect;
@@ -198,6 +199,24 @@ public sealed class DiagramLabelControl : UserControl
 
     public bool IsLabelEditing => _isLabelEditing;
 
+    public bool IsLocked
+    {
+        get => _isLocked;
+        set
+        {
+            _isLocked = value;
+            if (_isLocked)
+            {
+                CommitLabelEdit();
+                EndDrag();
+                EndResize();
+                Cursor = null;
+            }
+
+            UpdateResizeHandleVisibility();
+        }
+    }
+
     public void PlaceAt(Point anchorPoint)
     {
         SetGeometry(
@@ -220,6 +239,11 @@ public sealed class DiagramLabelControl : UserControl
 
     public void BeginEditLabel()
     {
+        if (IsLocked)
+        {
+            return;
+        }
+
         _isLabelEditing = true;
         _labelTextBox.Text = LabelText;
         _labelTextBlock.Visibility = Visibility.Collapsed;
@@ -274,6 +298,14 @@ public sealed class DiagramLabelControl : UserControl
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
+        if (IsLocked)
+        {
+            Focus();
+            Selected?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+
         if (_isLabelEditing || Parent is not Canvas parentCanvas)
         {
             base.OnMouseLeftButtonDown(e);
@@ -314,6 +346,13 @@ public sealed class DiagramLabelControl : UserControl
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        if (IsLocked)
+        {
+            Cursor = null;
+            base.OnMouseMove(e);
+            return;
+        }
+
         if (_isResizing && e.LeftButton == MouseButtonState.Pressed)
         {
             UpdateResize(e);
@@ -421,6 +460,11 @@ public sealed class DiagramLabelControl : UserControl
 
     private void EndResize()
     {
+        if (!_isResizing)
+        {
+            return;
+        }
+
         bool changed =
             !AreClose(_startBoxRect.Width, BoxRect.Width) ||
             !AreClose(_startBoxRect.Height, BoxRect.Height);
@@ -549,7 +593,7 @@ public sealed class DiagramLabelControl : UserControl
 
     private bool IsPointInResizeHandle(Point localPoint)
     {
-        if (IsTethered || _isLabelEditing)
+        if (IsLocked || IsTethered || _isLabelEditing)
         {
             return false;
         }
@@ -600,7 +644,7 @@ public sealed class DiagramLabelControl : UserControl
 
     private void UpdateResizeHandleVisibility()
     {
-        _resizeHandle.Visibility = !IsTethered && IsSelected && !_isLabelEditing
+        _resizeHandle.Visibility = !IsLocked && !IsTethered && IsSelected && !_isLabelEditing
             ? Visibility.Visible
             : Visibility.Collapsed;
     }

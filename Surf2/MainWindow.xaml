@@ -1339,6 +1339,36 @@
                                                      Points="0,0 6,0 3,4" />
                                         </Grid>
                                     </Button>
+                                    <ToggleButton x:Name="DiagramLockToggleButton"
+                                                  Margin="10,0,0,0"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramLockToggle_CheckedChanged"
+                                                  Unchecked="DiagramLockToggle_CheckedChanged"
+                                                  IsChecked="True"
+                                                  ToolTip="Lock diagram editing">
+                                        <Canvas Width="17"
+                                                Height="17">
+                                            <Path Data="M5,7 L5,5.8 C5,3.1 6.7,1.5 8.5,1.5 C10.3,1.5 12,3.1 12,5.8 L12,7"
+                                                  Stroke="#111827"
+                                                  StrokeThickness="1.8"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round" />
+                                            <Rectangle Canvas.Left="3.5"
+                                                       Canvas.Top="7"
+                                                       Width="10"
+                                                       Height="8"
+                                                       RadiusX="1.4"
+                                                       RadiusY="1.4"
+                                                       Fill="Transparent"
+                                                       Stroke="#111827"
+                                                       StrokeThickness="1.8" />
+                                            <Ellipse Canvas.Left="7.2"
+                                                     Canvas.Top="10"
+                                                     Width="2.6"
+                                                     Height="2.6"
+                                                     Fill="#111827" />
+                                        </Canvas>
+                                    </ToggleButton>
                                     <Border Width="1"
                                             Height="22"
                                             Margin="12,0,8,0"

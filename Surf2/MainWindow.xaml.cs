@@ -232,6 +232,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isUpdatingViewToggles;
     private bool _isUpdatingCodeViewMode;
     private bool _isUpdatingDiagramToolToggles;
+    private bool _isDiagramLocked = true;
+    private bool _isUpdatingDiagramLockToggle;
     private bool _isUpdatingWorkbenchSelection;
     private bool _diagramViewportInitialized;
     private bool _shutdownRequested;
@@ -309,6 +311,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         InitializeMetadataEditorControls();
         ApplyWorkspaceViewLayout();
         ApplyDiagramSidebarLayout();
+        SetDiagramLockState(_isDiagramLocked, updateToggle: true, showStatus: false);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -1356,6 +1359,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (_isDiagramLocked)
+        {
+            ClearDiagramDrawingTools();
+            StatusText = "Unlock the diagram to use drawing tools.";
+            return;
+        }
+
         _isUpdatingDiagramToolToggles = true;
         SetWorkflowAddItemsMode(false);
 
@@ -1424,6 +1434,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _isUpdatingDiagramToolToggles = false;
+    }
+
+    private void DiagramLockToggle_CheckedChanged(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingDiagramLockToggle)
+        {
+            return;
+        }
+
+        bool isLocked = sender is ToggleButton toggle
+            ? toggle.IsChecked == true
+            : DiagramLockToggleButton?.IsChecked == true;
+        SetDiagramLockState(isLocked, updateToggle: false, showStatus: true);
     }
 
     private void DiagramLineToolButton_Click(object sender, RoutedEventArgs e)
@@ -3538,6 +3561,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void WorkflowAddItemsToggleButton_Click(object sender, RoutedEventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("add workflow markers"))
+        {
+            SetWorkflowAddItemsMode(false);
+            return;
+        }
+
         bool requestedAddMode = WorkflowAddItemsToggleButton.IsChecked == true;
         if (requestedAddMode && !CommitWorkflowEditorChanges(requireValidWorkflowName: true))
         {
@@ -3589,6 +3618,104 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _pendingPortalName = null;
         _pendingPortalPairPlacement = null;
         _isUpdatingDiagramToolToggles = false;
+    }
+
+    private void SetDiagramLockState(bool isLocked, bool updateToggle = true, bool showStatus = false)
+    {
+        _isDiagramLocked = isLocked;
+
+        if (updateToggle && DiagramLockToggleButton != null)
+        {
+            _isUpdatingDiagramLockToggle = true;
+            DiagramLockToggleButton.IsChecked = isLocked;
+            _isUpdatingDiagramLockToggle = false;
+        }
+
+        if (isLocked)
+        {
+            ClearDiagramDrawingTools();
+            SetWorkflowAddItemsMode(false);
+            CommitDiagramObjectTextEdits();
+        }
+
+        UpdateDiagramLockUi();
+        ApplyDiagramLockToObjects();
+
+        if (showStatus)
+        {
+            StatusText = isLocked
+                ? "Diagram editing locked."
+                : "Diagram editing unlocked.";
+        }
+    }
+
+    private void UpdateDiagramLockUi()
+    {
+        bool editingEnabled = !_isDiagramLocked;
+
+        if (DiagramRectangleToolButton != null) DiagramRectangleToolButton.IsEnabled = editingEnabled;
+        if (DiagramEllipseToolButton != null) DiagramEllipseToolButton.IsEnabled = editingEnabled;
+        if (DiagramImageToolButton != null) DiagramImageToolButton.IsEnabled = editingEnabled;
+        if (DiagramLineToolButton != null) DiagramLineToolButton.IsEnabled = editingEnabled;
+        if (DiagramLabelToolButton != null) DiagramLabelToolButton.IsEnabled = editingEnabled;
+        if (DiagramPortalToolButton != null) DiagramPortalToolButton.IsEnabled = editingEnabled;
+        if (DiagramOutlineColorButton != null) DiagramOutlineColorButton.IsEnabled = editingEnabled;
+        if (DiagramBackColorButton != null) DiagramBackColorButton.IsEnabled = editingEnabled;
+        if (WorkflowAddItemsToggleButton != null) WorkflowAddItemsToggleButton.IsEnabled = editingEnabled;
+    }
+
+    private void ApplyDiagramLockToObjects()
+    {
+        if (DiagramCanvas == null)
+        {
+            return;
+        }
+
+        foreach (FrameworkElement diagramObject in DiagramCanvas.Children.OfType<FrameworkElement>())
+        {
+            ApplyDiagramLockToObject(diagramObject);
+        }
+    }
+
+    private void ApplyDiagramLockToObject(FrameworkElement diagramObject)
+    {
+        switch (diagramObject)
+        {
+            case DiagramShapeControl shape:
+                shape.IsLocked = _isDiagramLocked;
+                break;
+
+            case DiagramImageControl image:
+                image.IsLocked = _isDiagramLocked;
+                break;
+
+            case DiagramLineControl line:
+                line.IsLocked = _isDiagramLocked;
+                break;
+
+            case DiagramLabelControl label:
+                label.IsLocked = _isDiagramLocked;
+                break;
+
+            case DiagramWorkflowMarkerControl marker:
+                marker.IsLocked = _isDiagramLocked;
+                break;
+
+            case DiagramPortalControl portal:
+                portal.IsLocked = _isDiagramLocked;
+                break;
+        }
+    }
+
+    private bool TryBlockDiagramObjectEditWhenLocked(string actionDescription = "edit diagram objects")
+    {
+        if (!_isDiagramLocked)
+        {
+            return false;
+        }
+
+        StatusText = $"Unlock the diagram to {actionDescription}.";
+        return true;
     }
 
     private void ResetWorkflowEditor()
@@ -4280,7 +4407,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramCanvas_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(ObjectExplorerDragDataFormat)
+        e.Effects = !_isDiagramLocked && e.Data.GetDataPresent(ObjectExplorerDragDataFormat)
             ? DragDropEffects.Copy
             : DragDropEffects.None;
         e.Handled = true;
@@ -4288,6 +4415,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramCanvas_Drop(object sender, DragEventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("drop resources onto the diagram"))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.Data.GetData(ObjectExplorerDragDataFormat) is not FileSystemNode node)
         {
             return;
@@ -4299,6 +4432,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PlaceObjectExplorerResourceOnDiagram(FileSystemNode node, Point canvasPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("add resources to the diagram"))
+        {
+            return;
+        }
+
         DiagramImageDefinition? imageDefinition = FindDiagramImageMatchForNode(node);
         if (imageDefinition == null)
         {
@@ -4434,6 +4572,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool TryPlaceWorkflowItemMarker(Point canvasPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("add workflow markers"))
+        {
+            SetWorkflowAddItemsMode(false);
+            return true;
+        }
+
         if (!_isAddingWorkflowItems)
         {
             return false;
@@ -6957,6 +7101,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (_isDiagramLocked)
+        {
+            SelectDiagramObject(null);
+            _isDiagramCanvasPanning = true;
+            _diagramPanStartPoint = e.GetPosition(DiagramScrollViewer);
+            _diagramPanStartHorizontalOffset = DiagramScrollViewer.HorizontalOffset;
+            _diagramPanStartVerticalOffset = DiagramScrollViewer.VerticalOffset;
+
+            DiagramCanvas.CaptureMouse();
+            DiagramCanvas.Cursor = Cursors.ScrollAll;
+            e.Handled = true;
+            return;
+        }
+
         if (TryPlaceWorkflowItemMarker(e.GetPosition(DiagramCanvas)))
         {
             e.Handled = true;
@@ -7180,6 +7338,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool CommitDiagramObjectTextEdits()
     {
+        if (DiagramCanvas == null)
+        {
+            return false;
+        }
+
         bool committed = false;
 
         foreach (FrameworkElement diagramObject in DiagramCanvas.Children.OfType<FrameworkElement>())
@@ -7498,6 +7661,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool TryPlaceDiagramPortal(Point canvasPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("place portals"))
+        {
+            ClearPortalToolSelection();
+            return true;
+        }
+
         if (DiagramPortalToolButton?.IsChecked != true &&
             _pendingPortalPairPlacement == null)
         {
@@ -7555,6 +7724,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ArmPortalPlacement(string portalName, PendingPortalPairPlacement? pendingPair)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("place paired portals"))
+        {
+            return;
+        }
+
         if (DiagramRectangleToolButton == null ||
             DiagramEllipseToolButton == null ||
             DiagramImageToolButton == null ||
@@ -7663,11 +7837,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (TryBlockDiagramObjectEditWhenLocked("pair portals"))
+        {
+            return;
+        }
+
         await BeginPortalPairingAsync(portal);
     }
 
     private async Task BeginPortalPairingAsync(DiagramPortalControl sourcePortal)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("pair portals"))
+        {
+            return;
+        }
+
         if (_activeScope == null)
         {
             StatusText = "Open a scope before pairing portals.";
@@ -8105,6 +8289,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CutSelectedDiagramObject()
     {
+        if (TryBlockDiagramObjectEditWhenLocked("cut diagram objects"))
+        {
+            return;
+        }
+
         if (_selectedDiagramObject is DiagramWorkflowMarkerControl)
         {
             StatusText = "Delete the workflow item to remove its marker.";
@@ -8131,6 +8320,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PasteDiagramClipboardContent()
     {
+        if (TryBlockDiagramObjectEditWhenLocked("paste diagram objects"))
+        {
+            return;
+        }
+
         BitmapSource? clipboardImage = TryGetClipboardImage();
         if (clipboardImage != null)
         {
@@ -8155,6 +8349,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PasteClipboardImage(BitmapSource clipboardImage)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("paste images onto the diagram"))
+        {
+            return;
+        }
+
         try
         {
             string pastedImageFileName = SavePastedDiagramImage(clipboardImage);
@@ -8242,6 +8441,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PasteDiagramObject()
     {
+        if (TryBlockDiagramObjectEditWhenLocked("paste diagram objects"))
+        {
+            return;
+        }
+
         if (_diagramClipboardSnapshot == null)
         {
             StatusText = "Copy or cut a diagram object before pasting.";
@@ -8290,6 +8494,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UndoDiagramAction()
     {
+        if (TryBlockDiagramObjectEditWhenLocked("undo diagram object changes"))
+        {
+            return;
+        }
+
         if (_diagramUndoStack.Count == 0)
         {
             StatusText = "Nothing to undo.";
@@ -8354,6 +8563,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void StartDiagramShapeDraw(DiagramShapeKind shapeKind, Point startPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("draw shapes"))
+        {
+            return;
+        }
+
         _isDrawingDiagramShape = true;
         _diagramShapeDrawStartPoint = startPoint;
 
@@ -8363,6 +8577,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _activeDiagramDrawingShape = shape;
         ApplyDefaultDiagramZIndex(shape);
+        ApplyDiagramLockToObject(shape);
         DiagramCanvas.Children.Add(shape);
         DiagramCanvas.CaptureMouse();
         DiagramCanvas.Cursor = Cursors.Cross;
@@ -8370,6 +8585,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void StartDiagramImageDraw(DiagramImageDefinition imageDefinition, Point startPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("draw images"))
+        {
+            return;
+        }
+
         ImageSource? imageSource = CreateImageSource(imageDefinition.ImageDataBase64);
         if (imageSource == null)
         {
@@ -8390,6 +8610,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _activeDiagramDrawingImage = image;
         ApplyDefaultDiagramZIndex(image);
+        ApplyDiagramLockToObject(image);
         DiagramCanvas.Children.Add(image);
         DiagramCanvas.CaptureMouse();
         DiagramCanvas.Cursor = Cursors.Cross;
@@ -8397,6 +8618,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void StartDiagramLineDraw(Point startPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("draw lines"))
+        {
+            return;
+        }
+
         _isDrawingDiagramLine = true;
         _diagramLineDrawStartPoint = startPoint;
 
@@ -8406,6 +8632,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _activeDiagramDrawingLine = line;
         ApplyDefaultDiagramZIndex(line);
+        ApplyDiagramLockToObject(line);
         DiagramCanvas.Children.Add(line);
         DiagramCanvas.CaptureMouse();
         DiagramCanvas.Cursor = Cursors.Cross;
@@ -8413,11 +8640,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PlaceDiagramLabel(Point anchorPoint)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("add labels"))
+        {
+            return;
+        }
+
         var label = new DiagramLabelControl(_diagramOutlineColor, _diagramBackColor);
         AttachDiagramLabelHandlers(label);
         label.PlaceAt(anchorPoint);
 
         ApplyDefaultDiagramZIndex(label);
+        ApplyDiagramLockToObject(label);
         DiagramCanvas.Children.Add(label);
         SelectDiagramObject(label);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(label));
@@ -8575,6 +8808,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachDiagramShapeHandlers(DiagramShapeControl shape)
     {
+        ApplyDiagramLockToObject(shape);
         shape.PreviewMouseLeftButtonDown += DiagramObject_PreviewMouseLeftButtonDown;
         shape.Selected += DiagramObject_Selected;
         shape.InteractionStarted += DiagramObject_InteractionStarted;
@@ -8587,6 +8821,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachDiagramImageHandlers(DiagramImageControl image)
     {
+        ApplyDiagramLockToObject(image);
         image.PreviewMouseLeftButtonDown += DiagramObject_PreviewMouseLeftButtonDown;
         image.Selected += DiagramObject_Selected;
         image.InteractionStarted += DiagramObject_InteractionStarted;
@@ -8599,6 +8834,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachDiagramLineHandlers(DiagramLineControl line)
     {
+        ApplyDiagramLockToObject(line);
         line.PreviewMouseLeftButtonDown += DiagramObject_PreviewMouseLeftButtonDown;
         line.Selected += DiagramObject_Selected;
         line.InteractionStarted += DiagramObject_InteractionStarted;
@@ -8611,6 +8847,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachDiagramLabelHandlers(DiagramLabelControl label)
     {
+        ApplyDiagramLockToObject(label);
         label.PreviewMouseLeftButtonDown += DiagramObject_PreviewMouseLeftButtonDown;
         label.Selected += DiagramObject_Selected;
         label.InteractionStarted += DiagramObject_InteractionStarted;
@@ -8624,6 +8861,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachDiagramWorkflowMarkerHandlers(DiagramWorkflowMarkerControl marker)
     {
+        ApplyDiagramLockToObject(marker);
         marker.Selected += DiagramObject_Selected;
         marker.InteractionStarted += DiagramObject_InteractionStarted;
         marker.InteractionCompleted += DiagramObject_InteractionCompleted;
@@ -8634,6 +8872,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void AttachDiagramPortalHandlers(DiagramPortalControl portal)
     {
+        ApplyDiagramLockToObject(portal);
         portal.Selected += DiagramObject_Selected;
         portal.InteractionStarted += DiagramObject_InteractionStarted;
         portal.InteractionCompleted += DiagramObject_InteractionCompleted;
@@ -8749,6 +8988,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramObject_LayerChangeRequested(object? sender, DiagramLayerChangeRequestedEventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("change diagram object layering"))
+        {
+            return;
+        }
+
         if (sender is not FrameworkElement diagramObject)
         {
             return;
@@ -9429,6 +9673,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramShape_EditRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("edit diagram shapes"))
+        {
+            return;
+        }
+
         if (sender is not DiagramShapeControl shape)
         {
             return;
@@ -9462,6 +9711,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramShape_DeleteRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete diagram shapes"))
+        {
+            return;
+        }
+
         if (sender is not DiagramShapeControl shape)
         {
             return;
@@ -9473,6 +9727,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramImage_EditRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("edit diagram images"))
+        {
+            return;
+        }
+
         if (sender is not DiagramImageControl image)
         {
             return;
@@ -9499,6 +9758,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramImage_DeleteRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete diagram images"))
+        {
+            return;
+        }
+
         if (sender is not DiagramImageControl image)
         {
             return;
@@ -9510,6 +9774,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramLine_EditRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("edit diagram lines"))
+        {
+            return;
+        }
+
         if (sender is not DiagramLineControl line)
         {
             return;
@@ -9536,6 +9805,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramLine_DeleteRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete diagram lines"))
+        {
+            return;
+        }
+
         if (sender is not DiagramLineControl line)
         {
             return;
@@ -9547,6 +9821,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramLine_LooseStateToggleRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("change line edit state"))
+        {
+            return;
+        }
+
         if (sender is not DiagramLineControl line)
         {
             return;
@@ -9568,6 +9847,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramLabel_EditRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("edit diagram labels"))
+        {
+            return;
+        }
+
         if (sender is not DiagramLabelControl label)
         {
             return;
@@ -9580,6 +9864,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramLabel_DeleteRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete diagram labels"))
+        {
+            return;
+        }
+
         if (sender is not DiagramLabelControl label)
         {
             return;
@@ -9591,6 +9880,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramLabel_TetherChangedRequested(object? sender, DiagramLabelTetherChangedEventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("change label tethering"))
+        {
+            return;
+        }
+
         if (sender is not DiagramLabelControl label)
         {
             return;
@@ -9622,6 +9916,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramWorkflowMarker_DeleteRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete workflow markers"))
+        {
+            return;
+        }
+
         if (sender is not DiagramWorkflowMarkerControl marker)
         {
             return;
@@ -9632,6 +9931,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void DiagramPortal_DeleteRequested(object? sender, EventArgs e)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete portals"))
+        {
+            return;
+        }
+
         if (sender is not DiagramPortalControl portal)
         {
             return;
@@ -9644,6 +9948,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RemoveWorkflowItemAndMarker(string workflowId, string workflowItemId)
     {
+        if (TryBlockDiagramObjectEditWhenLocked("delete workflow markers"))
+        {
+            return;
+        }
+
         WorkflowDocument? workflow = FindWorkflow(workflowId);
         WorkflowItem? workflowItem = workflow?.Items.FirstOrDefault(item =>
             string.Equals(item.WorkflowItemId, workflowItemId, StringComparison.OrdinalIgnoreCase));
@@ -9911,6 +10220,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ActiveDiagramId = _activeDiagramId ?? string.Empty,
             ActiveDiagramName = CurrentDiagramName,
             ActiveDiagramSnapshot = CaptureActiveDiagramSnapshot(),
+            IsDiagramLocked = _isDiagramLocked,
             DiagramCanvasZoom = _diagramCanvasZoom,
             DiagramViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
             DiagramViewportVerticalOffset = DiagramScrollViewer.VerticalOffset
@@ -9967,6 +10277,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             _workspaceSplitOrientation = ParseWorkspaceSplitOrientation(workbench.WorkspaceSplitOrientation);
             SetCodeViewMode(ParseCodeViewMode(workbench.CodeViewMode));
+            SetDiagramLockState(workbench.IsDiagramLocked, updateToggle: true);
 
             Scope? scope = _scopeLibrary.Scopes.FirstOrDefault(candidate =>
                 string.Equals(candidate.ScopeId, workbench.ScopeId, StringComparison.OrdinalIgnoreCase));

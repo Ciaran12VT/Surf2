@@ -29,6 +29,7 @@ public sealed class DiagramShapeControl : UserControl
     private double _startWidth;
     private double _startHeight;
     private bool _isLabelEditing;
+    private bool _isLocked;
 
     public DiagramShapeControl(
         DiagramShapeKind shapeKind,
@@ -157,6 +158,21 @@ public sealed class DiagramShapeControl : UserControl
 
     public bool IsLabelEditing => _isLabelEditing;
 
+    public bool IsLocked
+    {
+        get => _isLocked;
+        set
+        {
+            _isLocked = value;
+            if (_isLocked)
+            {
+                EndInteraction();
+                CommitLabelEdit();
+                Cursor = null;
+            }
+        }
+    }
+
     public void SetCanvasBounds(double left, double top, double width, double height)
     {
         Canvas.SetLeft(this, left);
@@ -167,6 +183,11 @@ public sealed class DiagramShapeControl : UserControl
 
     public void BeginEditLabel()
     {
+        if (IsLocked)
+        {
+            return;
+        }
+
         _isLabelEditing = true;
         _labelTextBox.Text = LabelText;
         _labelTextBlock.Visibility = Visibility.Collapsed;
@@ -199,6 +220,14 @@ public sealed class DiagramShapeControl : UserControl
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
+        if (IsLocked)
+        {
+            Focus();
+            Selected?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+
         if (_isLabelEditing || Parent is not Canvas parentCanvas)
         {
             base.OnMouseLeftButtonDown(e);
@@ -225,6 +254,13 @@ public sealed class DiagramShapeControl : UserControl
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        if (IsLocked)
+        {
+            Cursor = null;
+            base.OnMouseMove(e);
+            return;
+        }
+
         if (_interactionMode != InteractionMode.None && e.LeftButton == MouseButtonState.Pressed)
         {
             UpdateInteraction(e);

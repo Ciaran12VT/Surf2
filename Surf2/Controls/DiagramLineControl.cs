@@ -26,6 +26,7 @@ public sealed class DiagramLineControl : UserControl
     private Point _interactionStartPoint;
     private Point _startLineStartPoint;
     private Point _startLineEndPoint;
+    private bool _isLocked;
 
     public DiagramLineControl(
         string colorText,
@@ -107,6 +108,26 @@ public sealed class DiagramLineControl : UserControl
 
     public bool IsLoose { get; private set; }
 
+    public bool IsLocked
+    {
+        get => _isLocked;
+        set
+        {
+            _isLocked = value;
+            if (_isLocked)
+            {
+                _interactionMode = InteractionMode.None;
+                Cursor = null;
+                if (IsMouseCaptured)
+                {
+                    ReleaseMouseCapture();
+                }
+            }
+
+            UpdateHitTestState();
+        }
+    }
+
     public Point StartPoint { get; private set; }
 
     public Point EndPoint { get; private set; }
@@ -178,11 +199,19 @@ public sealed class DiagramLineControl : UserControl
 
     private void UpdateHitTestState()
     {
-        IsHitTestVisible = IsLoose;
+        IsHitTestVisible = IsLoose || IsLocked;
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
+        if (IsLocked)
+        {
+            Focus();
+            Selected?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+            return;
+        }
+
         if (!IsLoose)
         {
             base.OnMouseLeftButtonDown(e);
@@ -219,6 +248,13 @@ public sealed class DiagramLineControl : UserControl
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
+        if (IsLocked)
+        {
+            Cursor = null;
+            base.OnMouseMove(e);
+            return;
+        }
+
         if (!IsLoose)
         {
             Cursor = null;

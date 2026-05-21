@@ -44,6 +44,8 @@ public sealed class WorkbenchState
 
     public DiagramDocument? ActiveDiagramSnapshot { get; set; }
 
+    public bool IsDiagramLocked { get; set; } = true;
+
     public double DiagramCanvasZoom { get; set; } = 1;
 
     public double DiagramViewportHorizontalOffset { get; set; }

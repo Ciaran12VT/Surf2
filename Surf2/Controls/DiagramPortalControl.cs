@@ -15,6 +15,7 @@ public sealed class DiagramPortalControl : UserControl
     private readonly Border _selectionRing;
 
     private bool _isDragging;
+    private bool _isLocked;
     private Point _dragStartPoint;
     private double _startLeft;
     private double _startTop;
@@ -103,6 +104,28 @@ public sealed class DiagramPortalControl : UserControl
         set => _selectionRing.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    public bool IsLocked
+    {
+        get => _isLocked;
+        set
+        {
+            _isLocked = value;
+            if (_isLocked)
+            {
+                _isDragging = false;
+                Cursor = null;
+                if (IsMouseCaptured)
+                {
+                    ReleaseMouseCapture();
+                }
+            }
+            else
+            {
+                Cursor = Cursors.SizeAll;
+            }
+        }
+    }
+
     public void SetCanvasBounds(double left, double top, double width, double height)
     {
         Canvas.SetLeft(this, left);
@@ -146,6 +169,12 @@ public sealed class DiagramPortalControl : UserControl
 
         Focus();
         Selected?.Invoke(this, EventArgs.Empty);
+        if (IsLocked)
+        {
+            e.Handled = true;
+            return;
+        }
+
         InteractionStarted?.Invoke(this, EventArgs.Empty);
 
         _isDragging = true;
