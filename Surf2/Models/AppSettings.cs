@@ -83,7 +83,7 @@ public sealed class AppSettings
 
 public sealed class KeyboardShortcutSettings
 {
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     public int Version { get; set; } = CurrentVersion;
 
@@ -96,6 +96,10 @@ public sealed class KeyboardShortcutSettings
     public bool EnableCodeShiftMouseAutoscrolling { get; set; } = true;
 
     public bool EnableCodeCtrlShiftMouseScrollbarLockedScrolling { get; set; } = true;
+
+    public bool EnableCodeCanvasShiftMousePanning { get; set; } = true;
+
+    public bool EnableCodeCanvasCtrlShiftMouseZooming { get; set; } = true;
 
     public bool EnableCodeViewCtrlPlusMinusNavigation { get; set; } = true;
 
@@ -133,6 +137,12 @@ public sealed class KeyboardShortcutSettings
             EnableCodeCtrlShiftMouseScrollbarLockedScrolling = true;
         }
 
+        if (Version < 7)
+        {
+            EnableCodeCanvasShiftMousePanning = true;
+            EnableCodeCanvasCtrlShiftMouseZooming = true;
+        }
+
         EnableDiagramShiftMousePanning = true;
         if (Version < 6)
         {
@@ -153,6 +163,8 @@ public sealed class KeyboardShortcutSettings
             EnableTabCtrlShiftMouseAutoscrolling = EnableTabCtrlShiftMouseAutoscrolling,
             EnableCodeShiftMouseAutoscrolling = EnableCodeShiftMouseAutoscrolling,
             EnableCodeCtrlShiftMouseScrollbarLockedScrolling = EnableCodeCtrlShiftMouseScrollbarLockedScrolling,
+            EnableCodeCanvasShiftMousePanning = EnableCodeCanvasShiftMousePanning,
+            EnableCodeCanvasCtrlShiftMouseZooming = EnableCodeCanvasCtrlShiftMouseZooming,
             EnableCodeViewCtrlPlusMinusNavigation = EnableCodeViewCtrlPlusMinusNavigation,
             EnableCtrlNumberViewSwitching = EnableCtrlNumberViewSwitching,
             EnableCodeTabCtrlASNavigation = EnableCodeTabCtrlASNavigation,

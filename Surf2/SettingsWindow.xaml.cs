@@ -712,6 +712,8 @@ public partial class SettingsWindow : Window
         TabCtrlMouseScrollingCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableTabCtrlMouseScrolling;
         CodeShiftAutoscrollCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeShiftMouseAutoscrolling;
         CodeCtrlShiftScrollbarLockedScrollCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeCtrlShiftMouseScrollbarLockedScrolling;
+        CodeCanvasShiftMousePanningCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeCanvasShiftMousePanning;
+        CodeCanvasCtrlShiftMouseZoomingCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeCanvasCtrlShiftMouseZooming;
         CodeViewHistoryNavigationCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation;
         ViewSwitchingCtrlNumberCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCtrlNumberViewSwitching;
         CodeTabCtrlASNavigationCheckBox.IsChecked = Settings.KeyboardShortcuts.EnableCodeTabCtrlASNavigation;
@@ -729,6 +731,8 @@ public partial class SettingsWindow : Window
         Settings.KeyboardShortcuts.EnableTabCtrlMouseScrolling = TabCtrlMouseScrollingCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableCodeShiftMouseAutoscrolling = CodeShiftAutoscrollCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableCodeCtrlShiftMouseScrollbarLockedScrolling = CodeCtrlShiftScrollbarLockedScrollCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCodeCanvasShiftMousePanning = CodeCanvasShiftMousePanningCheckBox.IsChecked == true;
+        Settings.KeyboardShortcuts.EnableCodeCanvasCtrlShiftMouseZooming = CodeCanvasCtrlShiftMouseZoomingCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableTabCtrlShiftMouseAutoscrolling = Settings.KeyboardShortcuts.EnableCodeShiftMouseAutoscrolling;
         Settings.KeyboardShortcuts.EnableCodeViewCtrlPlusMinusNavigation = CodeViewHistoryNavigationCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableCtrlNumberViewSwitching = ViewSwitchingCtrlNumberCheckBox.IsChecked == true;

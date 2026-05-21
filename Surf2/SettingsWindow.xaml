@@ -664,6 +664,12 @@
                     <CheckBox x:Name="CodeCtrlShiftScrollbarLockedScrollCheckBox"
                               Margin="0,0,0,12"
                               Content="Code Window/Tab: Ctrl + Shift + Mouse for Scrollbar-Locked Scrolling" />
+                    <CheckBox x:Name="CodeCanvasShiftMousePanningCheckBox"
+                              Margin="0,0,0,12"
+                              Content="Code Canvas: Shift + Mouse for Canvas Autopanning" />
+                    <CheckBox x:Name="CodeCanvasCtrlShiftMouseZoomingCheckBox"
+                              Margin="0,0,0,12"
+                              Content="Code Canvas: Ctrl + Shift + Mouse for Zoom" />
                     <CheckBox x:Name="CodeViewHistoryNavigationCheckBox"
                               Margin="0,0,0,12"
                               Content="Code View: Ctrl + '-' and '+' for Back and Forward" />

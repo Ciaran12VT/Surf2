@@ -218,6 +218,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isDiagramCanvasPanning;
     private bool _isControlPanningCodeCanvas;
     private bool _isControlPanningDiagramCanvas;
+    private bool _isShiftPanningCodeCanvas;
     private bool _isShiftPanningDiagramCanvas;
     private bool _isDrawingDiagramShape;
     private bool _isDrawingDiagramImage;
@@ -242,6 +243,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _diagramPanStartPoint;
     private Point _controlCodeCanvasPanPoint;
     private Point _controlDiagramCanvasPanPoint;
+    private Point _codeShiftPanOriginPoint;
+    private Point _codeShiftPanCurrentPoint;
+    private Point _codeCtrlShiftZoomOriginPoint;
+    private Point _codeCtrlShiftZoomCurrentPoint;
+    private Point _codeCtrlShiftZoomAnchorViewportPoint;
+    private Point _codeCtrlShiftZoomAnchorCanvasPoint;
     private Point _diagramShiftPanOriginPoint;
     private Point _diagramShiftPanCurrentPoint;
     private Point _diagramCtrlShiftZoomOriginPoint;
@@ -288,7 +295,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private int _objectExplorerLoadingDepth;
     private int _scopeLoadVersion;
     private bool _isRestoringObjectExplorerExpansion;
+    private bool _isCtrlShiftZoomingCodeCanvas;
     private bool _isCtrlShiftZoomingDiagramCanvas;
+    private readonly DispatcherTimer _codeShiftPanTimer;
+    private readonly DispatcherTimer _codeCtrlShiftZoomTimer;
     private readonly DispatcherTimer _diagramShiftPanTimer;
     private readonly DispatcherTimer _diagramCtrlShiftZoomTimer;
 
@@ -297,6 +307,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         InitializeComponent();
         DataContext = this;
         ObjectExplorer.ContextMenu = new ContextMenu();
+        _codeShiftPanTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _codeShiftPanTimer.Tick += CodeShiftPanTimer_Tick;
+        _codeCtrlShiftZoomTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _codeCtrlShiftZoomTimer.Tick += CodeCtrlShiftZoomTimer_Tick;
         _diagramShiftPanTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -2301,6 +2321,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void CodeViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Code);
+        StopCodeShiftPan();
+        StopCodeCtrlShiftZoom();
         if (TryHandleControlCodeCanvasPan(e))
         {
             e.Handled = true;
@@ -2309,6 +2331,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CodeViewHost_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (TryHandleCodeCanvasCtrlShiftZoom(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (TryHandleCodeCanvasShiftPan(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (TryHandleControlCodeCanvasPan(e))
         {
             e.Handled = true;
@@ -2318,6 +2352,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void CodeViewHost_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         SetActiveWorkspaceView(WorkspaceViewKind.Code);
+        StopCodeShiftPan();
+        StopCodeCtrlShiftZoom();
     }
 
     private void DiagramViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -2552,6 +2588,204 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (DiagramViewHost != null)
         {
             DiagramViewHost.Cursor = null;
+        }
+    }
+
+    private bool TryHandleCodeCanvasCtrlShiftZoom(MouseEventArgs e)
+    {
+        if (_appSettings.KeyboardShortcuts.EnableCodeCanvasCtrlShiftMouseZooming != true ||
+            _codeViewMode != CodeViewMode.Canvas ||
+            WorkspaceScrollViewer == null ||
+            WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            _isCanvasPanning ||
+            e.LeftButton != MouseButtonState.Released ||
+            e.MiddleButton != MouseButtonState.Released ||
+            e.RightButton != MouseButtonState.Released)
+        {
+            StopCodeCtrlShiftZoom();
+            return false;
+        }
+
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if ((modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            !IsMouseEventInsideElement(e, WorkspaceScrollViewer))
+        {
+            StopCodeCtrlShiftZoom();
+            return false;
+        }
+
+        Point currentPoint = e.GetPosition(WorkspaceScrollViewer);
+        if (!_isCtrlShiftZoomingCodeCanvas)
+        {
+            StopCodeShiftPan();
+            _codeCtrlShiftZoomOriginPoint = currentPoint;
+            _codeCtrlShiftZoomCurrentPoint = currentPoint;
+            _codeCtrlShiftZoomAnchorViewportPoint = currentPoint;
+            _codeCtrlShiftZoomAnchorCanvasPoint = e.GetPosition(WorkspaceCanvas);
+            _isCtrlShiftZoomingCodeCanvas = true;
+            CodeViewHost.Cursor = Cursors.SizeNS;
+            if (!_codeCtrlShiftZoomTimer.IsEnabled)
+            {
+                _codeCtrlShiftZoomTimer.Start();
+            }
+        }
+        else
+        {
+            _codeCtrlShiftZoomCurrentPoint = currentPoint;
+        }
+
+        SetActiveWorkspaceView(WorkspaceViewKind.Code);
+        return true;
+    }
+
+    private bool TryHandleCodeCanvasShiftPan(MouseEventArgs e)
+    {
+        if (_appSettings.KeyboardShortcuts.EnableCodeCanvasShiftMousePanning != true ||
+            _codeViewMode != CodeViewMode.Canvas ||
+            WorkspaceScrollViewer == null ||
+            WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            _isCanvasPanning ||
+            e.LeftButton != MouseButtonState.Released ||
+            e.MiddleButton != MouseButtonState.Released ||
+            e.RightButton != MouseButtonState.Released)
+        {
+            StopCodeShiftPan();
+            return false;
+        }
+
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if ((modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            (modifiers & ModifierKeys.Control) == ModifierKeys.Control ||
+            !IsMouseEventInsideElement(e, WorkspaceScrollViewer))
+        {
+            StopCodeShiftPan();
+            return false;
+        }
+
+        Point currentPoint = e.GetPosition(WorkspaceScrollViewer);
+        if (!_isShiftPanningCodeCanvas)
+        {
+            _codeShiftPanOriginPoint = currentPoint;
+            _codeShiftPanCurrentPoint = currentPoint;
+            _isShiftPanningCodeCanvas = true;
+            CodeViewHost.Cursor = Cursors.ScrollAll;
+            if (!_codeShiftPanTimer.IsEnabled)
+            {
+                _codeShiftPanTimer.Start();
+            }
+        }
+        else
+        {
+            _codeShiftPanCurrentPoint = currentPoint;
+        }
+
+        SetActiveWorkspaceView(WorkspaceViewKind.Code);
+        return true;
+    }
+
+    private void CodeShiftPanTimer_Tick(object? sender, EventArgs e)
+    {
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if (!_isShiftPanningCodeCanvas ||
+            _codeViewMode != CodeViewMode.Canvas ||
+            WorkspaceScrollViewer == null ||
+            WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            !WorkspaceScrollViewer.IsMouseOver ||
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
+            (modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            StopCodeShiftPan();
+            return;
+        }
+
+        Vector delta = _codeShiftPanCurrentPoint - _codeShiftPanOriginPoint;
+        double horizontalChange = Math.Abs(delta.X) <= DiagramShiftPanDeadZone
+            ? 0
+            : delta.X * DiagramShiftPanSpeedFactor;
+        double verticalChange = Math.Abs(delta.Y) <= DiagramShiftPanDeadZone
+            ? 0
+            : delta.Y * DiagramShiftPanSpeedFactor;
+
+        if (Math.Abs(horizontalChange) <= 0.01 && Math.Abs(verticalChange) <= 0.01)
+        {
+            return;
+        }
+
+        WorkspaceScrollViewer.ScrollToHorizontalOffset(WorkspaceScrollViewer.HorizontalOffset + horizontalChange);
+        WorkspaceScrollViewer.ScrollToVerticalOffset(WorkspaceScrollViewer.VerticalOffset + verticalChange);
+        CaptureViewportState();
+    }
+
+    private void CodeCtrlShiftZoomTimer_Tick(object? sender, EventArgs e)
+    {
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if (!_isCtrlShiftZoomingCodeCanvas ||
+            _codeViewMode != CodeViewMode.Canvas ||
+            WorkspaceScrollViewer == null ||
+            WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            !WorkspaceScrollViewer.IsMouseOver ||
+            (modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift)
+        {
+            StopCodeCtrlShiftZoom();
+            return;
+        }
+
+        double verticalDistance = _codeCtrlShiftZoomCurrentPoint.Y - _codeCtrlShiftZoomOriginPoint.Y;
+        if (Math.Abs(verticalDistance) <= DiagramCtrlShiftZoomDeadZone)
+        {
+            return;
+        }
+
+        double previousZoom = _canvasZoom;
+        double multiplier = Math.Exp(-verticalDistance * DiagramCtrlShiftZoomSpeedFactor);
+        _canvasZoom = NormalizeCanvasZoom(_canvasZoom * multiplier);
+        if (Math.Abs(_canvasZoom - previousZoom) <= 0.0001)
+        {
+            return;
+        }
+
+        _workspaceState.CanvasZoom = _canvasZoom;
+        ApplyCanvasZoom();
+        WorkspaceScrollViewer.UpdateLayout();
+
+        WorkspaceScrollViewer.ScrollToHorizontalOffset(
+            (_codeCtrlShiftZoomAnchorCanvasPoint.X * _canvasZoom) -
+            _codeCtrlShiftZoomAnchorViewportPoint.X);
+        WorkspaceScrollViewer.ScrollToVerticalOffset(
+            (_codeCtrlShiftZoomAnchorCanvasPoint.Y * _canvasZoom) -
+            _codeCtrlShiftZoomAnchorViewportPoint.Y);
+        CaptureViewportState();
+
+        StatusText = $"Canvas zoom: {_canvasZoom:P0}";
+    }
+
+    private void StopCodeShiftPan()
+    {
+        _isShiftPanningCodeCanvas = false;
+        if (_codeShiftPanTimer.IsEnabled)
+        {
+            _codeShiftPanTimer.Stop();
+        }
+
+        if (CodeViewHost != null)
+        {
+            CodeViewHost.Cursor = null;
+        }
+    }
+
+    private void StopCodeCtrlShiftZoom()
+    {
+        _isCtrlShiftZoomingCodeCanvas = false;
+        if (_codeCtrlShiftZoomTimer.IsEnabled)
+        {
+            _codeCtrlShiftZoomTimer.Stop();
+        }
+
+        if (CodeViewHost != null)
+        {
+            CodeViewHost.Cursor = null;
         }
     }
 
@@ -4704,6 +4938,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private List<DiagramObjectSnapshot> CaptureDiagramObjects()
     {
+        CommitDiagramObjectTextEdits();
         CommitMetadataEditorChanges();
 
         var snapshots = new List<DiagramObjectSnapshot>();
@@ -10328,7 +10563,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void LoadWorkbenchDiagram(WorkbenchState workbench)
     {
-        DiagramDocument? diagram = workbench.ActiveDiagramSnapshot ?? _diagramLibrary.Find(workbench.ActiveDiagramId);
+        DiagramDocument? diagram = ResolveWorkbenchDiagram(workbench);
         if (diagram == null)
         {
             ClearLoadedDiagram();
@@ -10347,6 +10582,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramScrollViewer.ScrollToHorizontalOffset(Math.Max(0, workbench.DiagramViewportHorizontalOffset));
             DiagramScrollViewer.ScrollToVerticalOffset(Math.Max(0, workbench.DiagramViewportVerticalOffset));
         }), DispatcherPriority.ApplicationIdle);
+    }
+
+    private DiagramDocument? ResolveWorkbenchDiagram(WorkbenchState workbench)
+    {
+        DiagramDocument? persistedDiagram = _diagramLibrary.Find(workbench.ActiveDiagramId);
+        DiagramDocument? snapshot = workbench.ActiveDiagramSnapshot;
+
+        if (persistedDiagram == null)
+        {
+            return snapshot;
+        }
+
+        if (snapshot == null ||
+            string.IsNullOrWhiteSpace(snapshot.DiagramId) ||
+            !string.Equals(snapshot.DiagramId, persistedDiagram.DiagramId, StringComparison.OrdinalIgnoreCase))
+        {
+            return persistedDiagram;
+        }
+
+        return persistedDiagram.UpdatedAtUtc >= snapshot.UpdatedAtUtc
+            ? persistedDiagram
+            : snapshot;
     }
 
     private DiagramDocument? CaptureActiveDiagramSnapshot()
@@ -11039,6 +11296,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_codeViewMode == CodeViewMode.Tabs)
         {
+            StopCodeShiftPan();
+            StopCodeCtrlShiftZoom();
             MoveOpenWindowsToCodeTabs();
             WorkspaceScrollViewer.Visibility = Visibility.Collapsed;
             CodeDocumentsTabControl.Visibility = Visibility.Visible;
@@ -11879,6 +12138,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _shutdownRequested = true;
+        StopCodeShiftPan();
+        StopCodeCtrlShiftZoom();
         StopDiagramShiftPan();
         StopDiagramCtrlShiftZoom();
         IsEnabled = false;
