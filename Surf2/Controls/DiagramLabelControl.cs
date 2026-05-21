@@ -196,6 +196,8 @@ public sealed class DiagramLabelControl : UserControl
         }
     }
 
+    public bool IsLabelEditing => _isLabelEditing;
+
     public void PlaceAt(Point anchorPoint)
     {
         SetGeometry(
@@ -633,7 +635,7 @@ public sealed class DiagramLabelControl : UserControl
         }
     }
 
-    private void CommitLabelEdit(bool notifyChange = true)
+    public void CommitLabelEdit(bool notifyChange = true)
     {
         if (!_isLabelEditing)
         {

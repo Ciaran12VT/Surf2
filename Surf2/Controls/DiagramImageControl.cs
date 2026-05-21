@@ -162,6 +162,8 @@ public sealed class DiagramImageControl : UserControl
         set => _selectionBorder.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    public bool IsLabelEditing => _isLabelEditing;
+
     public void SetCanvasBounds(double left, double top, double width, double height)
     {
         Canvas.SetLeft(this, left);
@@ -474,7 +476,7 @@ public sealed class DiagramImageControl : UserControl
         }
     }
 
-    private void CommitLabelEdit(bool notifyChange = true)
+    public void CommitLabelEdit(bool notifyChange = true)
     {
         if (!_isLabelEditing)
         {

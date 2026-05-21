@@ -4752,6 +4752,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.CursorPositionChanged += FloatingWindow_CursorPositionChanged;
         window.ContextMenuOpeningRequested += FloatingWindow_ContextMenuOpeningRequested;
         window.ScopeFindRequested += FloatingWindow_ScopeFindRequested;
+        window.LineAddressCopied += FloatingWindow_LineAddressCopied;
 
         if (targetReference != null && existingState == null)
         {
@@ -4894,6 +4895,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseOpenWindow(FloatingCodeWindow window)
     {
+        window.LineAddressCopied -= FloatingWindow_LineAddressCopied;
         RemoveWindowFromCodeView(window);
         _openWindows.Remove(window.State.FilePath);
         _workspaceState.OpenDocuments.Remove(window.State);
@@ -5089,6 +5091,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Keyboard.Focus(ObjectExplorerSearchTextBox);
         ObjectExplorerSearchTextBox.SelectAll();
         StatusText = "Object Explorer search focused.";
+    }
+
+    private void FloatingWindow_LineAddressCopied(object? sender, LineAddressCopiedEventArgs e)
+    {
+        StatusText = e.Copied
+            ? $"Copied line address: {e.LineAddress}"
+            : $"Could not copy line address: {e.ErrorMessage}";
     }
 
     private MenuItem CreateCSharpReferencesContextMenu(FloatingCodeWindow window)
@@ -7079,9 +7088,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         Point canvasPoint = e.GetPosition(DiagramCanvas);
+        bool lockedInPlacementOrEdit = LockInActiveDiagramPlacementOrEdits(canvasPoint);
+        bool clearedTools = HasActiveDiagramDrawingTool();
+        if (clearedTools)
+        {
+            ClearDiagramDrawingTools();
+            StatusText = lockedInPlacementOrEdit
+                ? "Diagram placement locked in and drawing tools cleared."
+                : "Diagram drawing tools cleared.";
+        }
+        else if (lockedInPlacementOrEdit)
+        {
+            StatusText = "Diagram object edit locked in.";
+        }
+
         DiagramLineControl? fixedLine = FindFixedLineAt(canvasPoint);
         if (fixedLine?.ContextMenu == null)
         {
+            e.Handled = clearedTools || lockedInPlacementOrEdit;
             return;
         }
 
@@ -7120,6 +7144,83 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             .Where(line => !line.IsLoose && line.ContainsCanvasPoint(canvasPoint))
             .OrderByDescending(Panel.GetZIndex)
             .FirstOrDefault();
+    }
+
+    private bool LockInActiveDiagramPlacementOrEdits(Point canvasPoint)
+    {
+        bool lockedIn = false;
+
+        if (_isDrawingDiagramLine)
+        {
+            FinishDiagramLineDraw(canvasPoint);
+            lockedIn = true;
+        }
+        else if (_isDrawingDiagramImage)
+        {
+            FinishDiagramImageDraw(canvasPoint, beginEdit: false);
+            lockedIn = true;
+        }
+        else if (_isDrawingDiagramShape)
+        {
+            FinishDiagramShapeDraw(canvasPoint, beginEdit: false);
+            lockedIn = true;
+        }
+
+        if (CommitDiagramObjectTextEdits())
+        {
+            lockedIn = true;
+        }
+
+        Dispatcher.BeginInvoke(
+            () => CommitDiagramObjectTextEdits(),
+            DispatcherPriority.Background);
+
+        return lockedIn;
+    }
+
+    private bool CommitDiagramObjectTextEdits()
+    {
+        bool committed = false;
+
+        foreach (FrameworkElement diagramObject in DiagramCanvas.Children.OfType<FrameworkElement>())
+        {
+            switch (diagramObject)
+            {
+                case DiagramShapeControl { IsLabelEditing: true } shape:
+                    shape.CommitLabelEdit();
+                    committed = true;
+                    break;
+
+                case DiagramImageControl { IsLabelEditing: true } image:
+                    image.CommitLabelEdit();
+                    committed = true;
+                    break;
+
+                case DiagramLabelControl { IsLabelEditing: true } label:
+                    label.CommitLabelEdit();
+                    committed = true;
+                    break;
+            }
+        }
+
+        if (committed)
+        {
+            Keyboard.ClearFocus();
+            Focus();
+            SelectDiagramObject(null);
+        }
+
+        return committed;
+    }
+
+    private bool HasActiveDiagramDrawingTool()
+    {
+        return DiagramRectangleToolButton?.IsChecked == true ||
+            DiagramEllipseToolButton?.IsChecked == true ||
+            DiagramImageToolButton?.IsChecked == true ||
+            DiagramLineToolButton?.IsChecked == true ||
+            DiagramLabelToolButton?.IsChecked == true ||
+            DiagramPortalToolButton?.IsChecked == true;
     }
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -8362,7 +8463,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _activeDiagramDrawingLine?.SetAbsoluteEndpoints(_diagramLineDrawStartPoint, currentPoint);
     }
 
-    private void FinishDiagramShapeDraw(Point endPoint)
+    private void FinishDiagramShapeDraw(Point endPoint, bool beginEdit = true)
     {
         DiagramShapeControl? completedShape = _activeDiagramDrawingShape;
         _activeDiagramDrawingShape = null;
@@ -8393,12 +8494,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SelectDiagramObject(completedShape);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(completedShape));
         StatusText = $"Added {completedShape.ShapeKind.ToString().ToLowerInvariant()} shape.";
-        Dispatcher.BeginInvoke(
-            () => completedShape.BeginEditLabel(),
-            DispatcherPriority.Input);
+        if (beginEdit)
+        {
+            Dispatcher.BeginInvoke(
+                () => completedShape.BeginEditLabel(),
+                DispatcherPriority.Input);
+        }
     }
 
-    private void FinishDiagramImageDraw(Point endPoint)
+    private void FinishDiagramImageDraw(Point endPoint, bool beginEdit = true)
     {
         DiagramImageControl? completedImage = _activeDiagramDrawingImage;
         _activeDiagramDrawingImage = null;
@@ -8429,9 +8533,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SelectDiagramObject(completedImage);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(completedImage));
         StatusText = $"Added image '{completedImage.ImageName}'.";
-        Dispatcher.BeginInvoke(
-            () => completedImage.BeginEditLabel(),
-            DispatcherPriority.Input);
+        if (beginEdit)
+        {
+            Dispatcher.BeginInvoke(
+                () => completedImage.BeginEditLabel(),
+                DispatcherPriority.Input);
+        }
     }
 
     private void FinishDiagramLineDraw(Point endPoint)

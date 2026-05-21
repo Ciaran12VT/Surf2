@@ -8,6 +8,9 @@
              ContextMenuOpening="FloatingCodeWindow_ContextMenuOpening">
     <UserControl.ContextMenu>
         <ContextMenu>
+            <MenuItem Click="CopyLineAddressContextMenuItem_Click"
+                      Header="Copy Line Address" />
+            <Separator />
             <MenuItem Click="CloseContextMenuItem_Click"
                       Header="Close" />
         </ContextMenu>
@@ -67,6 +70,9 @@
                                        HorizontalScrollBarVisibility="Auto">
                     <avalonEdit:TextEditor.ContextMenu>
                         <ContextMenu>
+                            <MenuItem Click="CopyLineAddressContextMenuItem_Click"
+                                      Header="Copy Line Address" />
+                            <Separator />
                             <MenuItem Click="CloseContextMenuItem_Click"
                                       Header="Close" />
                         </ContextMenu>

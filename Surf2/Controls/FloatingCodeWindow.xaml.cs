@@ -87,6 +87,8 @@ public partial class FloatingCodeWindow : UserControl
 
     public event EventHandler<CodeWindowContextMenuOpeningEventArgs>? ContextMenuOpeningRequested;
 
+    public event EventHandler<LineAddressCopiedEventArgs>? LineAddressCopied;
+
     public event EventHandler? ScopeFindRequested;
 
     public OpenDocumentState State { get; }
@@ -1063,6 +1065,54 @@ public partial class FloatingCodeWindow : UserControl
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    private void CopyLineAddressContextMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryCreateCurrentLineAddress(out string lineAddress, out int lineNumber))
+        {
+            LineAddressCopied?.Invoke(
+                this,
+                new LineAddressCopiedEventArgs(string.Empty, 0, copied: false, "No editor line is available to copy."));
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetText(lineAddress);
+            LineAddressCopied?.Invoke(this, new LineAddressCopiedEventArgs(lineAddress, lineNumber, copied: true, string.Empty));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            LineAddressCopied?.Invoke(this, new LineAddressCopiedEventArgs(lineAddress, lineNumber, copied: false, ex.Message));
+        }
+    }
+
+    private bool TryCreateCurrentLineAddress(out string lineAddress, out int lineNumber)
+    {
+        lineAddress = string.Empty;
+        lineNumber = 0;
+
+        if (Editor.Document == null || Editor.Document.LineCount <= 0)
+        {
+            return false;
+        }
+
+        int line = Editor.TextArea.Caret.Location.Line;
+        if (Editor.SelectionLength > 0)
+        {
+            int selectionStart = Math.Clamp(Editor.SelectionStart, 0, Editor.Document.TextLength);
+            line = Editor.Document.GetLocation(selectionStart).Line;
+        }
+
+        if (line <= 0)
+        {
+            line = 1;
+        }
+
+        lineNumber = Math.Clamp(line, 1, Editor.Document.LineCount);
+        lineAddress = $"{State.FilePath}:{lineNumber.ToString(CultureInfo.InvariantCulture)}";
+        return true;
+    }
+
     private void FloatingCodeWindow_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
         BringToFrontRequested?.Invoke(this, EventArgs.Empty);
@@ -1120,4 +1170,19 @@ public partial class FloatingCodeWindow : UserControl
 public sealed class CodeWindowContextMenuOpeningEventArgs(ContextMenu contextMenu) : EventArgs
 {
     public ContextMenu ContextMenu { get; } = contextMenu;
+}
+
+public sealed class LineAddressCopiedEventArgs(
+    string lineAddress,
+    int lineNumber,
+    bool copied,
+    string errorMessage) : EventArgs
+{
+    public string LineAddress { get; } = lineAddress;
+
+    public int LineNumber { get; } = lineNumber;
+
+    public bool Copied { get; } = copied;
+
+    public string ErrorMessage { get; } = errorMessage;
 }
