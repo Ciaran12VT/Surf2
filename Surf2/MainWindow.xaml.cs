@@ -61,7 +61,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         Added,
         Removed,
-        Modified
+        Modified,
+        GroupModified
     }
 
     private enum SqlFindOperation
@@ -77,7 +78,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private sealed record DiagramUndoAction(
         DiagramUndoActionKind Kind,
         DiagramObjectSnapshot? Before,
-        DiagramObjectSnapshot? After);
+        DiagramObjectSnapshot? After,
+        IReadOnlyList<DiagramObjectSnapshot>? BeforeGroup = null,
+        IReadOnlyList<DiagramObjectSnapshot>? AfterGroup = null);
 
     private sealed record MetadataLinkTarget(
         string Link,
@@ -165,6 +168,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double DiagramCtrlShiftZoomDeadZone = 3;
     private const double DiagramCtrlShiftZoomSpeedFactor = 0.00008;
     private const string ObjectExplorerDragDataFormat = "Surf2.ObjectExplorerNode";
+    private const string OpenTabDragDataFormat = "Surf2.OpenTab";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
     [
@@ -255,6 +259,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isDrawingDiagramShape;
     private bool _isDrawingDiagramImage;
     private bool _isDrawingDiagramLine;
+    private bool _isSelectingDiagramArea;
+    private bool _isDraggingDiagramSelectionGroup;
     private bool _isDiagramExporting;
     private bool _isDiagramSidebarOpen;
     private bool _isUpdatingMetadataEditor;
@@ -295,6 +301,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Point _diagramShapeDrawStartPoint;
     private Point _diagramImageDrawStartPoint;
     private Point _diagramLineDrawStartPoint;
+    private Point _diagramSelectionStartPoint;
+    private Point _diagramSelectionGroupDragStartPoint;
+    private Point _openTabsDragStartPoint;
     private double _canvasPanStartHorizontalOffset;
     private double _canvasPanStartVerticalOffset;
     private double _diagramPanStartHorizontalOffset;
@@ -306,9 +315,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private DiagramLineControl? _activeDiagramDrawingLine;
     private FloatingCodeWindow? _activeCodeWindow;
     private FrameworkElement? _selectedDiagramObject;
+    private System.Windows.Shapes.Rectangle? _diagramSelectionRectangle;
     private DiagramObjectSnapshot? _diagramClipboardSnapshot;
     private DiagramObjectSnapshot? _pendingDiagramInteractionSnapshot;
     private readonly Stack<DiagramUndoAction> _diagramUndoStack = new();
+    private readonly HashSet<FrameworkElement> _selectedDiagramObjects = [];
+    private readonly List<DiagramObjectSnapshot> _diagramSelectionGroupDragStartSnapshots = [];
     private readonly List<QueryItem> _metadataEditorQueries = [];
     private readonly Dictionary<string, bool> _expandedWorkflowItems = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RichTextBox> _workflowItemDocumentationEditors = new(StringComparer.OrdinalIgnoreCase);
@@ -326,6 +338,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private FrameworkElement? _metadataEditorTarget;
     private WorkflowDocument? _workflowEditorTarget;
     private FileSystemNode? _pendingObjectExplorerDragNode;
+    private OpenWindowItem? _pendingOpenTabsDragItem;
     private double _diagramSidebarWidth = DiagramSidebarDefaultWidth;
     private string _currentFolderDisplay = "No scope selected";
     private string _statusText = "Ready.";
@@ -1644,6 +1657,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void DiagramToolButton_Checked(object sender, RoutedEventArgs e)
     {
         if (_isUpdatingDiagramToolToggles ||
+            DiagramSelectionToolButton == null ||
             DiagramRectangleToolButton == null ||
             DiagramEllipseToolButton == null ||
             DiagramImageToolButton == null ||
@@ -1657,7 +1671,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_isDiagramLocked)
         {
             ClearDiagramDrawingTools();
-            StatusText = "Unlock the diagram to use drawing tools.";
+            StatusText = "Unlock the diagram to use diagram tools.";
             return;
         }
 
@@ -1666,6 +1680,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (ReferenceEquals(sender, DiagramRectangleToolButton))
         {
+            DiagramSelectionToolButton.IsChecked = false;
             DiagramEllipseToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
@@ -1677,6 +1692,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         else if (ReferenceEquals(sender, DiagramEllipseToolButton))
         {
+            DiagramSelectionToolButton.IsChecked = false;
             DiagramRectangleToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
@@ -1688,6 +1704,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         else if (ReferenceEquals(sender, DiagramImageToolButton))
         {
+            DiagramSelectionToolButton.IsChecked = false;
             DiagramRectangleToolButton.IsChecked = false;
             DiagramEllipseToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
@@ -1698,6 +1715,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         else if (ReferenceEquals(sender, DiagramLineToolButton))
         {
+            DiagramSelectionToolButton.IsChecked = false;
             DiagramRectangleToolButton.IsChecked = false;
             DiagramEllipseToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
@@ -1709,6 +1727,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         else if (ReferenceEquals(sender, DiagramLabelToolButton))
         {
+            DiagramSelectionToolButton.IsChecked = false;
             DiagramRectangleToolButton.IsChecked = false;
             DiagramEllipseToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
@@ -1720,12 +1739,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         else if (ReferenceEquals(sender, DiagramPortalToolButton))
         {
+            DiagramSelectionToolButton.IsChecked = false;
             DiagramRectangleToolButton.IsChecked = false;
             DiagramEllipseToolButton.IsChecked = false;
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
+        }
+        else if (ReferenceEquals(sender, DiagramSelectionToolButton))
+        {
+            DiagramRectangleToolButton.IsChecked = false;
+            DiagramEllipseToolButton.IsChecked = false;
+            DiagramImageToolButton.IsChecked = false;
+            DiagramLineToolButton.IsChecked = false;
+            DiagramLabelToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
+            _selectedDiagramImageId = null;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
         }
 
         _isUpdatingDiagramToolToggles = false;
@@ -1839,9 +1871,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _selectedDiagramImageId = image.Id;
         _isUpdatingDiagramToolToggles = true;
+        DiagramSelectionToolButton.IsChecked = false;
         DiagramRectangleToolButton.IsChecked = false;
         DiagramEllipseToolButton.IsChecked = false;
         DiagramImageToolButton.IsChecked = true;
+        DiagramLineToolButton.IsChecked = false;
+        DiagramLabelToolButton.IsChecked = false;
+        DiagramPortalToolButton.IsChecked = false;
         _isUpdatingDiagramToolToggles = false;
         DiagramImageToolButton.ToolTip = $"Image: {image.Name}";
         StatusText = $"Image tool: {image.Name}.";
@@ -4216,7 +4252,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ClearDiagramDrawingTools()
     {
-        if (DiagramRectangleToolButton == null ||
+        if (DiagramSelectionToolButton == null ||
+            DiagramRectangleToolButton == null ||
             DiagramEllipseToolButton == null ||
             DiagramImageToolButton == null ||
             DiagramLineToolButton == null ||
@@ -4227,6 +4264,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _isUpdatingDiagramToolToggles = true;
+        DiagramSelectionToolButton.IsChecked = false;
         DiagramRectangleToolButton.IsChecked = false;
         DiagramEllipseToolButton.IsChecked = false;
         DiagramImageToolButton.IsChecked = false;
@@ -4236,6 +4274,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _selectedDiagramImageId = null;
         _pendingPortalName = null;
         _pendingPortalPairPlacement = null;
+        CancelDiagramAreaSelection();
+        CancelDiagramSelectionGroupDrag();
         _isUpdatingDiagramToolToggles = false;
     }
 
@@ -4272,6 +4312,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         bool editingEnabled = !_isDiagramLocked;
 
+        if (DiagramSelectionToolButton != null) DiagramSelectionToolButton.IsEnabled = editingEnabled;
         if (DiagramRectangleToolButton != null) DiagramRectangleToolButton.IsEnabled = editingEnabled;
         if (DiagramEllipseToolButton != null) DiagramEllipseToolButton.IsEnabled = editingEnabled;
         if (DiagramImageToolButton != null) DiagramImageToolButton.IsEnabled = editingEnabled;
@@ -5026,7 +5067,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramCanvas_DragOver(object sender, DragEventArgs e)
     {
-        e.Effects = !_isDiagramLocked && e.Data.GetDataPresent(ObjectExplorerDragDataFormat)
+        e.Effects = !_isDiagramLocked &&
+            (e.Data.GetDataPresent(ObjectExplorerDragDataFormat) ||
+             e.Data.GetDataPresent(OpenTabDragDataFormat))
             ? DragDropEffects.Copy
             : DragDropEffects.None;
         e.Handled = true;
@@ -5040,26 +5083,53 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (e.Data.GetData(ObjectExplorerDragDataFormat) is not FileSystemNode node)
+        if (e.Data.GetData(ObjectExplorerDragDataFormat) is FileSystemNode node)
         {
+            e.Handled = true;
+            PlaceObjectExplorerResourceOnDiagram(node, e.GetPosition(DiagramCanvas));
             return;
         }
 
-        e.Handled = true;
-        PlaceObjectExplorerResourceOnDiagram(node, e.GetPosition(DiagramCanvas));
+        if (e.Data.GetData(OpenTabDragDataFormat) is OpenWindowItem openTab)
+        {
+            e.Handled = true;
+            PlaceOpenTabResourceOnDiagram(openTab, e.GetPosition(DiagramCanvas));
+        }
     }
 
     private void PlaceObjectExplorerResourceOnDiagram(FileSystemNode node, Point canvasPoint)
+    {
+        PlaceDiagramResourceOnDiagram(
+            node.Name,
+            node.FullPath,
+            () => TryGetObjectExplorerNodeContent(node, out string content) ? content : null,
+            canvasPoint);
+    }
+
+    private void PlaceOpenTabResourceOnDiagram(OpenWindowItem openTab, Point canvasPoint)
+    {
+        PlaceDiagramResourceOnDiagram(
+            openTab.FileName,
+            openTab.FilePath,
+            () => TryGetOpenTabContent(openTab, out string content) ? content : null,
+            canvasPoint);
+    }
+
+    private void PlaceDiagramResourceOnDiagram(
+        string displayName,
+        string link,
+        Func<string?> getContent,
+        Point canvasPoint)
     {
         if (TryBlockDiagramObjectEditWhenLocked("add resources to the diagram"))
         {
             return;
         }
 
-        DiagramImageDefinition? imageDefinition = FindDiagramImageMatchForNode(node);
+        DiagramImageDefinition? imageDefinition = FindDiagramImageMatchForResource(displayName, getContent);
         if (imageDefinition == null)
         {
-            StatusText = $"No diagram image regex matched '{node.Name}'.";
+            StatusText = $"No diagram image regex matched '{displayName}'.";
             return;
         }
 
@@ -5083,20 +5153,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             canvasPoint.Y - (defaultHeight / 2),
             defaultWidth,
             defaultHeight);
-        image.ApplyDetails(node.Name);
+        image.ApplyDetails(displayName);
         image.ApplyMetadata(new DiagramObjectMetadata
         {
-            Link = node.FullPath
+            Link = link
         });
 
         ApplyDefaultDiagramZIndex(image);
         DiagramCanvas.Children.Add(image);
         SelectDiagramObject(image);
         PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(image));
-        StatusText = $"Added '{node.Name}' using diagram image '{imageDefinition.Name}'.";
+        StatusText = $"Added '{displayName}' using diagram image '{imageDefinition.Name}'.";
     }
 
-    private DiagramImageDefinition? FindDiagramImageMatchForNode(FileSystemNode node)
+    private DiagramImageDefinition? FindDiagramImageMatchForResource(string displayName, Func<string?> getContent)
     {
         foreach (DiagramImageDefinition image in _appSettings.DiagramImages.Images)
         {
@@ -5110,8 +5180,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             string matchTarget = DiagramImageDefinition.NormalizeMatchTarget(image.MatchTarget);
             string? input = matchTarget == DiagramImageDefinition.ContentMatchTarget
-                ? TryGetObjectExplorerNodeContent(node, out string content) ? content : null
-                : node.Name;
+                ? getContent()
+                : displayName;
 
             if (!string.IsNullOrEmpty(input) && regex.IsMatch(input))
             {
@@ -5159,6 +5229,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         return TryGetDocumentContent(
             node.FullPath,
+            out content,
+            out _,
+            out _,
+            out _);
+    }
+
+    private bool TryGetOpenTabContent(OpenWindowItem openTab, out string content)
+    {
+        if (_openWindows.TryGetValue(openTab.FilePath, out FloatingCodeWindow? codeWindow))
+        {
+            content = codeWindow.Text;
+            return true;
+        }
+
+        return TryGetDocumentContent(
+            openTab.FilePath,
             out content,
             out _,
             out _,
@@ -8248,6 +8334,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (IsDiagramSelectionToolSelected())
+        {
+            StartDiagramAreaSelection(e.GetPosition(DiagramCanvas));
+            e.Handled = true;
+            return;
+        }
+
         if (TryPlaceWorkflowItemMarker(e.GetPosition(DiagramCanvas)))
         {
             e.Handled = true;
@@ -8303,6 +8396,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramCanvas_MouseMove(object sender, MouseEventArgs e)
     {
+        if (_isDraggingDiagramSelectionGroup && e.LeftButton == MouseButtonState.Pressed)
+        {
+            UpdateDiagramSelectionGroupDrag(e.GetPosition(DiagramCanvas));
+            e.Handled = true;
+            return;
+        }
+
+        if (_isSelectingDiagramArea && e.LeftButton == MouseButtonState.Pressed)
+        {
+            UpdateDiagramAreaSelection(e.GetPosition(DiagramCanvas));
+            e.Handled = true;
+            return;
+        }
+
         if (_isDrawingDiagramLine && e.LeftButton == MouseButtonState.Pressed)
         {
             UpdateDiagramLineDraw(e.GetPosition(DiagramCanvas));
@@ -8339,6 +8446,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (_isDraggingDiagramSelectionGroup)
+        {
+            FinishDiagramSelectionGroupDrag(e.GetPosition(DiagramCanvas));
+            e.Handled = true;
+            return;
+        }
+
+        if (_isSelectingDiagramArea)
+        {
+            FinishDiagramAreaSelection(e.GetPosition(DiagramCanvas));
+            e.Handled = true;
+            return;
+        }
+
         if (_isDrawingDiagramLine)
         {
             FinishDiagramLineDraw(e.GetPosition(DiagramCanvas));
@@ -8385,8 +8506,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             ClearDiagramDrawingTools();
             StatusText = lockedInPlacementOrEdit
-                ? "Diagram placement locked in and drawing tools cleared."
-                : "Diagram drawing tools cleared.";
+                ? "Diagram placement locked in and tools cleared."
+                : "Diagram tools cleared.";
         }
         else if (lockedInPlacementOrEdit)
         {
@@ -8404,6 +8525,312 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         fixedLine.ContextMenu.Placement = PlacementMode.MousePoint;
         fixedLine.ContextMenu.IsOpen = true;
         e.Handled = true;
+    }
+
+    private void StartDiagramAreaSelection(Point startPoint)
+    {
+        CancelDiagramSelectionGroupDrag();
+        CancelDiagramAreaSelection();
+        CommitDiagramObjectTextEdits();
+        SelectDiagramObject(null);
+
+        _isSelectingDiagramArea = true;
+        _diagramSelectionStartPoint = startPoint;
+        _diagramSelectionRectangle = new System.Windows.Shapes.Rectangle
+        {
+            Fill = new SolidColorBrush(Color.FromArgb(36, 37, 99, 235)),
+            Stroke = new SolidColorBrush(Color.FromRgb(37, 99, 235)),
+            StrokeThickness = 1.5,
+            StrokeDashArray = new DoubleCollection { 4, 3 },
+            IsHitTestVisible = false
+        };
+        Panel.SetZIndex(_diagramSelectionRectangle, int.MaxValue);
+        DiagramCanvas.Children.Add(_diagramSelectionRectangle);
+        UpdateDiagramAreaSelection(startPoint);
+        DiagramCanvas.CaptureMouse();
+        DiagramCanvas.Cursor = Cursors.Cross;
+    }
+
+    private void UpdateDiagramAreaSelection(Point currentPoint)
+    {
+        if (_diagramSelectionRectangle == null)
+        {
+            return;
+        }
+
+        Rect selectionBounds = CreateRect(_diagramSelectionStartPoint, currentPoint);
+        Canvas.SetLeft(_diagramSelectionRectangle, selectionBounds.Left);
+        Canvas.SetTop(_diagramSelectionRectangle, selectionBounds.Top);
+        _diagramSelectionRectangle.Width = selectionBounds.Width;
+        _diagramSelectionRectangle.Height = selectionBounds.Height;
+    }
+
+    private void FinishDiagramAreaSelection(Point endPoint)
+    {
+        Rect selectionBounds = CreateRect(_diagramSelectionStartPoint, endPoint);
+        RemoveDiagramSelectionRectangle();
+        _isSelectingDiagramArea = false;
+        if (DiagramCanvas.IsMouseCaptured)
+        {
+            DiagramCanvas.ReleaseMouseCapture();
+        }
+
+        DiagramCanvas.Cursor = null;
+
+        if (selectionBounds.Width < 3 && selectionBounds.Height < 3)
+        {
+            SelectDiagramObjects([]);
+            return;
+        }
+
+        List<FrameworkElement> selectedObjects = DiagramCanvas.Children
+            .OfType<FrameworkElement>()
+            .Where(IsSelectableDiagramObject)
+            .Where(diagramObject => selectionBounds.IntersectsWith(GetDiagramObjectBounds(diagramObject)))
+            .ToList();
+        SelectDiagramObjects(selectedObjects);
+    }
+
+    private void CancelDiagramAreaSelection()
+    {
+        if (!_isSelectingDiagramArea && _diagramSelectionRectangle == null)
+        {
+            return;
+        }
+
+        _isSelectingDiagramArea = false;
+        RemoveDiagramSelectionRectangle();
+        if (DiagramCanvas?.IsMouseCaptured == true)
+        {
+            DiagramCanvas.ReleaseMouseCapture();
+        }
+
+        if (DiagramCanvas != null)
+        {
+            DiagramCanvas.Cursor = null;
+        }
+    }
+
+    private void RemoveDiagramSelectionRectangle()
+    {
+        if (_diagramSelectionRectangle == null)
+        {
+            return;
+        }
+
+        DiagramCanvas.Children.Remove(_diagramSelectionRectangle);
+        _diagramSelectionRectangle = null;
+    }
+
+    private bool TryStartDiagramSelectionGroupDrag(FrameworkElement diagramObject, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount > 1 ||
+            !IsDiagramSelectionToolSelected() ||
+            _isDiagramLocked ||
+            _selectedDiagramObjects.Count <= 1 ||
+            !_selectedDiagramObjects.Contains(diagramObject) ||
+            IsTextInputElement(e.OriginalSource as DependencyObject))
+        {
+            return false;
+        }
+
+        StartDiagramSelectionGroupDrag(e.GetPosition(DiagramCanvas));
+        return _isDraggingDiagramSelectionGroup;
+    }
+
+    private void StartDiagramSelectionGroupDrag(Point startPoint)
+    {
+        CancelDiagramAreaSelection();
+        _diagramSelectionGroupDragStartSnapshots.Clear();
+        foreach (FrameworkElement diagramObject in _selectedDiagramObjects.Where(IsSelectableDiagramObject))
+        {
+            DiagramObjectSnapshot? snapshot = CreateDiagramObjectSnapshot(diagramObject);
+            if (snapshot != null)
+            {
+                _diagramSelectionGroupDragStartSnapshots.Add(snapshot);
+            }
+        }
+
+        if (_diagramSelectionGroupDragStartSnapshots.Count <= 1)
+        {
+            _diagramSelectionGroupDragStartSnapshots.Clear();
+            return;
+        }
+
+        _isDraggingDiagramSelectionGroup = true;
+        _diagramSelectionGroupDragStartPoint = startPoint;
+        DiagramCanvas.CaptureMouse();
+        DiagramCanvas.Cursor = Cursors.SizeAll;
+    }
+
+    private void UpdateDiagramSelectionGroupDrag(Point currentPoint)
+    {
+        if (!_isDraggingDiagramSelectionGroup)
+        {
+            return;
+        }
+
+        Vector delta = currentPoint - _diagramSelectionGroupDragStartPoint;
+        foreach (DiagramObjectSnapshot snapshot in _diagramSelectionGroupDragStartSnapshots)
+        {
+            FrameworkElement? diagramObject = FindDiagramObjectById(snapshot.Id);
+            if (diagramObject == null)
+            {
+                continue;
+            }
+
+            ApplyDiagramObjectSnapshot(diagramObject, CreateMovedDiagramObjectSnapshot(snapshot, delta));
+            SetDiagramObjectSelected(diagramObject, true);
+        }
+    }
+
+    private void FinishDiagramSelectionGroupDrag(Point endPoint)
+    {
+        if (!_isDraggingDiagramSelectionGroup)
+        {
+            return;
+        }
+
+        UpdateDiagramSelectionGroupDrag(endPoint);
+        List<DiagramObjectSnapshot> beforeSnapshots = _diagramSelectionGroupDragStartSnapshots
+            .Select(snapshot => snapshot.Clone())
+            .ToList();
+        List<DiagramObjectSnapshot> afterSnapshots = beforeSnapshots
+            .Select(snapshot => FindDiagramObjectById(snapshot.Id))
+            .Select(CreateDiagramObjectSnapshot)
+            .OfType<DiagramObjectSnapshot>()
+            .ToList();
+
+        CancelDiagramSelectionGroupDrag();
+
+        if (DidDiagramSnapshotGroupChange(beforeSnapshots, afterSnapshots))
+        {
+            PushDiagramGroupUndo(beforeSnapshots, afterSnapshots);
+            StatusText = $"Moved {afterSnapshots.Count} diagram objects.";
+        }
+    }
+
+    private void CancelDiagramSelectionGroupDrag()
+    {
+        if (!_isDraggingDiagramSelectionGroup && _diagramSelectionGroupDragStartSnapshots.Count == 0)
+        {
+            return;
+        }
+
+        _isDraggingDiagramSelectionGroup = false;
+        _diagramSelectionGroupDragStartSnapshots.Clear();
+        if (DiagramCanvas?.IsMouseCaptured == true)
+        {
+            DiagramCanvas.ReleaseMouseCapture();
+        }
+
+        if (DiagramCanvas != null)
+        {
+            DiagramCanvas.Cursor = null;
+        }
+    }
+
+    private static Rect CreateRect(Point startPoint, Point endPoint)
+    {
+        return new Rect(
+            Math.Min(startPoint.X, endPoint.X),
+            Math.Min(startPoint.Y, endPoint.Y),
+            Math.Abs(endPoint.X - startPoint.X),
+            Math.Abs(endPoint.Y - startPoint.Y));
+    }
+
+    private static Rect GetDiagramObjectBounds(FrameworkElement diagramObject)
+    {
+        double width = diagramObject.ActualWidth > 0 ? diagramObject.ActualWidth : diagramObject.Width;
+        double height = diagramObject.ActualHeight > 0 ? diagramObject.ActualHeight : diagramObject.Height;
+        if (double.IsNaN(width))
+        {
+            width = 0;
+        }
+
+        if (double.IsNaN(height))
+        {
+            height = 0;
+        }
+
+        return new Rect(
+            GetCanvasLeft(diagramObject),
+            GetCanvasTop(diagramObject),
+            Math.Max(0, width),
+            Math.Max(0, height));
+    }
+
+    private static DiagramObjectSnapshot CreateMovedDiagramObjectSnapshot(DiagramObjectSnapshot snapshot, Vector delta)
+    {
+        DiagramObjectSnapshot moved = snapshot.Clone();
+        moved.Left += delta.X;
+        moved.Top += delta.Y;
+
+        if (moved.ObjectType == DiagramObjectType.Line)
+        {
+            moved.LineStartX += delta.X;
+            moved.LineStartY += delta.Y;
+            moved.LineEndX += delta.X;
+            moved.LineEndY += delta.Y;
+        }
+        else if (moved.ObjectType == DiagramObjectType.Label)
+        {
+            moved.LabelAnchorX += delta.X;
+            moved.LabelAnchorY += delta.Y;
+            moved.LabelBoxLeft += delta.X;
+            moved.LabelBoxTop += delta.Y;
+        }
+
+        return moved;
+    }
+
+    private static bool DidDiagramSnapshotGroupChange(
+        IReadOnlyList<DiagramObjectSnapshot> beforeSnapshots,
+        IReadOnlyList<DiagramObjectSnapshot> afterSnapshots)
+    {
+        if (beforeSnapshots.Count != afterSnapshots.Count)
+        {
+            return true;
+        }
+
+        Dictionary<string, DiagramObjectSnapshot> afterById = afterSnapshots.ToDictionary(
+            snapshot => snapshot.Id,
+            StringComparer.OrdinalIgnoreCase);
+        foreach (DiagramObjectSnapshot before in beforeSnapshots)
+        {
+            if (!afterById.TryGetValue(before.Id, out DiagramObjectSnapshot? after) ||
+                !AreDiagramObjectSnapshotsEquivalent(before, after))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool AreDiagramObjectSnapshotsEquivalent(DiagramObjectSnapshot first, DiagramObjectSnapshot second)
+    {
+        return first.ObjectType == second.ObjectType &&
+            first.ZIndex == second.ZIndex &&
+            AreClose(first.Left, second.Left) &&
+            AreClose(first.Top, second.Top) &&
+            AreClose(first.Width, second.Width) &&
+            AreClose(first.Height, second.Height) &&
+            AreClose(first.LineStartX, second.LineStartX) &&
+            AreClose(first.LineStartY, second.LineStartY) &&
+            AreClose(first.LineEndX, second.LineEndX) &&
+            AreClose(first.LineEndY, second.LineEndY) &&
+            AreClose(first.LabelAnchorX, second.LabelAnchorX) &&
+            AreClose(first.LabelAnchorY, second.LabelAnchorY) &&
+            AreClose(first.LabelBoxLeft, second.LabelBoxLeft) &&
+            AreClose(first.LabelBoxTop, second.LabelBoxTop) &&
+            AreClose(first.LabelBoxWidth, second.LabelBoxWidth) &&
+            AreClose(first.LabelBoxHeight, second.LabelBoxHeight);
+    }
+
+    private static bool AreClose(double first, double second)
+    {
+        return Math.Abs(first - second) < 0.01;
     }
 
     private void DiagramCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
@@ -8511,7 +8938,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool HasActiveDiagramDrawingTool()
     {
-        return DiagramRectangleToolButton?.IsChecked == true ||
+        return DiagramSelectionToolButton?.IsChecked == true ||
+            DiagramRectangleToolButton?.IsChecked == true ||
             DiagramEllipseToolButton?.IsChecked == true ||
             DiagramImageToolButton?.IsChecked == true ||
             DiagramLineToolButton?.IsChecked == true ||
@@ -8785,6 +9213,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool IsDiagramLineToolSelected()
     {
         return DiagramLineToolButton?.IsChecked == true;
+    }
+
+    private bool IsDiagramSelectionToolSelected()
+    {
+        return DiagramSelectionToolButton?.IsChecked == true;
     }
 
     private bool IsDiagramLabelToolSelected()
@@ -9691,6 +10124,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
                 StatusText = "Undid diagram object change.";
                 break;
+
+            case DiagramUndoActionKind.GroupModified:
+                if (action.BeforeGroup is { Count: > 0 })
+                {
+                    RestoreDiagramSnapshotGroup(action.BeforeGroup);
+                }
+
+                StatusText = "Undid diagram object group move.";
+                break;
         }
     }
 
@@ -9995,6 +10437,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void AttachDiagramWorkflowMarkerHandlers(DiagramWorkflowMarkerControl marker)
     {
         ApplyDiagramLockToObject(marker);
+        marker.PreviewMouseLeftButtonDown += DiagramObject_GroupDragPreviewMouseLeftButtonDown;
         marker.Selected += DiagramObject_Selected;
         marker.InteractionStarted += DiagramObject_InteractionStarted;
         marker.InteractionCompleted += DiagramObject_InteractionCompleted;
@@ -10006,6 +10449,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void AttachDiagramPortalHandlers(DiagramPortalControl portal)
     {
         ApplyDiagramLockToObject(portal);
+        portal.PreviewMouseLeftButtonDown += DiagramObject_GroupDragPreviewMouseLeftButtonDown;
         portal.Selected += DiagramObject_Selected;
         portal.InteractionStarted += DiagramObject_InteractionStarted;
         portal.InteractionCompleted += DiagramObject_InteractionCompleted;
@@ -10065,6 +10509,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DetachDiagramWorkflowMarkerHandlers(DiagramWorkflowMarkerControl marker)
     {
+        marker.PreviewMouseLeftButtonDown -= DiagramObject_GroupDragPreviewMouseLeftButtonDown;
         marker.Selected -= DiagramObject_Selected;
         marker.InteractionStarted -= DiagramObject_InteractionStarted;
         marker.InteractionCompleted -= DiagramObject_InteractionCompleted;
@@ -10075,6 +10520,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DetachDiagramPortalHandlers(DiagramPortalControl portal)
     {
+        portal.PreviewMouseLeftButtonDown -= DiagramObject_GroupDragPreviewMouseLeftButtonDown;
         portal.Selected -= DiagramObject_Selected;
         portal.InteractionStarted -= DiagramObject_InteractionStarted;
         portal.InteractionCompleted -= DiagramObject_InteractionCompleted;
@@ -10085,6 +10531,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void DiagramObject_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        if (e.ClickCount < 2 &&
+            sender is FrameworkElement groupDragObject &&
+            TryStartDiagramSelectionGroupDrag(groupDragObject, e))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.ClickCount < 2 ||
             sender is not FrameworkElement diagramObject ||
             IsTextInputElement(e.OriginalSource as DependencyObject))
@@ -10103,6 +10557,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             await OpenMetadataLinkAsync(metadata.Link.Trim());
             return;
         }
+    }
+
+    private void DiagramObject_GroupDragPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement diagramObject ||
+            !TryStartDiagramSelectionGroupDrag(diagramObject, e))
+        {
+            return;
+        }
+
+        e.Handled = true;
     }
 
     private void OpenDiagramObjectMetadataSidebar(FrameworkElement diagramObject)
@@ -10194,17 +10659,71 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void SelectDiagramObject(FrameworkElement? diagramObject)
     {
-        if (ReferenceEquals(_selectedDiagramObject, diagramObject))
+        if (ReferenceEquals(_selectedDiagramObject, diagramObject) &&
+            _selectedDiagramObjects.Count == (diagramObject == null ? 0 : 1))
         {
             return;
         }
 
         CommitMetadataEditorChanges();
-        RetetherIfNeeded(_selectedDiagramObject);
-        SetDiagramObjectSelected(_selectedDiagramObject, false);
-        _selectedDiagramObject = diagramObject;
-        SetDiagramObjectSelected(_selectedDiagramObject, true);
+        ClearDiagramObjectSelection(updateMetadataEditor: false);
+        if (diagramObject != null)
+        {
+            _selectedDiagramObject = diagramObject;
+            _selectedDiagramObjects.Add(diagramObject);
+            SetDiagramObjectSelected(diagramObject, true);
+        }
+
         LoadMetadataEditorForSelection();
+    }
+
+    private void SelectDiagramObjects(IEnumerable<FrameworkElement> diagramObjects, bool showStatus = true)
+    {
+        List<FrameworkElement> selectableObjects = diagramObjects
+            .Where(IsSelectableDiagramObject)
+            .Distinct()
+            .ToList();
+
+        CommitMetadataEditorChanges();
+        ClearDiagramObjectSelection(updateMetadataEditor: false);
+        foreach (FrameworkElement diagramObject in selectableObjects)
+        {
+            _selectedDiagramObjects.Add(diagramObject);
+            SetDiagramObjectSelected(diagramObject, true);
+        }
+
+        _selectedDiagramObject = selectableObjects.Count == 1
+            ? selectableObjects[0]
+            : null;
+        LoadMetadataEditorForSelection();
+
+        if (!showStatus)
+        {
+            return;
+        }
+
+        StatusText = selectableObjects.Count switch
+        {
+            0 => "No diagram objects selected.",
+            1 => "Selected 1 diagram object.",
+            _ => $"Selected {selectableObjects.Count} diagram objects."
+        };
+    }
+
+    private void ClearDiagramObjectSelection(bool updateMetadataEditor = true)
+    {
+        foreach (FrameworkElement diagramObject in _selectedDiagramObjects.ToList())
+        {
+            RetetherIfNeeded(diagramObject);
+            SetDiagramObjectSelected(diagramObject, false);
+        }
+
+        _selectedDiagramObjects.Clear();
+        _selectedDiagramObject = null;
+        if (updateMetadataEditor)
+        {
+            LoadMetadataEditorForSelection();
+        }
     }
 
     private void RetetherIfNeeded(FrameworkElement? diagramObject)
@@ -10596,6 +11115,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramPortalControl;
     }
 
+    private static bool IsSelectableDiagramObject(FrameworkElement element)
+    {
+        return element.Visibility == Visibility.Visible && IsDiagramObject(element);
+    }
+
     private List<FrameworkElement> GetDiagramObjectsInLayerOrder()
     {
         return DiagramCanvas.Children
@@ -10758,10 +11282,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         DiagramCanvas.Children.Remove(diagramObject);
+        _selectedDiagramObjects.Remove(diagramObject);
 
-        if (ReferenceEquals(_selectedDiagramObject, diagramObject))
+        if (ReferenceEquals(_selectedDiagramObject, diagramObject) || _selectedDiagramObjects.Count <= 1)
         {
-            _selectedDiagramObject = null;
+            _selectedDiagramObject = _selectedDiagramObjects.Count == 1
+                ? _selectedDiagramObjects.First()
+                : null;
             LoadMetadataEditorForSelection();
         }
 
@@ -10777,7 +11304,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramObjectSnapshot? after)
     {
         _diagramUndoStack.Push(new DiagramUndoAction(kind, before?.Clone(), after?.Clone()));
+        TrimDiagramUndoStack();
+    }
 
+    private void PushDiagramGroupUndo(
+        IReadOnlyList<DiagramObjectSnapshot> beforeSnapshots,
+        IReadOnlyList<DiagramObjectSnapshot> afterSnapshots)
+    {
+        _diagramUndoStack.Push(new DiagramUndoAction(
+            DiagramUndoActionKind.GroupModified,
+            null,
+            null,
+            beforeSnapshots.Select(snapshot => snapshot.Clone()).ToList(),
+            afterSnapshots.Select(snapshot => snapshot.Clone()).ToList()));
+        TrimDiagramUndoStack();
+    }
+
+    private void TrimDiagramUndoStack()
+    {
         if (_diagramUndoStack.Count > MaximumDiagramUndoActions)
         {
             List<DiagramUndoAction> actionsToKeep = _diagramUndoStack
@@ -10790,6 +11334,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _diagramUndoStack.Push(action);
             }
         }
+    }
+
+    private void RestoreDiagramSnapshotGroup(IReadOnlyList<DiagramObjectSnapshot> snapshots)
+    {
+        List<FrameworkElement> restoredObjects = [];
+        foreach (DiagramObjectSnapshot snapshot in snapshots)
+        {
+            FrameworkElement? target = FindDiagramObjectById(snapshot.Id);
+            if (target == null)
+            {
+                target = CreateDiagramObjectFromSnapshot(snapshot);
+                if (target != null)
+                {
+                    DiagramCanvas.Children.Add(target);
+                }
+            }
+            else
+            {
+                ApplyDiagramObjectSnapshot(target, snapshot);
+            }
+
+            if (target != null)
+            {
+                restoredObjects.Add(target);
+            }
+        }
+
+        SelectDiagramObjects(restoredObjects, showStatus: false);
     }
 
     private static double GetCanvasLeft(FrameworkElement element)
@@ -11868,6 +12440,39 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
             RevealOpenTabSafely(item);
         }
+    }
+
+    private void OpenTabsList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _openTabsDragStartPoint = e.GetPosition(OpenTabsList);
+        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) != null)
+        {
+            _pendingOpenTabsDragItem = null;
+            return;
+        }
+
+        ListBoxItem? listBoxItem = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        _pendingOpenTabsDragItem = listBoxItem?.DataContext as OpenWindowItem;
+    }
+
+    private void OpenTabsList_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _pendingOpenTabsDragItem == null)
+        {
+            return;
+        }
+
+        Point currentPoint = e.GetPosition(OpenTabsList);
+        if (Math.Abs(currentPoint.X - _openTabsDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(currentPoint.Y - _openTabsDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
+        {
+            return;
+        }
+
+        OpenWindowItem draggedItem = _pendingOpenTabsDragItem;
+        _pendingOpenTabsDragItem = null;
+        var dataObject = new DataObject(OpenTabDragDataFormat, draggedItem);
+        DragDrop.DoDragDrop(OpenTabsList, dataObject, DragDropEffects.Copy);
     }
 
     private void OpenTabsList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)

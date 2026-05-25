@@ -793,6 +793,8 @@
                                          Grid.Row="1"
                                          BorderThickness="0"
                                          ItemsSource="{Binding OpenTabs}"
+                                         MouseMove="OpenTabsList_MouseMove"
+                                         PreviewMouseLeftButtonDown="OpenTabsList_PreviewMouseLeftButtonDown"
                                          PreviewMouseLeftButtonUp="OpenTabsList_PreviewMouseLeftButtonUp"
                                          ContextMenuOpening="OpenTabsList_ContextMenuOpening"
                                          SelectionChanged="OpenTabsList_SelectionChanged">
@@ -1133,7 +1135,19 @@
                                     </StackPanel>
                                     <StackPanel DockPanel.Dock="Left"
                                                 Orientation="Horizontal">
+                                    <ToggleButton x:Name="DiagramSelectionToolButton"
+                                                  Style="{StaticResource DiagramToolToggleButtonStyle}"
+                                                  Checked="DiagramToolButton_Checked"
+                                                  ToolTip="Selection Tool">
+                                        <Rectangle Width="16"
+                                                   Height="12"
+                                                   Fill="Transparent"
+                                                   Stroke="#111827"
+                                                   StrokeDashArray="2,2"
+                                                   StrokeThickness="1.6" />
+                                    </ToggleButton>
                                     <ToggleButton x:Name="DiagramRectangleToolButton"
+                                                  Margin="6,0,0,0"
                                                   Style="{StaticResource DiagramToolToggleButtonStyle}"
                                                   Checked="DiagramToolButton_Checked"
                                                   ToolTip="Rectangle">
