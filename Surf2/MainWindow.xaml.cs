@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -93,6 +94,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private sealed record DiagramDocumentationExportItem(
         DiagramDocumentationPdfSection Section,
         DiagramDocumentationPdfLinkRegion LinkRegion);
+
+    private sealed record ExitUnsavedChangesState(
+        bool HasDiagramChanges,
+        bool HasWorkbenchChanges)
+    {
+        public bool HasAnyChanges => HasDiagramChanges || HasWorkbenchChanges;
+    }
 
     private sealed record ReferenceResourceContext(
         string Key,
@@ -208,6 +216,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         @"^(?<link>.+?)(?:(?:#L|#line=|:)(?<line>[1-9]\d*))$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    private static readonly JsonSerializerOptions DirtyStateJsonSerializerOptions = new();
     private static readonly Brush ActiveCodeCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xEE, 0xF1, 0xF5));
     private static readonly Brush ActiveDiagramCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xF4, 0xF6, 0xF8));
     private static readonly Brush InactiveCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xD1, 0xD5, 0xDB));
@@ -2023,18 +2032,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await SaveDiagramFromUiAsync();
     }
 
-    private async Task SaveDiagramFromUiAsync()
+    private async Task<bool> SaveDiagramFromUiAsync()
     {
         CommitMetadataEditorChanges();
         if (!CommitWorkflowEditorChanges(requireValidWorkflowName: true))
         {
-            return;
+            return false;
         }
 
         if (_activeScope == null)
         {
             StatusText = "Open a scope before saving a diagram.";
-            return;
+            return false;
         }
 
         string diagramId = _activeDiagramId ?? Guid.NewGuid().ToString("N");
@@ -2045,13 +2054,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             string? promptedName = PromptForDiagramName("Untitled Diagram", "Diagram name");
             if (string.IsNullOrWhiteSpace(promptedName))
             {
-                return;
+                return false;
             }
 
             diagramName = promptedName;
         }
 
-        await SaveCurrentDiagramAsync(diagramId, diagramName);
+        return await SaveCurrentDiagramAsync(diagramId, diagramName);
     }
 
     private async void SaveDiagramAsButton_Click(object sender, RoutedEventArgs e)
@@ -2147,7 +2156,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = $"Deleted diagram '{diagramName}' and removed {removedResources} scope reference(s).";
     }
 
-    private async Task SaveCurrentDiagramAsync(string diagramId, string diagramName)
+    private async Task<bool> SaveCurrentDiagramAsync(string diagramId, string diagramName)
     {
         DiagramDocument diagram = CreateCurrentDiagramDocument(diagramId, diagramName);
 
@@ -2162,12 +2171,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch (Exception ex)
         {
             StatusText = $"Could not save diagram: {ex.Message}";
-            return;
+            return false;
         }
 
         SetCurrentDiagramIdentity(diagram.DiagramId, diagram.Name);
         await RefreshObjectExplorerAfterDiagramChangeAsync();
         StatusText = $"Saved diagram '{diagram.Name}'.";
+        return true;
     }
 
     private DiagramDocument CreateCurrentDiagramDocument(string diagramId, string diagramName)
@@ -12358,6 +12368,342 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
     }
 
+    private ExitUnsavedChangesState DetectExitUnsavedChanges()
+    {
+        CommitMetadataEditorChanges();
+        CommitWorkflowEditorChanges(requireValidWorkflowName: false);
+
+        bool hasDiagramChanges = HasUnsavedDiagramChanges();
+        bool hasWorkbenchChanges = HasUnsavedWorkbenchChanges();
+        return new ExitUnsavedChangesState(hasDiagramChanges, hasWorkbenchChanges);
+    }
+
+    private bool HasUnsavedDiagramChanges()
+    {
+        bool hasDiagramState =
+            !string.IsNullOrWhiteSpace(_activeDiagramId) ||
+            DiagramCanvas.Children.OfType<FrameworkElement>().Any(IsDiagramObject) ||
+            _currentDiagramWorkflows.Count > 0;
+
+        if (!hasDiagramState)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_activeDiagramId))
+        {
+            return true;
+        }
+
+        DiagramDocument? persistedDiagram = _diagramLibrary.Find(_activeDiagramId);
+        if (persistedDiagram == null)
+        {
+            return true;
+        }
+
+        DiagramDocument currentDiagram = CreateCurrentDiagramDocument(_activeDiagramId, CurrentDiagramName);
+        return !string.Equals(
+            CreateDiagramComparisonKey(currentDiagram),
+            CreateDiagramComparisonKey(persistedDiagram),
+            StringComparison.Ordinal);
+    }
+
+    private bool HasUnsavedWorkbenchChanges()
+    {
+        WorkbenchState currentWorkbench = CaptureWorkbenchState();
+        WorkbenchState? savedWorkbench = ResolveCurrentWorkbenchSaveTarget();
+        if (savedWorkbench == null)
+        {
+            return HasMeaningfulWorkbenchState(currentWorkbench);
+        }
+
+        return !string.Equals(
+            CreateWorkbenchComparisonKey(currentWorkbench),
+            CreateWorkbenchComparisonKey(savedWorkbench),
+            StringComparison.Ordinal);
+    }
+
+    private static bool HasMeaningfulWorkbenchState(WorkbenchState workbench)
+    {
+        return !string.IsNullOrWhiteSpace(workbench.ScopeId) ||
+            workbench.OpenDocuments.Count > 0 ||
+            workbench.UnloadedResourceIds.Count > 0 ||
+            workbench.ReferenceConnectionLines.Count > 0 ||
+            !string.IsNullOrWhiteSpace(workbench.ActiveDocumentPath) ||
+            !string.IsNullOrWhiteSpace(workbench.ActiveDiagramId) ||
+            workbench.ActiveDiagramSnapshot != null ||
+            workbench.IsDiagramViewVisible ||
+            workbench.ReferenceConnectionLinesEnabled ||
+            !string.Equals(workbench.CodeViewMode, CodeViewMode.Canvas.ToString(), StringComparison.Ordinal) ||
+            Math.Abs(workbench.CodeCanvasZoom - 1) > 0.001 ||
+            Math.Abs(workbench.CodeViewportHorizontalOffset) > 0.001 ||
+            Math.Abs(workbench.CodeViewportVerticalOffset) > 0.001;
+    }
+
+    private WorkbenchState? ResolveCurrentWorkbenchSaveTarget()
+    {
+        if (WorkbenchSelector?.SelectedItem is WorkbenchState selectedWorkbench)
+        {
+            return _workbenchLibrary.Workbenches.FirstOrDefault(candidate =>
+                string.Equals(candidate.WorkbenchId, selectedWorkbench.WorkbenchId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        string scopeId = _activeScope?.ScopeId ?? string.Empty;
+        return _workbenchLibrary.Workbenches.FirstOrDefault(candidate =>
+            candidate.IsDefaultForScope &&
+            string.Equals(candidate.ScopeId, scopeId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<bool> SaveUnsavedChangesForExitAsync(ExitUnsavedChangesState unsavedChanges)
+    {
+        if (unsavedChanges.HasDiagramChanges && !await SaveDiagramFromUiAsync())
+        {
+            return false;
+        }
+
+        if (unsavedChanges.HasWorkbenchChanges && !await SaveCurrentWorkbenchForExitAsync())
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private async Task<bool> SaveCurrentWorkbenchForExitAsync()
+    {
+        try
+        {
+            WorkbenchState workbench = CaptureWorkbenchState();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            WorkbenchState? existingWorkbench = ResolveCurrentWorkbenchSaveTarget();
+
+            if (existingWorkbench != null)
+            {
+                workbench.WorkbenchId = existingWorkbench.WorkbenchId;
+                workbench.Name = existingWorkbench.Name;
+                workbench.IsDefaultForScope = existingWorkbench.IsDefaultForScope;
+                workbench.CreatedAtUtc = existingWorkbench.CreatedAtUtc == default
+                    ? now
+                    : existingWorkbench.CreatedAtUtc;
+                _workbenchLibrary.Workbenches.Remove(existingWorkbench);
+            }
+            else
+            {
+                workbench.Name = GetDefaultWorkbenchName(workbench);
+                workbench.IsDefaultForScope = true;
+                workbench.CreatedAtUtc = now;
+            }
+
+            workbench.UpdatedAtUtc = now;
+            workbench.SavedAtUtc = now;
+            _workbenchLibrary.Workbenches.Add(workbench);
+            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            RefreshSavedWorkbenches(workbench.WorkbenchId);
+            StatusText = $"Saved Workbench '{workbench.Name}'.";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not save Workbench: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static string CreateDiagramComparisonKey(DiagramDocument? diagram)
+    {
+        if (diagram == null)
+        {
+            return string.Empty;
+        }
+
+        return JsonSerializer.Serialize(
+            new
+            {
+                diagram.DiagramId,
+                diagram.Name,
+                Objects = diagram.Objects.Select(CreateDiagramObjectComparisonModel).ToList(),
+                Workflows = diagram.Workflows.Select(CreateWorkflowComparisonModel).ToList()
+            },
+            DirtyStateJsonSerializerOptions);
+    }
+
+    private static string CreateWorkbenchComparisonKey(WorkbenchState workbench)
+    {
+        return JsonSerializer.Serialize(
+            new
+            {
+                workbench.ScopeId,
+                workbench.ScopeName,
+                workbench.IsCodeViewVisible,
+                workbench.IsDiagramViewVisible,
+                workbench.ActiveWorkspaceView,
+                workbench.WorkspaceSplitOrientation,
+                workbench.CodeViewMode,
+                workbench.ReferenceConnectionLinesEnabled,
+                CodeCanvasZoom = NormalizeComparisonDouble(workbench.CodeCanvasZoom),
+                CodeViewportHorizontalOffset = NormalizeComparisonDouble(workbench.CodeViewportHorizontalOffset),
+                CodeViewportVerticalOffset = NormalizeComparisonDouble(workbench.CodeViewportVerticalOffset),
+                UnloadedResourceIds = workbench.UnloadedResourceIds
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .OrderBy(id => id, StringComparer.OrdinalIgnoreCase)
+                    .ToList(),
+                OpenDocuments = workbench.OpenDocuments.Select(CreateOpenDocumentComparisonModel).ToList(),
+                ReferenceConnectionLines = workbench.ReferenceConnectionLines
+                    .OrderBy(line => line.ConnectionId, StringComparer.OrdinalIgnoreCase)
+                    .Select(CreateReferenceConnectionLineComparisonModel)
+                    .ToList(),
+                workbench.ActiveDocumentPath,
+                workbench.ActiveDiagramId,
+                workbench.ActiveDiagramName,
+                ActiveDiagramSnapshot = CreateDiagramComparisonModel(workbench.ActiveDiagramSnapshot),
+                workbench.IsDiagramLocked,
+                DiagramCanvasZoom = NormalizeComparisonDouble(workbench.DiagramCanvasZoom),
+                DiagramViewportHorizontalOffset = NormalizeComparisonDouble(workbench.DiagramViewportHorizontalOffset),
+                DiagramViewportVerticalOffset = NormalizeComparisonDouble(workbench.DiagramViewportVerticalOffset)
+            },
+            DirtyStateJsonSerializerOptions);
+    }
+
+    private static object CreateDiagramComparisonModel(DiagramDocument? diagram)
+    {
+        return diagram == null
+            ? new { IsNull = true }
+            : new
+            {
+                IsNull = false,
+                diagram.DiagramId,
+                diagram.Name,
+                Objects = diagram.Objects.Select(CreateDiagramObjectComparisonModel).ToList(),
+                Workflows = diagram.Workflows.Select(CreateWorkflowComparisonModel).ToList()
+            };
+    }
+
+    private static object CreateDiagramObjectComparisonModel(DiagramObjectSnapshot snapshot)
+    {
+        return new
+        {
+            snapshot.Id,
+            snapshot.ObjectType,
+            Metadata = CreateMetadataComparisonModel(snapshot.Metadata),
+            snapshot.ZIndex,
+            snapshot.WorkflowId,
+            snapshot.WorkflowItemId,
+            snapshot.PortalName,
+            snapshot.PairedPortalDiagramId,
+            snapshot.PairedPortalObjectId,
+            snapshot.ShapeKind,
+            snapshot.ImageDefinitionId,
+            snapshot.ImageName,
+            snapshot.ImageDataBase64,
+            snapshot.PastedImageFileName,
+            snapshot.LabelText,
+            snapshot.OutlineColorText,
+            snapshot.BackColorText,
+            snapshot.HasEndArrow,
+            snapshot.IsLineLoose,
+            LineStartX = NormalizeComparisonDouble(snapshot.LineStartX),
+            LineStartY = NormalizeComparisonDouble(snapshot.LineStartY),
+            LineEndX = NormalizeComparisonDouble(snapshot.LineEndX),
+            LineEndY = NormalizeComparisonDouble(snapshot.LineEndY),
+            snapshot.IsTethered,
+            LabelAnchorX = NormalizeComparisonDouble(snapshot.LabelAnchorX),
+            LabelAnchorY = NormalizeComparisonDouble(snapshot.LabelAnchorY),
+            LabelBoxLeft = NormalizeComparisonDouble(snapshot.LabelBoxLeft),
+            LabelBoxTop = NormalizeComparisonDouble(snapshot.LabelBoxTop),
+            LabelBoxWidth = NormalizeComparisonDouble(snapshot.LabelBoxWidth),
+            LabelBoxHeight = NormalizeComparisonDouble(snapshot.LabelBoxHeight),
+            Left = NormalizeComparisonDouble(snapshot.Left),
+            Top = NormalizeComparisonDouble(snapshot.Top),
+            Width = NormalizeComparisonDouble(snapshot.Width),
+            Height = NormalizeComparisonDouble(snapshot.Height)
+        };
+    }
+
+    private static object CreateMetadataComparisonModel(DiagramObjectMetadata metadata)
+    {
+        return new
+        {
+            metadata.Link,
+            metadata.DocumentationXaml,
+            Queries = metadata.Queries.Select(CreateQueryComparisonModel).ToList()
+        };
+    }
+
+    private static object CreateWorkflowComparisonModel(WorkflowDocument workflow)
+    {
+        return new
+        {
+            workflow.WorkflowId,
+            workflow.WorkflowName,
+            workflow.AreMarkersVisible,
+            Items = workflow.Items.Select(CreateWorkflowItemComparisonModel).ToList()
+        };
+    }
+
+    private static object CreateWorkflowItemComparisonModel(WorkflowItem item)
+    {
+        return new
+        {
+            item.WorkflowItemId,
+            item.MarkerDiagramObjectId,
+            item.ItemNumber,
+            item.ItemDescription,
+            item.ItemDocumentationXaml,
+            Queries = item.Queries.Select(CreateQueryComparisonModel).ToList()
+        };
+    }
+
+    private static object CreateQueryComparisonModel(QueryItem query)
+    {
+        return new
+        {
+            query.QueryId,
+            query.QueryNumber,
+            query.CreatedDateUtc,
+            query.Status,
+            query.QueryDescription
+        };
+    }
+
+    private static object CreateOpenDocumentComparisonModel(OpenDocumentState state)
+    {
+        return new
+        {
+            state.FilePath,
+            state.DisplayName,
+            Left = NormalizeComparisonDouble(state.Left),
+            Top = NormalizeComparisonDouble(state.Top),
+            Width = NormalizeComparisonDouble(state.Width),
+            Height = NormalizeComparisonDouble(state.Height),
+            FontSize = NormalizeComparisonDouble(state.FontSize),
+            HorizontalOffset = NormalizeComparisonDouble(state.HorizontalOffset),
+            VerticalOffset = NormalizeComparisonDouble(state.VerticalOffset)
+        };
+    }
+
+    private static object CreateReferenceConnectionLineComparisonModel(ReferenceConnectionLineState state)
+    {
+        return new
+        {
+            state.ConnectionId,
+            state.SourceFilePath,
+            state.SourceLineNumber,
+            state.SourceStartColumnNumber,
+            state.SourceEndColumnNumber,
+            state.TargetFilePath,
+            state.TargetLineNumber,
+            state.TargetStartColumnNumber,
+            state.TargetEndColumnNumber
+        };
+    }
+
+    private static double NormalizeComparisonDouble(double value)
+    {
+        return double.IsFinite(value)
+            ? Math.Round(value, 3)
+            : 0;
+    }
+
     private string GetDefaultWorkbenchName(WorkbenchState workbench)
     {
         if (!string.IsNullOrWhiteSpace(workbench.ScopeName) &&
@@ -14307,6 +14653,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OnPropertyChanged(nameof(NavigationHistory));
     }
 
+    private MessageBoxResult PromptToSaveBeforeExit(ExitUnsavedChangesState unsavedChanges)
+    {
+        string changeDescription = unsavedChanges switch
+        {
+            { HasDiagramChanges: true, HasWorkbenchChanges: true } => "the diagram and Workbench state",
+            { HasDiagramChanges: true } => "the diagram",
+            { HasWorkbenchChanges: true } => "the Workbench state",
+            _ => "the current state"
+        };
+
+        return MessageBox.Show(
+            this,
+            $"There are unsaved changes to {changeDescription}. Save before exiting?\n\nYes saves and exits. No exits without saving. Cancel returns to Surf2.",
+            "Save before exiting?",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+    }
+
     private async Task SaveWorkspaceStateAsync()
     {
         try
@@ -14370,16 +14734,41 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        ExitUnsavedChangesState unsavedChanges = DetectExitUnsavedChanges();
+        bool saveRequested = false;
+        if (unsavedChanges.HasAnyChanges)
+        {
+            MessageBoxResult saveChoice = PromptToSaveBeforeExit(unsavedChanges);
+            if (saveChoice == MessageBoxResult.Cancel)
+            {
+                StatusText = "Exit cancelled.";
+                return;
+            }
+
+            saveRequested = saveChoice == MessageBoxResult.Yes;
+        }
+
         _shutdownRequested = true;
         StopCodeShiftPan();
         StopCodeCtrlShiftZoom();
         StopDiagramShiftPan();
         StopDiagramCtrlShiftZoom();
         IsEnabled = false;
-        StatusText = "Saving application state...";
+        StatusText = saveRequested ? "Saving changes before exit..." : "Saving application state...";
 
         try
         {
+            if (saveRequested && !await SaveUnsavedChangesForExitAsync(unsavedChanges))
+            {
+                _shutdownRequested = false;
+                IsEnabled = true;
+                StatusText = "Exit cancelled.";
+                return;
+            }
+
+            CaptureViewportState();
+            SyncOpenDocumentStatesFromWindows();
+            StatusText = "Saving application state...";
             await SaveApplicationStateForShutdownAsync();
             InternalLogService.Info("Saved application state during shutdown.");
         }
