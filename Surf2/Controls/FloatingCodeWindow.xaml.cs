@@ -37,6 +37,7 @@ public partial class FloatingCodeWindow : UserControl
     private Point _shiftMouseScrollCurrentPoint;
     private double _dragStartLeft;
     private double _dragStartTop;
+    private ScrollViewer? _editorScrollViewer;
     private ReferenceHighlightColorizer? _referenceHighlightColorizer;
     private readonly SearchPanel _searchPanel;
     private readonly DispatcherTimer _shiftMouseScrollTimer;
@@ -75,7 +76,8 @@ public partial class FloatingCodeWindow : UserControl
         AddHandler(Mouse.PreviewMouseMoveEvent, new MouseEventHandler(FloatingCodeWindow_PreviewMouseMove), true);
         PreviewMouseWheel += FloatingCodeWindow_PreviewMouseWheel;
         ApplyActiveState();
-        Unloaded += (_, _) => StopShiftMouseScroll();
+        Loaded += FloatingCodeWindow_Loaded;
+        Unloaded += FloatingCodeWindow_Unloaded;
     }
 
     public event EventHandler? CloseRequested;
@@ -92,6 +94,8 @@ public partial class FloatingCodeWindow : UserControl
 
     public event EventHandler<CursorPositionChangedEventArgs>? CursorPositionChanged;
 
+    public event EventHandler? EditorViewportChanged;
+
     public event EventHandler<CodeWindowContextMenuOpeningEventArgs>? ContextMenuOpeningRequested;
 
     public event EventHandler<LineAddressCopiedEventArgs>? LineAddressCopied;
@@ -101,6 +105,10 @@ public partial class FloatingCodeWindow : UserControl
     public OpenDocumentState State { get; }
 
     public string Text => Editor.Text;
+
+    public double HorizontalOffset => Editor.HorizontalOffset;
+
+    public double VerticalOffset => Editor.VerticalOffset;
 
     public bool IsActive
     {
@@ -260,6 +268,29 @@ public partial class FloatingCodeWindow : UserControl
         }), DispatcherPriority.ContextIdle);
     }
 
+    public void ScrollToOffsets(double horizontalOffset, double verticalOffset)
+    {
+        if (!IsLoaded)
+        {
+            RoutedEventHandler? loadedHandler = null;
+            loadedHandler = (_, _) =>
+            {
+                Loaded -= loadedHandler;
+                ScrollToOffsets(horizontalOffset, verticalOffset);
+            };
+            Loaded += loadedHandler;
+            return;
+        }
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ScrollEditorToOffsets(horizontalOffset, verticalOffset);
+            _ = Dispatcher.BeginInvoke(
+                new Action(() => ScrollEditorToOffsets(horizontalOffset, verticalOffset)),
+                DispatcherPriority.ApplicationIdle);
+        }), DispatcherPriority.ContextIdle);
+    }
+
     public void FitToLineRange(int startLineNumber, int endLineNumber)
     {
         if (Editor.Document == null)
@@ -341,6 +372,106 @@ public partial class FloatingCodeWindow : UserControl
             Point editorPosition = Editor.TransformToAncestor(this).Transform(new Point(0, 0));
             return new Point(editorPosition.X + visibleTextPosition.X, editorPosition.Y + visibleTextPosition.Y);
         }
+    }
+
+    public bool TryGetDocumentAnchorInWindow(int lineNumber, int columnNumber, out Point point)
+    {
+        point = default;
+
+        if (Editor.Document == null || !IsLoaded)
+        {
+            return false;
+        }
+
+        int targetLine = Math.Clamp(lineNumber, 1, Math.Max(1, Editor.Document.LineCount));
+        ICSharpCode.AvalonEdit.Document.DocumentLine line = Editor.Document.GetLineByNumber(targetLine);
+        int targetColumn = Math.Clamp(columnNumber, 1, line.Length + 1);
+
+        UpdateLayout();
+        Editor.UpdateLayout();
+        Editor.TextArea.TextView.EnsureVisualLines();
+
+        Point documentPosition;
+        try
+        {
+            documentPosition = Editor.TextArea.TextView.GetVisualPosition(
+                new TextViewPosition(targetLine, targetColumn),
+                VisualYPosition.LineTop);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+
+        double lineHeight = Math.Max(Editor.FontSize * 1.5, Editor.TextArea.TextView.DefaultLineHeight);
+        var visibleTextPosition = new Point(
+            documentPosition.X - Editor.HorizontalOffset,
+            documentPosition.Y - Editor.VerticalOffset + (lineHeight / 2));
+
+        double viewportWidth = Math.Max(0, Editor.TextArea.TextView.ActualWidth);
+        double viewportHeight = Math.Max(0, Editor.TextArea.TextView.ActualHeight);
+        if (visibleTextPosition.X < 0 ||
+            visibleTextPosition.X > viewportWidth ||
+            visibleTextPosition.Y < 0 ||
+            visibleTextPosition.Y > viewportHeight)
+        {
+            return false;
+        }
+
+        try
+        {
+            point = Editor.TextArea.TextView
+                .TransformToAncestor(this)
+                .Transform(visibleTextPosition);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            Point editorPosition = Editor.TransformToAncestor(this).Transform(new Point(0, 0));
+            point = new Point(editorPosition.X + visibleTextPosition.X, editorPosition.Y + visibleTextPosition.Y);
+            return true;
+        }
+    }
+
+    private void FloatingCodeWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        AttachEditorScrollViewer();
+        _ = Dispatcher.BeginInvoke(new Action(AttachEditorScrollViewer), DispatcherPriority.ContextIdle);
+    }
+
+    private void FloatingCodeWindow_Unloaded(object sender, RoutedEventArgs e)
+    {
+        StopShiftMouseScroll();
+        DetachEditorScrollViewer();
+    }
+
+    private void AttachEditorScrollViewer()
+    {
+        ScrollViewer? scrollViewer = GetEditorScrollViewer();
+        if (scrollViewer == null || ReferenceEquals(scrollViewer, _editorScrollViewer))
+        {
+            return;
+        }
+
+        DetachEditorScrollViewer();
+        _editorScrollViewer = scrollViewer;
+        _editorScrollViewer.ScrollChanged += EditorScrollViewer_ScrollChanged;
+    }
+
+    private void DetachEditorScrollViewer()
+    {
+        if (_editorScrollViewer == null)
+        {
+            return;
+        }
+
+        _editorScrollViewer.ScrollChanged -= EditorScrollViewer_ScrollChanged;
+        _editorScrollViewer = null;
+    }
+
+    private void EditorScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        EditorViewportChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private void HeaderBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -800,13 +931,21 @@ public partial class FloatingCodeWindow : UserControl
             return false;
         }
 
-        if (!TryGetReferenceTokenAtOffset(offset, out string token, out int? argumentCount))
+        if (!TryGetReferenceTokenAtOffset(offset, out string token, out int? argumentCount, out int tokenStartOffset, out int tokenEndOffset))
         {
             return false;
         }
 
         ICSharpCode.AvalonEdit.Document.TextLocation location = Editor.Document.GetLocation(offset);
-        request = new ReferenceNavigationRequestedEventArgs(token, location.Line, location.Column, argumentCount);
+        ICSharpCode.AvalonEdit.Document.TextLocation startLocation = Editor.Document.GetLocation(tokenStartOffset);
+        ICSharpCode.AvalonEdit.Document.TextLocation endLocation = Editor.Document.GetLocation(Math.Min(Editor.Document.TextLength, tokenEndOffset + 1));
+        request = new ReferenceNavigationRequestedEventArgs(
+            token,
+            location.Line,
+            location.Column,
+            argumentCount,
+            startLocation.Column,
+            endLocation.Column);
         return true;
     }
 
@@ -856,8 +995,20 @@ public partial class FloatingCodeWindow : UserControl
 
     private bool TryGetReferenceTokenAtOffset(int offset, out string token, out int? argumentCount)
     {
+        return TryGetReferenceTokenAtOffset(offset, out token, out argumentCount, out _, out _);
+    }
+
+    private bool TryGetReferenceTokenAtOffset(
+        int offset,
+        out string token,
+        out int? argumentCount,
+        out int tokenStartOffset,
+        out int tokenEndOffset)
+    {
         token = string.Empty;
         argumentCount = null;
+        tokenStartOffset = 0;
+        tokenEndOffset = 0;
 
         string text = Editor.Document.Text;
         if (string.IsNullOrEmpty(text))
@@ -889,6 +1040,8 @@ public partial class FloatingCodeWindow : UserControl
             end++;
         }
 
+        tokenStartOffset = start;
+        tokenEndOffset = end;
         token = text[start..(end + 1)].Trim('.', '[', ']', '`', '"', '\'');
         argumentCount = TryGetInvocationArgumentCount(text, end + 1);
         return !string.IsNullOrWhiteSpace(token);

@@ -14,6 +14,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.Document;
 using ICSharpCode.AvalonEdit.Rendering;
 using Microsoft.CodeAnalysis;
@@ -99,6 +100,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ReferenceEntity Target,
         ReferenceResourceContext TargetResource,
         bool IsInternal);
+
+    private sealed class ReferenceConnectionLine
+    {
+        public ReferenceConnectionLine(ReferenceConnectionLineState state)
+        {
+            State = state;
+            Visual = new System.Windows.Shapes.Polyline
+            {
+                Stroke = new SolidColorBrush(Color.FromRgb(0x25, 0x63, 0xEB)),
+                StrokeThickness = 2,
+                Opacity = 0.72,
+                IsHitTestVisible = false,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Visibility = Visibility.Collapsed
+            };
+        }
+
+        public ReferenceConnectionLineState State { get; }
+
+        public System.Windows.Shapes.Polyline Visual { get; }
+    }
 
     private sealed record SqlReferenceToken(
         string Token,
@@ -197,6 +221,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly DatabaseMetadataImportService _databaseMetadataImportService = new();
     private readonly Dictionary<string, FloatingCodeWindow> _openWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FloatingSpreadsheetWindow> _openSpreadsheetWindows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<ReferenceConnectionLine> _referenceConnectionLines = [];
 
     private WorkspaceState _workspaceState = new();
     private ScopeLibrary _scopeLibrary = new();
@@ -207,6 +232,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private ScopeReferenceIndex _referenceIndex = ScopeReferenceIndex.Empty;
     private ReferenceHighlightColorizer? _previewReferenceHighlightColorizer;
     private Scope? _activeScope;
+    private ReferenceEntity? _previewReference;
+    private Window? _previewPopoutWindow;
+    private TextEditor? _previewPopoutEditor;
+    private TextBlock? _previewPopoutHeaderText;
+    private ReferenceHighlightColorizer? _previewPopoutReferenceHighlightColorizer;
+    private TabItem? _pinnedExplorerDetailTab;
     private int _windowSequence;
     private int _zIndex;
     private int _previewRequestVersion;
@@ -233,6 +264,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isAddingWorkflowItems;
     private bool _isUpdatingViewToggles;
     private bool _isUpdatingCodeViewMode;
+    private bool _isUpdatingReferenceConnectionLinesToggle;
+    private bool _isUpdatingExplorerDetailPinButtons;
     private bool _isUpdatingDiagramToolToggles;
     private bool _isUpdatingOpenTabsSelection;
     private bool _isDiagramLocked = true;
@@ -241,6 +274,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _diagramViewportInitialized;
     private bool _shutdownRequested;
     private bool _shutdownSaveCompleted;
+    private bool _referenceConnectionLinesEnabled;
     private Point _canvasPanStartPoint;
     private Point _diagramPanStartPoint;
     private Point _controlCodeCanvasPanPoint;
@@ -2556,6 +2590,60 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (CodeCanvasModeToggle.IsChecked != true && CodeTabModeToggle.IsChecked != true)
         {
             SetCodeViewMode(_codeViewMode);
+        }
+    }
+
+    private void ReferenceConnectionLinesToggle_CheckedChanged(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingReferenceConnectionLinesToggle)
+        {
+            return;
+        }
+
+        SetReferenceConnectionLinesEnabled(ReferenceConnectionLinesToggle.IsChecked == true, clearWhenDisabled: true);
+    }
+
+    private void SetReferenceConnectionLinesEnabled(bool enabled, bool clearWhenDisabled)
+    {
+        _referenceConnectionLinesEnabled = enabled;
+
+        _isUpdatingReferenceConnectionLinesToggle = true;
+        try
+        {
+            if (ReferenceConnectionLinesToggle != null)
+            {
+                ReferenceConnectionLinesToggle.IsChecked = enabled;
+            }
+        }
+        finally
+        {
+            _isUpdatingReferenceConnectionLinesToggle = false;
+        }
+
+        UpdateReferenceConnectionLinesToggleVisibility();
+        if (!enabled && clearWhenDisabled)
+        {
+            ClearReferenceConnectionLines();
+            return;
+        }
+
+        RefreshReferenceConnectionLines();
+    }
+
+    private void UpdateReferenceConnectionLinesToggleVisibility()
+    {
+        Visibility visibility = _codeViewMode == CodeViewMode.Canvas
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        if (ReferenceConnectionLinesToggle != null)
+        {
+            ReferenceConnectionLinesToggle.Visibility = visibility;
+        }
+
+        if (ReferenceConnectionLinesSeparator != null)
+        {
+            ReferenceConnectionLinesSeparator.Visibility = visibility;
         }
     }
 
@@ -5431,6 +5519,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ContextMenuOpeningRequested += FloatingWindow_ContextMenuOpeningRequested;
         window.ScopeFindRequested += FloatingWindow_ScopeFindRequested;
         window.LineAddressCopied += FloatingWindow_LineAddressCopied;
+        window.EditorViewportChanged += FloatingWindow_EditorViewportChanged;
 
         if (targetReference != null && existingState == null)
         {
@@ -5465,6 +5554,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         else if (!suppressHistory)
         {
             TrackCursorPosition(documentPath, 1, 1);
+        }
+
+        if (existingState != null && !newTargetLineNumber.HasValue)
+        {
+            window.ScrollToOffsets(existingState.HorizontalOffset, existingState.VerticalOffset);
         }
 
         return Task.CompletedTask;
@@ -5583,6 +5677,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         window.LineAddressCopied -= FloatingWindow_LineAddressCopied;
+        window.EditorViewportChanged -= FloatingWindow_EditorViewportChanged;
+        RemoveReferenceConnectionLinesForFile(window.State.FilePath);
         RemoveWindowFromCodeView(window);
         _openWindows.Remove(window.State.FilePath);
         _workspaceState.OpenDocuments.Remove(window.State);
@@ -7359,6 +7455,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         await OpenFileAsync(reference.FilePath, targetReference: reference, sourceWindow: sourceWindow);
+        AddReferenceConnectionLineFromNavigation(sourceWindow, e, reference);
         StatusText = $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in {GetDisplayNameFromPath(reference.FilePath)}.";
     }
 
@@ -7368,6 +7465,249 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ? sourceWindow.State.FilePath
             : string.Empty;
         await PreviewReferenceAsync(e, sourceFilePath);
+    }
+
+    private void AddReferenceConnectionLineFromNavigation(
+        FloatingCodeWindow sourceWindow,
+        ReferenceNavigationRequestedEventArgs request,
+        ReferenceEntity reference)
+    {
+        if (!_referenceConnectionLinesEnabled ||
+            _codeViewMode != CodeViewMode.Canvas ||
+            IsSameFile(sourceWindow.State.FilePath, reference.FilePath) ||
+            !_openWindows.TryGetValue(reference.FilePath, out FloatingCodeWindow? targetWindow))
+        {
+            return;
+        }
+
+        (int targetStartColumn, int targetEndColumn) = ResolveReferenceEntityColumns(targetWindow, reference);
+        var state = new ReferenceConnectionLineState
+        {
+            SourceFilePath = sourceWindow.State.FilePath,
+            SourceLineNumber = request.LineNumber,
+            SourceStartColumnNumber = Math.Max(1, request.TokenStartColumnNumber),
+            SourceEndColumnNumber = Math.Max(request.TokenStartColumnNumber + 1, request.TokenEndColumnNumber),
+            TargetFilePath = reference.FilePath,
+            TargetLineNumber = reference.LineNumber,
+            TargetStartColumnNumber = targetStartColumn,
+            TargetEndColumnNumber = targetEndColumn
+        };
+
+        AddReferenceConnectionLine(state);
+        RefreshReferenceConnectionLines();
+        _ = Dispatcher.BeginInvoke(new Action(RefreshReferenceConnectionLines), DispatcherPriority.ApplicationIdle);
+    }
+
+    private static (int StartColumn, int EndColumn) ResolveReferenceEntityColumns(FloatingCodeWindow targetWindow, ReferenceEntity reference)
+    {
+        int startColumn = Math.Max(1, reference.ColumnNumber);
+        int endColumn = reference.EndColumnNumber > startColumn
+            ? reference.EndColumnNumber
+            : startColumn + Math.Max(1, reference.Name.Length);
+
+        string[] lines = targetWindow.Text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+        if (reference.LineNumber <= 0 || reference.LineNumber > lines.Length || string.IsNullOrWhiteSpace(reference.Name))
+        {
+            return (startColumn, endColumn);
+        }
+
+        string line = lines[reference.LineNumber - 1];
+        int searchStart = Math.Clamp(startColumn - 1, 0, line.Length);
+        int nameIndex = line.IndexOf(reference.Name, searchStart, StringComparison.OrdinalIgnoreCase);
+        if (nameIndex < 0)
+        {
+            nameIndex = line.IndexOf(reference.Name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return nameIndex < 0
+            ? (startColumn, endColumn)
+            : (nameIndex + 1, nameIndex + 1 + reference.Name.Length);
+    }
+
+    private void AddReferenceConnectionLine(ReferenceConnectionLineState state)
+    {
+        var connection = new ReferenceConnectionLine(CloneReferenceConnectionLineState(state));
+        _referenceConnectionLines.Add(connection);
+        EnsureReferenceConnectionLineVisual(connection);
+    }
+
+    private void RestoreReferenceConnectionLines(IEnumerable<ReferenceConnectionLineState>? states)
+    {
+        ClearReferenceConnectionLines();
+        if (!_referenceConnectionLinesEnabled || states == null)
+        {
+            return;
+        }
+
+        foreach (ReferenceConnectionLineState state in states)
+        {
+            if (!_openWindows.ContainsKey(state.SourceFilePath) ||
+                !_openWindows.ContainsKey(state.TargetFilePath) ||
+                IsSameFile(state.SourceFilePath, state.TargetFilePath))
+            {
+                continue;
+            }
+
+            AddReferenceConnectionLine(state);
+        }
+
+        RefreshReferenceConnectionLines();
+        _ = Dispatcher.BeginInvoke(new Action(RefreshReferenceConnectionLines), DispatcherPriority.ApplicationIdle);
+    }
+
+    private void ClearReferenceConnectionLines()
+    {
+        foreach (ReferenceConnectionLine connection in _referenceConnectionLines)
+        {
+            WorkspaceCanvas.Children.Remove(connection.Visual);
+        }
+
+        _referenceConnectionLines.Clear();
+    }
+
+    private void RemoveReferenceConnectionLinesForFile(string filePath)
+    {
+        foreach (ReferenceConnectionLine connection in _referenceConnectionLines
+                     .Where(connection =>
+                         IsSameFile(connection.State.SourceFilePath, filePath) ||
+                         IsSameFile(connection.State.TargetFilePath, filePath))
+                     .ToList())
+        {
+            WorkspaceCanvas.Children.Remove(connection.Visual);
+            _referenceConnectionLines.Remove(connection);
+        }
+    }
+
+    private void EnsureReferenceConnectionLineVisual(ReferenceConnectionLine connection)
+    {
+        if (!WorkspaceCanvas.Children.Contains(connection.Visual))
+        {
+            WorkspaceCanvas.Children.Add(connection.Visual);
+            Panel.SetZIndex(connection.Visual, -1000);
+        }
+    }
+
+    private void RefreshReferenceConnectionLines()
+    {
+        foreach (ReferenceConnectionLine connection in _referenceConnectionLines)
+        {
+            RefreshReferenceConnectionLine(connection);
+        }
+    }
+
+    private void RefreshReferenceConnectionLine(ReferenceConnectionLine connection)
+    {
+        if (!_referenceConnectionLinesEnabled ||
+            _codeViewMode != CodeViewMode.Canvas ||
+            !_openWindows.TryGetValue(connection.State.SourceFilePath, out FloatingCodeWindow? sourceWindow) ||
+            !_openWindows.TryGetValue(connection.State.TargetFilePath, out FloatingCodeWindow? targetWindow) ||
+            !ReferenceEquals(sourceWindow.Parent, WorkspaceCanvas) ||
+            !ReferenceEquals(targetWindow.Parent, WorkspaceCanvas) ||
+            !TryGetWindowBoundsOnCanvas(sourceWindow, out Rect sourceBounds) ||
+            !TryGetWindowBoundsOnCanvas(targetWindow, out Rect targetBounds))
+        {
+            connection.Visual.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        bool targetIsLeft = targetBounds.Left + (targetBounds.Width / 2) < sourceBounds.Left + (sourceBounds.Width / 2);
+        int sourceColumn = targetIsLeft
+            ? connection.State.SourceStartColumnNumber
+            : connection.State.SourceEndColumnNumber;
+        int targetColumn = targetIsLeft
+            ? connection.State.TargetEndColumnNumber
+            : connection.State.TargetStartColumnNumber;
+
+        if (!TryGetDocumentAnchorOnCanvas(sourceWindow, connection.State.SourceLineNumber, sourceColumn, out Point sourceAnchor) ||
+            !TryGetDocumentAnchorOnCanvas(targetWindow, connection.State.TargetLineNumber, targetColumn, out Point targetAnchor))
+        {
+            connection.Visual.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        double sourceEdgeX = targetIsLeft ? sourceBounds.Left : sourceBounds.Right;
+        double targetEdgeX = targetIsLeft ? targetBounds.Right : targetBounds.Left;
+
+        connection.Visual.Points = new PointCollection
+        {
+            sourceAnchor,
+            new(sourceEdgeX, sourceAnchor.Y),
+            new(targetEdgeX, targetAnchor.Y),
+            targetAnchor
+        };
+        connection.Visual.Visibility = Visibility.Visible;
+    }
+
+    private bool TryGetDocumentAnchorOnCanvas(
+        FloatingCodeWindow window,
+        int lineNumber,
+        int columnNumber,
+        out Point canvasPoint)
+    {
+        canvasPoint = default;
+        if (!window.TryGetDocumentAnchorInWindow(lineNumber, columnNumber, out Point windowPoint))
+        {
+            return false;
+        }
+
+        try
+        {
+            canvasPoint = window.TransformToAncestor(WorkspaceCanvas).Transform(windowPoint);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private bool TryGetWindowBoundsOnCanvas(FrameworkElement window, out Rect bounds)
+    {
+        bounds = Rect.Empty;
+        double width = window.ActualWidth > 0 ? window.ActualWidth : window.Width;
+        double height = window.ActualHeight > 0 ? window.ActualHeight : window.Height;
+        if (double.IsNaN(width) || double.IsNaN(height) || width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            Point topLeft = window.TransformToAncestor(WorkspaceCanvas).Transform(new Point(0, 0));
+            bounds = new Rect(topLeft, new Size(width, height));
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            double left = Canvas.GetLeft(window);
+            double top = Canvas.GetTop(window);
+            if (double.IsNaN(left) || double.IsNaN(top))
+            {
+                return false;
+            }
+
+            bounds = new Rect(left, top, width, height);
+            return true;
+        }
+    }
+
+    private static ReferenceConnectionLineState CloneReferenceConnectionLineState(ReferenceConnectionLineState state)
+    {
+        return new ReferenceConnectionLineState
+        {
+            ConnectionId = string.IsNullOrWhiteSpace(state.ConnectionId) ? Guid.NewGuid().ToString("N") : state.ConnectionId,
+            SourceFilePath = state.SourceFilePath,
+            SourceLineNumber = Math.Max(1, state.SourceLineNumber),
+            SourceStartColumnNumber = Math.Max(1, state.SourceStartColumnNumber),
+            SourceEndColumnNumber = Math.Max(1, state.SourceEndColumnNumber),
+            TargetFilePath = state.TargetFilePath,
+            TargetLineNumber = Math.Max(1, state.TargetLineNumber),
+            TargetStartColumnNumber = Math.Max(1, state.TargetStartColumnNumber),
+            TargetEndColumnNumber = Math.Max(1, state.TargetEndColumnNumber)
+        };
     }
 
     private async Task PreviewReferenceAsync(ReferenceNavigationRequestedEventArgs request, string sourceFilePath)
@@ -7405,6 +7745,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ShowReferencePreview(ReferenceEntity reference, string content, int matchCount, string syntaxPath, string displayName)
     {
         _previewFilePath = reference.FilePath;
+        _previewReference = reference;
         PreviewEditor.Text = content;
         PreviewEditor.SyntaxHighlighting = _syntaxHighlightingService.GetDefinition(
             syntaxPath,
@@ -7414,9 +7755,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         PreviewHeaderText.Text = $"{reference.Kind}: {GetReferenceDisplayName(reference)}  ({displayName}:{reference.LineNumber})";
         PreviewEditor.Visibility = Visibility.Visible;
         PreviewEmptyText.Visibility = Visibility.Collapsed;
-        ExplorerDetailTabs.SelectedItem = PreviewTabItem;
+        SelectExplorerDetailTabAutomatically(PreviewTabItem);
 
         ScrollPreviewToReference(reference);
+        UpdatePreviewPopoutWindow();
 
         StatusText = matchCount == 1
             ? $"Previewing {reference.Kind} '{GetReferenceDisplayName(reference)}'."
@@ -7463,37 +7805,212 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _previewRequestVersion++;
         _previewFilePath = null;
+        _previewReference = null;
         RemovePreviewReferenceHighlightColorizer();
         PreviewEditor.Text = string.Empty;
         PreviewEditor.Visibility = Visibility.Collapsed;
         PreviewEmptyText.Text = message;
         PreviewEmptyText.Visibility = Visibility.Visible;
         PreviewHeaderText.Text = "No reference selected";
+        UpdatePreviewPopoutWindow();
     }
 
-    private void ScrollPreviewToReference(ReferenceEntity reference)
+    private void ExplorerDetailTabPinButton_Click(object sender, RoutedEventArgs e)
     {
-        _ = Dispatcher.BeginInvoke(new Action(() => ApplyPreviewScrollToReference(reference)), DispatcherPriority.ContextIdle);
-    }
-
-    private void ApplyPreviewScrollToReference(ReferenceEntity reference)
-    {
-        if (PreviewEditor.Document == null)
+        if (_isUpdatingExplorerDetailPinButtons || sender is not ToggleButton pinButton)
         {
             return;
         }
 
-        TextDocument document = PreviewEditor.Document;
+        TabItem? tabToPin = ReferenceEquals(pinButton, OpenWindowsTabPinButton)
+            ? OpenWindowsTabItem
+            : ReferenceEquals(pinButton, PreviewTabPinButton)
+                ? PreviewTabItem
+                : null;
+        if (tabToPin == null)
+        {
+            return;
+        }
+
+        SetPinnedExplorerDetailTab(pinButton.IsChecked == true ? tabToPin : null);
+        e.Handled = true;
+    }
+
+    private void SetPinnedExplorerDetailTab(TabItem? tabItem)
+    {
+        _pinnedExplorerDetailTab = tabItem;
+        _isUpdatingExplorerDetailPinButtons = true;
+        try
+        {
+            OpenWindowsTabPinButton.IsChecked = ReferenceEquals(tabItem, OpenWindowsTabItem);
+            PreviewTabPinButton.IsChecked = ReferenceEquals(tabItem, PreviewTabItem);
+        }
+        finally
+        {
+            _isUpdatingExplorerDetailPinButtons = false;
+        }
+
+        if (tabItem != null)
+        {
+            ExplorerDetailTabs.SelectedItem = tabItem;
+        }
+    }
+
+    private void SelectExplorerDetailTabAutomatically(TabItem targetTab)
+    {
+        ExplorerDetailTabs.SelectedItem = _pinnedExplorerDetailTab ?? targetTab;
+    }
+
+    private void ScrollPreviewToReference(ReferenceEntity reference)
+    {
+        ScrollEditorToReference(PreviewEditor, reference);
+    }
+
+    private static void ScrollEditorToReference(TextEditor editor, ReferenceEntity reference)
+    {
+        _ = editor.Dispatcher.BeginInvoke(
+            new Action(() => ApplyEditorScrollToReference(editor, reference)),
+            DispatcherPriority.ContextIdle);
+    }
+
+    private static void ApplyEditorScrollToReference(TextEditor editor, ReferenceEntity reference)
+    {
+        if (editor.Document == null)
+        {
+            return;
+        }
+
+        TextDocument document = editor.Document;
         int startLineNumber = Math.Clamp(reference.LineNumber, 1, Math.Max(1, document.LineCount));
         DocumentLine startLine = document.GetLineByNumber(startLineNumber);
         int targetColumn = Math.Clamp(reference.ColumnNumber, 1, startLine.Length + 1);
         int targetOffset = startLine.Offset + targetColumn - 1;
 
-        PreviewEditor.UpdateLayout();
-        PreviewEditor.TextArea.Caret.Offset = targetOffset;
-        PreviewEditor.TextArea.TextView.EnsureVisualLines();
-        PreviewEditor.ScrollTo(startLineNumber, targetColumn, VisualYPosition.LineTop, 6, 0);
-        PreviewEditor.Select(targetOffset, 0);
+        editor.UpdateLayout();
+        editor.TextArea.Caret.Offset = targetOffset;
+        editor.TextArea.TextView.EnsureVisualLines();
+        editor.ScrollTo(startLineNumber, targetColumn, VisualYPosition.LineTop, 6, 0);
+        editor.Select(targetOffset, 0);
+    }
+
+    private void PreviewPopOutButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_previewFilePath) || PreviewEditor.Visibility != Visibility.Visible)
+        {
+            StatusText = "No reference preview to open.";
+            return;
+        }
+
+        EnsurePreviewPopoutWindow();
+        UpdatePreviewPopoutWindow();
+        _previewPopoutWindow?.Show();
+
+        if (_previewPopoutWindow?.WindowState == WindowState.Minimized)
+        {
+            _previewPopoutWindow.WindowState = WindowState.Normal;
+        }
+
+        _previewPopoutWindow?.Activate();
+    }
+
+    private void EnsurePreviewPopoutWindow()
+    {
+        if (_previewPopoutWindow != null)
+        {
+            return;
+        }
+
+        var root = new Grid();
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        _previewPopoutHeaderText = new TextBlock
+        {
+            FontSize = 13,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0x1F, 0x29, 0x37)),
+            Text = PreviewHeaderText.Text,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var header = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0xF8, 0xFA, 0xFC)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0xE4, 0xE7, 0xEB)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(10, 7, 10, 7),
+            Child = _previewPopoutHeaderText
+        };
+        root.Children.Add(header);
+
+        _previewPopoutEditor = new TextEditor
+        {
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = PreviewEditor.FontSize,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            IsReadOnly = true,
+            ShowLineNumbers = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+        Grid.SetRow(_previewPopoutEditor, 1);
+        root.Children.Add(_previewPopoutEditor);
+
+        _previewPopoutWindow = new Window
+        {
+            Title = "Reference Preview",
+            Owner = this,
+            Width = 960,
+            Height = 700,
+            MinWidth = 420,
+            MinHeight = 280,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = root
+        };
+        _previewPopoutWindow.Closed += (_, _) =>
+        {
+            RemovePreviewPopoutReferenceHighlightColorizer();
+            _previewPopoutWindow = null;
+            _previewPopoutEditor = null;
+            _previewPopoutHeaderText = null;
+        };
+    }
+
+    private void UpdatePreviewPopoutWindow()
+    {
+        if (_previewPopoutWindow == null ||
+            _previewPopoutEditor == null ||
+            _previewPopoutHeaderText == null)
+        {
+            return;
+        }
+
+        _previewPopoutHeaderText.Text = PreviewHeaderText.Text;
+        _previewPopoutWindow.Title = string.IsNullOrWhiteSpace(_previewFilePath)
+            ? "Reference Preview"
+            : $"Reference Preview - {GetDisplayNameFromPath(_previewFilePath)}";
+        _previewPopoutEditor.Text = PreviewEditor.Visibility == Visibility.Visible ? PreviewEditor.Text : string.Empty;
+        _previewPopoutEditor.FontSize = PreviewEditor.FontSize;
+
+        if (string.IsNullOrWhiteSpace(_previewFilePath))
+        {
+            _previewPopoutEditor.SyntaxHighlighting = null;
+            RemovePreviewPopoutReferenceHighlightColorizer();
+            return;
+        }
+
+        Brush backcolor = GetCodeWindowBackcolor(_previewFilePath);
+        _previewPopoutEditor.Background = backcolor;
+        _previewPopoutEditor.TextArea.Background = backcolor;
+        _previewPopoutEditor.SyntaxHighlighting = _syntaxHighlightingService.GetDefinition(
+            _previewFilePath,
+            GetCodeLanguageForFile(_previewFilePath));
+        ApplyReferenceHighlightsToPreviewPopout();
+
+        if (_previewReference != null)
+        {
+            ScrollEditorToReference(_previewPopoutEditor, _previewReference);
+        }
     }
 
     private void PreviewEditor_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -7508,6 +8025,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             PreviewEditor.FontSize * multiplier,
             MinimumPreviewFontSize,
             MaximumPreviewFontSize);
+        if (_previewPopoutEditor != null)
+        {
+            _previewPopoutEditor.FontSize = PreviewEditor.FontSize;
+        }
+
         e.Handled = true;
     }
 
@@ -7614,6 +8136,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             spreadsheetWindow.State.FontSize = Math.Max(1, spreadsheetWindow.State.FontSize);
         }
+
+        RefreshReferenceConnectionLines();
+    }
+
+    private void FloatingWindow_EditorViewportChanged(object? sender, EventArgs e)
+    {
+        if (sender is FloatingCodeWindow window)
+        {
+            window.State.HorizontalOffset = window.HorizontalOffset;
+            window.State.VerticalOffset = window.VerticalOffset;
+        }
+
+        RefreshReferenceConnectionLines();
     }
 
     private void WorkspaceCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -10827,6 +11362,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ActiveWorkspaceView = _activeWorkspaceView.ToString(),
             WorkspaceSplitOrientation = _workspaceSplitOrientation.ToString(),
             CodeViewMode = _codeViewMode.ToString(),
+            ReferenceConnectionLinesEnabled = _referenceConnectionLinesEnabled,
             CodeCanvasZoom = _canvasZoom,
             CodeViewportHorizontalOffset = WorkspaceScrollViewer.HorizontalOffset,
             CodeViewportVerticalOffset = WorkspaceScrollViewer.VerticalOffset,
@@ -10834,6 +11370,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             OpenDocuments = OpenTabs
                 .Select(tab => CloneOpenDocumentState(tab.State))
                 .ToList(),
+            ReferenceConnectionLines = _referenceConnectionLinesEnabled
+                ? _referenceConnectionLines
+                    .Select(connection => CloneReferenceConnectionLineState(connection.State))
+                    .ToList()
+                : [],
             ActiveDocumentPath = GetActiveDocumentPath() ?? string.Empty,
             ActiveDiagramId = _activeDiagramId ?? string.Empty,
             ActiveDiagramName = CurrentDiagramName,
@@ -10895,6 +11436,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             _workspaceSplitOrientation = ParseWorkspaceSplitOrientation(workbench.WorkspaceSplitOrientation);
             SetCodeViewMode(ParseCodeViewMode(workbench.CodeViewMode));
+            SetReferenceConnectionLinesEnabled(workbench.ReferenceConnectionLinesEnabled, clearWhenDisabled: false);
             SetDiagramLockState(workbench.IsDiagramLocked, updateToggle: true);
 
             Scope? scope = _scopeLibrary.Scopes.FirstOrDefault(candidate =>
@@ -10928,6 +11470,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 SelectOpenDocument(workbench.ActiveDocumentPath);
             }
 
+            RestoreReferenceConnectionLines(workbench.ReferenceConnectionLines);
             UpdateEmptyWorkspaceHint();
             _ = Dispatcher.BeginInvoke(new Action(RestoreViewport), DispatcherPriority.ContextIdle);
 
@@ -11196,6 +11739,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             state.Height = window.Height;
         }
+
+        if (window is FloatingCodeWindow codeWindow)
+        {
+            state.HorizontalOffset = codeWindow.HorizontalOffset;
+            state.VerticalOffset = codeWindow.VerticalOffset;
+        }
     }
 
     private string? GetActiveDocumentPath()
@@ -11257,7 +11806,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Top = state.Top,
             Width = state.Width,
             Height = state.Height,
-            FontSize = state.FontSize
+            FontSize = state.FontSize,
+            HorizontalOffset = state.HorizontalOffset,
+            VerticalOffset = state.VerticalOffset
         };
     }
 
@@ -11285,6 +11836,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void CloseAllOpenWindows()
     {
         SetActiveCodeWindow(null);
+        ClearReferenceConnectionLines();
         WorkspaceCanvas.Children.Clear();
         ClearCodeDocumentTabs();
         _openWindows.Clear();
@@ -11858,6 +12410,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _isUpdatingCodeViewMode = false;
         }
 
+        UpdateReferenceConnectionLinesToggleVisibility();
+
         if (modeChanged)
         {
             ApplyCodeViewMode();
@@ -11868,6 +12422,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         else
         {
             UpdateEmptyWorkspaceHint();
+            RefreshReferenceConnectionLines();
         }
     }
 
@@ -11887,6 +12442,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             WorkspaceScrollViewer.Visibility = Visibility.Collapsed;
             CodeDocumentsTabControl.Visibility = Visibility.Visible;
             UpdateEmptyWorkspaceHint();
+            RefreshReferenceConnectionLines();
             return;
         }
 
@@ -11894,6 +12450,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         CodeDocumentsTabControl.Visibility = Visibility.Collapsed;
         WorkspaceScrollViewer.Visibility = Visibility.Visible;
         UpdateEmptyWorkspaceHint();
+        RefreshReferenceConnectionLines();
     }
 
     private void MoveOpenWindowsToCodeTabs()
@@ -12326,6 +12883,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _previewFilePath,
             GetCodeLanguageForFile(_previewFilePath));
         ApplyReferenceHighlightsToPreview();
+        UpdatePreviewPopoutWindow();
     }
 
     private void ApplyReferenceHighlightsToOpenWindows()
@@ -12358,6 +12916,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         PreviewEditor.TextArea.TextView.Redraw();
     }
 
+    private void ApplyReferenceHighlightsToPreviewPopout()
+    {
+        RemovePreviewPopoutReferenceHighlightColorizer();
+
+        if (_previewPopoutEditor == null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_previewFilePath))
+        {
+            _previewPopoutEditor.TextArea.TextView.Redraw();
+            return;
+        }
+
+        IReadOnlyDictionary<string, ReferenceHighlightStyleSetting> highlightStyles = GetReferenceHighlightStylesForFile(_previewFilePath);
+        if (highlightStyles.Count == 0)
+        {
+            _previewPopoutEditor.TextArea.TextView.Redraw();
+            return;
+        }
+
+        _previewPopoutReferenceHighlightColorizer = new ReferenceHighlightColorizer(highlightStyles);
+        _previewPopoutEditor.TextArea.TextView.LineTransformers.Add(_previewPopoutReferenceHighlightColorizer);
+        _previewPopoutEditor.TextArea.TextView.Redraw();
+    }
+
     private void RemovePreviewReferenceHighlightColorizer()
     {
         if (_previewReferenceHighlightColorizer == null)
@@ -12367,6 +12952,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         PreviewEditor.TextArea.TextView.LineTransformers.Remove(_previewReferenceHighlightColorizer);
         _previewReferenceHighlightColorizer = null;
+    }
+
+    private void RemovePreviewPopoutReferenceHighlightColorizer()
+    {
+        if (_previewPopoutReferenceHighlightColorizer == null)
+        {
+            return;
+        }
+
+        _previewPopoutEditor?.TextArea.TextView.LineTransformers.Remove(_previewPopoutReferenceHighlightColorizer);
+        _previewPopoutReferenceHighlightColorizer = null;
     }
 
     private IReadOnlyDictionary<string, ReferenceHighlightStyleSetting> GetReferenceHighlightStylesForFile(string filePath)

@@ -28,6 +28,8 @@ public sealed class WorkbenchState
 
     public string CodeViewMode { get; set; } = "Canvas";
 
+    public bool ReferenceConnectionLinesEnabled { get; set; }
+
     public double CodeCanvasZoom { get; set; } = 1;
 
     public double CodeViewportHorizontalOffset { get; set; }
@@ -37,6 +39,8 @@ public sealed class WorkbenchState
     public List<string> UnloadedResourceIds { get; set; } = [];
 
     public List<OpenDocumentState> OpenDocuments { get; set; } = [];
+
+    public List<ReferenceConnectionLineState> ReferenceConnectionLines { get; set; } = [];
 
     public string ActiveDocumentPath { get; set; } = string.Empty;
 
@@ -81,4 +85,25 @@ public sealed class WorkbenchState
 public sealed class WorkbenchLibrary
 {
     public List<WorkbenchState> Workbenches { get; set; } = [];
+}
+
+public sealed class ReferenceConnectionLineState
+{
+    public string ConnectionId { get; set; } = Guid.NewGuid().ToString("N");
+
+    public string SourceFilePath { get; set; } = string.Empty;
+
+    public int SourceLineNumber { get; set; } = 1;
+
+    public int SourceStartColumnNumber { get; set; } = 1;
+
+    public int SourceEndColumnNumber { get; set; } = 1;
+
+    public string TargetFilePath { get; set; } = string.Empty;
+
+    public int TargetLineNumber { get; set; } = 1;
+
+    public int TargetStartColumnNumber { get; set; } = 1;
+
+    public int TargetEndColumnNumber { get; set; } = 1;
 }

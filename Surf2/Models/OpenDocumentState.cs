@@ -15,4 +15,8 @@ public sealed class OpenDocumentState
     public double Height { get; set; } = 460;
 
     public double FontSize { get; set; } = 13;
+
+    public double HorizontalOffset { get; set; }
+
+    public double VerticalOffset { get; set; }
 }
