@@ -11159,7 +11159,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (OpenTabsList.SelectedItem is OpenWindowItem item)
         {
-            RevealOpenTab(item);
+            RevealOpenTabSafely(item);
         }
     }
 
@@ -11168,7 +11168,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ListBoxItem? listBoxItem = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
         if (listBoxItem?.DataContext is OpenWindowItem item)
         {
-            RevealOpenTab(item);
+            RevealOpenTabSafely(item);
         }
     }
 
@@ -11191,7 +11191,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (listBoxItem.DataContext is OpenWindowItem item)
         {
-            RevealOpenTab(item);
+            RevealOpenTabSafely(item);
         }
     }
 
@@ -11280,6 +11280,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void RevealOpenTabSafely(OpenWindowItem item)
+    {
+        try
+        {
+            RevealOpenTab(item);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Could not focus open tab '{item.FilePath}': {ex}");
+            StatusText = $"Could not focus {item.FileName}: {ex.Message}";
+        }
+    }
+
     private void ActivateCodeWindow(FloatingCodeWindow window)
     {
         SetActiveCodeWindow(window);
@@ -11317,7 +11330,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             : OpenTabs.FirstOrDefault(tab =>
                 string.Equals(tab.FilePath, _activeCodeWindow.State.FilePath, StringComparison.OrdinalIgnoreCase));
 
-        if (ReferenceEquals(OpenTabsList.SelectedItem, activeItem))
+        SelectOpenTabItem(activeItem);
+    }
+
+    private void SelectOpenTabItem(OpenWindowItem? item)
+    {
+        if (ReferenceEquals(OpenTabsList.SelectedItem, item))
         {
             return;
         }
@@ -11325,7 +11343,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isUpdatingOpenTabsSelection = true;
         try
         {
-            OpenTabsList.SelectedItem = activeItem;
+            OpenTabsList.SelectedItem = item;
         }
         finally
         {
@@ -11381,7 +11399,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return false;
         }
 
-        CodeDocumentsTabControl.SelectedItem = tabItem;
+        if (!ReferenceEquals(CodeDocumentsTabControl.SelectedItem, tabItem))
+        {
+            CodeDocumentsTabControl.SelectedItem = tabItem;
+        }
+
         return true;
     }
 
@@ -11680,20 +11702,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        OpenWindowItem? openTab = OpenTabs.FirstOrDefault(tab =>
-            string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
-        if (openTab != null && !ReferenceEquals(OpenTabsList.SelectedItem, openTab))
+        try
         {
-            OpenTabsList.SelectedItem = openTab;
-        }
+            OpenWindowItem? openTab = OpenTabs.FirstOrDefault(tab =>
+                string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
 
-        if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? window))
-        {
-            SetActiveCodeWindow(window);
+            if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? window))
+            {
+                SetActiveCodeWindow(window);
+                return;
+            }
+
+            SelectOpenTabItem(openTab);
+            if (_openSpreadsheetWindows.ContainsKey(filePath))
+            {
+                SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+            }
         }
-        else if (_openSpreadsheetWindows.ContainsKey(filePath))
+        catch (Exception ex)
         {
-            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+            Debug.WriteLine($"Could not switch code document tab '{filePath}': {ex}");
+            StatusText = $"Could not switch tab: {ex.Message}";
         }
     }
 
