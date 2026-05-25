@@ -90,6 +90,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string SourceDiagramId,
         string SourcePortalObjectId);
 
+    private sealed record DiagramDocumentationExportItem(
+        DiagramDocumentationPdfSection Section,
+        DiagramDocumentationPdfLinkRegion LinkRegion);
+
     private sealed record ReferenceResourceContext(
         string Key,
         string DisplayName,
@@ -1885,7 +1889,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramOutlineColorButton_Click(object sender, RoutedEventArgs e)
     {
-        OpenDiagramColorMenu(DiagramOutlineColorButton);
+        OpenButtonContextMenu(DiagramOutlineColorButton);
     }
 
     private void DiagramOutlineColorMenuItem_Click(object sender, RoutedEventArgs e)
@@ -1913,7 +1917,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void DiagramBackColorButton_Click(object sender, RoutedEventArgs e)
     {
-        OpenDiagramColorMenu(DiagramBackColorButton);
+        OpenButtonContextMenu(DiagramBackColorButton);
     }
 
     private void DiagramBackColorMenuItem_Click(object sender, RoutedEventArgs e)
@@ -1939,7 +1943,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async void ExportDiagramPngButton_Click(object sender, RoutedEventArgs e)
+    private void ExportDiagramButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenButtonContextMenu(ExportDiagramButton);
+    }
+
+    private async void ExportDiagramPngMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        CloseDiagramExportMenu();
+        await ExportDiagramPngFromUiAsync();
+    }
+
+    private async void ExportDiagramPdfMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        CloseDiagramExportMenu();
+        await ExportDiagramPdfFromUiAsync();
+    }
+
+    private async Task ExportDiagramPngFromUiAsync()
     {
         if (_isDiagramExporting)
         {
@@ -1950,28 +1971,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Focus();
         DiagramCanvas.UpdateLayout();
 
-        List<DiagramObjectSnapshot> snapshots = CaptureDiagramObjects();
-        if (snapshots.Count == 0)
+        if (!TryPrepareDiagramExport(out List<DiagramObjectSnapshot> snapshots, out Rect exportBounds, out int exportWidth, out int exportHeight))
         {
-            StatusText = "There is no diagram content to export.";
-            return;
-        }
-
-        Rect exportBounds = CalculateDiagramExportBounds(snapshots);
-        if (exportBounds.IsEmpty || exportBounds.Width <= 0 || exportBounds.Height <= 0)
-        {
-            StatusText = "There is no diagram content to export.";
-            return;
-        }
-
-        int exportWidth = (int)Math.Ceiling(exportBounds.Width);
-        int exportHeight = (int)Math.Ceiling(exportBounds.Height);
-        long exportPixels = (long)exportWidth * exportHeight;
-        if (exportWidth > MaximumDiagramExportDimension ||
-            exportHeight > MaximumDiagramExportDimension ||
-            exportPixels > MaximumDiagramExportPixels)
-        {
-            StatusText = $"Diagram export is too large ({exportWidth:N0} x {exportHeight:N0}). Reduce the diagram bounds or split it before exporting.";
             return;
         }
 
@@ -2252,6 +2253,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         int exportWidth,
         int exportHeight)
     {
+        WriteableBitmap finalBitmap = await RenderDiagramBitmapAsync(
+            snapshots,
+            exportBounds,
+            exportWidth,
+            exportHeight,
+            renderProgressLimit: 90);
+
+        SetDiagramExportProgress(isExporting: true, progress: 95);
+        await using FileStream stream = File.Create(filePath);
+        SaveBitmapAsPng(finalBitmap, stream);
+        SetDiagramExportProgress(isExporting: true, progress: 100);
+    }
+
+    private async Task<byte[]> RenderDiagramToPngBytesAsync(
+        IReadOnlyList<DiagramObjectSnapshot> snapshots,
+        Rect exportBounds,
+        int exportWidth,
+        int exportHeight,
+        double renderProgressLimit)
+    {
+        WriteableBitmap finalBitmap = await RenderDiagramBitmapAsync(
+            snapshots,
+            exportBounds,
+            exportWidth,
+            exportHeight,
+            renderProgressLimit);
+
+        using var stream = new MemoryStream();
+        SaveBitmapAsPng(finalBitmap, stream);
+        return stream.ToArray();
+    }
+
+    private async Task<WriteableBitmap> RenderDiagramBitmapAsync(
+        IReadOnlyList<DiagramObjectSnapshot> snapshots,
+        Rect exportBounds,
+        int exportWidth,
+        int exportHeight,
+        double renderProgressLimit)
+    {
         var finalBitmap = new WriteableBitmap(
             exportWidth,
             exportHeight,
@@ -2282,17 +2322,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 finalBitmap.WritePixels(new Int32Rect(tileX, tileY, tileWidth, tileHeight), pixels, stride, 0);
 
                 completedTiles++;
-                SetDiagramExportProgress(isExporting: true, completedTiles * 90d / totalTiles);
+                SetDiagramExportProgress(isExporting: true, completedTiles * renderProgressLimit / totalTiles);
                 await Dispatcher.Yield(DispatcherPriority.Background);
             }
         }
 
-        SetDiagramExportProgress(isExporting: true, progress: 95);
-        await using FileStream stream = File.Create(filePath);
+        return finalBitmap;
+    }
+
+    private static void SaveBitmapAsPng(BitmapSource bitmap, Stream stream)
+    {
         var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(finalBitmap));
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
         encoder.Save(stream);
-        SetDiagramExportProgress(isExporting: true, progress: 100);
     }
 
     private RenderTargetBitmap RenderDiagramExportTile(
@@ -2448,7 +2490,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void SetDiagramExportProgress(bool isExporting, double progress)
     {
         _isDiagramExporting = isExporting;
-        ExportDiagramPngButton.IsEnabled = !isExporting;
+        ExportDiagramButton.IsEnabled = !isExporting;
         DiagramExportProgressBar.Value = Math.Clamp(progress, 0, 100);
         DiagramExportProgressBar.Visibility = isExporting ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -2464,7 +2506,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return string.IsNullOrWhiteSpace(fileName) ? "Diagram" : fileName;
     }
 
-    private static void OpenDiagramColorMenu(Button button)
+    private static void OpenButtonContextMenu(Button button)
     {
         if (button.ContextMenu == null)
         {
@@ -2473,6 +2515,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         button.ContextMenu.PlacementTarget = button;
         button.ContextMenu.IsOpen = true;
+    }
+
+    private void CloseDiagramExportMenu()
+    {
+        if (ExportDiagramButton.ContextMenu != null)
+        {
+            ExportDiagramButton.ContextMenu.IsOpen = false;
+        }
     }
 
     private void RefreshDiagramImageToolMenu()
@@ -2609,6 +2659,119 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             SetCodeViewMode(CodeViewMode.Tabs);
         }
+    }
+
+    private async Task ExportDiagramPdfFromUiAsync()
+    {
+        if (_isDiagramExporting)
+        {
+            return;
+        }
+
+        Keyboard.ClearFocus();
+        Focus();
+        CommitWorkflowEditorChanges(requireValidWorkflowName: false);
+        DiagramCanvas.UpdateLayout();
+
+        if (!TryPrepareDiagramExport(out List<DiagramObjectSnapshot> snapshots, out Rect exportBounds, out int exportWidth, out int exportHeight))
+        {
+            return;
+        }
+
+        List<DiagramDocumentationExportItem> documentationItems = CreateDiagramDocumentationExportItems(snapshots, exportBounds);
+        var dialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            DefaultExt = ".pdf",
+            FileName = $"{CreateSafeFileName(CurrentDiagramName)} Documentation.pdf",
+            Filter = "PDF file (*.pdf)|*.pdf",
+            OverwritePrompt = true,
+            Title = "Export Diagram Documentation as PDF"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            SetDiagramExportProgress(isExporting: true, progress: 0);
+            StatusText = "Exporting diagram PDF...";
+
+            byte[] diagramPngBytes = await RenderDiagramToPngBytesAsync(
+                snapshots,
+                exportBounds,
+                exportWidth,
+                exportHeight,
+                renderProgressLimit: 65);
+
+            SetDiagramExportProgress(isExporting: true, progress: 78);
+            DocumentationPdfExporter.ExportDiagramDocumentation(
+                diagramPngBytes,
+                exportWidth,
+                exportHeight,
+                documentationItems.Select(item => item.Section).ToList(),
+                documentationItems.Select(item => item.LinkRegion).ToList(),
+                $"{CurrentDiagramName} Documentation",
+                dialog.FileName);
+
+            SetDiagramExportProgress(isExporting: true, progress: 100);
+            StatusText = documentationItems.Count == 0
+                ? $"Exported diagram PDF to {dialog.FileName}. No documented diagram objects were found."
+                : $"Exported diagram PDF to {dialog.FileName} with {documentationItems.Count} documentation section(s).";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or NotSupportedException or ArgumentException)
+        {
+            InternalLogService.Error(
+                ex,
+                "Failed to export diagram documentation PDF.",
+                ("Diagram", CurrentDiagramName),
+                ("Path", dialog.FileName));
+            StatusText = $"Could not export diagram PDF: {ex.Message}";
+        }
+        finally
+        {
+            SetDiagramExportProgress(isExporting: false, progress: 0);
+        }
+    }
+
+    private bool TryPrepareDiagramExport(
+        out List<DiagramObjectSnapshot> snapshots,
+        out Rect exportBounds,
+        out int exportWidth,
+        out int exportHeight)
+    {
+        snapshots = CaptureDiagramObjects();
+        exportBounds = Rect.Empty;
+        exportWidth = 0;
+        exportHeight = 0;
+
+        if (snapshots.Count == 0)
+        {
+            StatusText = "There is no diagram content to export.";
+            return false;
+        }
+
+        exportBounds = CalculateDiagramExportBounds(snapshots);
+        if (exportBounds.IsEmpty || exportBounds.Width <= 0 || exportBounds.Height <= 0)
+        {
+            StatusText = "There is no diagram content to export.";
+            return false;
+        }
+
+        exportWidth = (int)Math.Ceiling(exportBounds.Width);
+        exportHeight = (int)Math.Ceiling(exportBounds.Height);
+        long exportPixels = (long)exportWidth * exportHeight;
+        if (exportWidth > MaximumDiagramExportDimension ||
+            exportHeight > MaximumDiagramExportDimension ||
+            exportPixels > MaximumDiagramExportPixels)
+        {
+            StatusText = $"Diagram export is too large ({exportWidth:N0} x {exportHeight:N0}). Reduce the diagram bounds or split it before exporting.";
+            return false;
+        }
+
+        return true;
     }
 
     private void CodeViewModeToggle_Unchecked(object sender, RoutedEventArgs e)
@@ -3589,6 +3752,211 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         using var stream = new MemoryStream();
         range.Save(stream, DataFormats.Xaml);
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    private void ExportMetadataDocumentationPdfButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_metadataEditorTarget == null ||
+            _metadataEditorTarget is DiagramWorkflowMarkerControl ||
+            MetadataEditorPanel.Visibility != Visibility.Visible)
+        {
+            StatusText = "Select a diagram object with documentation to export.";
+            return;
+        }
+
+        CommitMetadataEditorChanges();
+        string title = $"{GetDiagramObjectDocumentationTitle(_metadataEditorTarget)} Documentation";
+        ExportDocumentationPdf(MetadataDocumentationRichTextBox.Document, title);
+    }
+
+    private void ExportDocumentationPdf(FlowDocument document, string title)
+    {
+        string normalizedTitle = string.IsNullOrWhiteSpace(title) ? "Documentation" : title.Trim();
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export Documentation as PDF",
+            Filter = "PDF file (*.pdf)|*.pdf",
+            DefaultExt = ".pdf",
+            FileName = $"{CreateSafeFileName(normalizedTitle)}.pdf"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            DocumentationPdfExporter.Export(document, normalizedTitle, dialog.FileName);
+            StatusText = $"Exported documentation PDF to {dialog.FileName}.";
+        }
+        catch (Exception ex)
+        {
+            InternalLogService.Error(
+                ex,
+                "Failed to export documentation PDF.",
+                ("Title", normalizedTitle),
+                ("Path", dialog.FileName));
+            StatusText = $"Could not export documentation PDF: {ex.Message}";
+        }
+    }
+
+    private static string GetDiagramObjectDocumentationTitle(FrameworkElement diagramObject)
+    {
+        return diagramObject switch
+        {
+            DiagramShapeControl shape when !string.IsNullOrWhiteSpace(shape.LabelText) => shape.LabelText,
+            DiagramImageControl image when !string.IsNullOrWhiteSpace(image.LabelText) => image.LabelText,
+            DiagramImageControl image when !string.IsNullOrWhiteSpace(image.ImageName) => image.ImageName,
+            DiagramLineControl => "Line",
+            DiagramLabelControl label when !string.IsNullOrWhiteSpace(label.LabelText) => label.LabelText,
+            DiagramLabelControl => "Label",
+            _ => "Diagram Object"
+        };
+    }
+
+    private List<DiagramDocumentationExportItem> CreateDiagramDocumentationExportItems(
+        IReadOnlyList<DiagramObjectSnapshot> snapshots,
+        Rect exportBounds)
+    {
+        var items = new List<DiagramDocumentationExportItem>();
+        var usedSectionIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < snapshots.Count; i++)
+        {
+            DiagramObjectSnapshot snapshot = snapshots[i];
+            if (snapshot.ObjectType == DiagramObjectType.WorkflowMarker &&
+                FindWorkflow(snapshot.WorkflowId)?.AreMarkersVisible != true)
+            {
+                continue;
+            }
+
+            string documentationXaml = GetDiagramSnapshotDocumentationXaml(snapshot);
+            if (string.IsNullOrWhiteSpace(documentationXaml))
+            {
+                continue;
+            }
+
+            FlowDocument document = CreateFlowDocumentFromXaml(documentationXaml);
+            if (!FlowDocumentHasContent(document))
+            {
+                continue;
+            }
+
+            Rect imageBounds = CreateDiagramImageLinkBounds(GetDiagramObjectExportBounds(snapshot), exportBounds);
+            if (imageBounds.IsEmpty)
+            {
+                continue;
+            }
+
+            string sectionId = CreateUniqueDiagramDocumentationSectionId(snapshot.Id, i, usedSectionIds);
+            var section = new DiagramDocumentationPdfSection(
+                sectionId,
+                GetDiagramSnapshotDocumentationTitle(snapshot),
+                document);
+            var linkRegion = new DiagramDocumentationPdfLinkRegion(sectionId, imageBounds);
+            items.Add(new DiagramDocumentationExportItem(section, linkRegion));
+        }
+
+        return items;
+    }
+
+    private string GetDiagramSnapshotDocumentationXaml(DiagramObjectSnapshot snapshot)
+    {
+        if (snapshot.ObjectType == DiagramObjectType.WorkflowMarker)
+        {
+            return FindWorkflowItem(snapshot.WorkflowId, snapshot.WorkflowItemId)?.ItemDocumentationXaml ?? string.Empty;
+        }
+
+        return snapshot.Metadata.DocumentationXaml;
+    }
+
+    private string GetDiagramSnapshotDocumentationTitle(DiagramObjectSnapshot snapshot)
+    {
+        if (snapshot.ObjectType == DiagramObjectType.WorkflowMarker)
+        {
+            WorkflowDocument? workflow = FindWorkflow(snapshot.WorkflowId);
+            WorkflowItem? item = FindWorkflowItem(snapshot.WorkflowId, snapshot.WorkflowItemId);
+            return item == null
+                ? "Workflow Marker Documentation"
+                : CreateWorkflowItemDocumentationTitle(workflow, item);
+        }
+
+        string title = snapshot.ObjectType switch
+        {
+            DiagramObjectType.Shape when !string.IsNullOrWhiteSpace(snapshot.LabelText) => snapshot.LabelText,
+            DiagramObjectType.Image when !string.IsNullOrWhiteSpace(snapshot.LabelText) => snapshot.LabelText,
+            DiagramObjectType.Image when !string.IsNullOrWhiteSpace(snapshot.ImageName) => snapshot.ImageName,
+            DiagramObjectType.Line => "Line",
+            DiagramObjectType.Label when !string.IsNullOrWhiteSpace(snapshot.LabelText) => snapshot.LabelText,
+            DiagramObjectType.Label => "Label",
+            DiagramObjectType.Portal when !string.IsNullOrWhiteSpace(snapshot.PortalName) => snapshot.PortalName,
+            DiagramObjectType.Portal => "Portal",
+            _ => "Diagram Object"
+        };
+
+        return $"{title.Trim()} Documentation";
+    }
+
+    private static string CreateUniqueDiagramDocumentationSectionId(
+        string snapshotId,
+        int index,
+        ISet<string> usedSectionIds)
+    {
+        string baseId = string.IsNullOrWhiteSpace(snapshotId)
+            ? $"diagram-object-{index + 1}"
+            : snapshotId.Trim();
+        string sectionId = baseId;
+        int suffix = 2;
+
+        while (!usedSectionIds.Add(sectionId))
+        {
+            sectionId = $"{baseId}-{suffix}";
+            suffix++;
+        }
+
+        return sectionId;
+    }
+
+    private static FlowDocument CreateFlowDocumentFromXaml(string documentXaml)
+    {
+        var document = new FlowDocument();
+        if (string.IsNullOrWhiteSpace(documentXaml))
+        {
+            return document;
+        }
+
+        try
+        {
+            using var stream = new MemoryStream(Encoding.UTF8.GetBytes(documentXaml));
+            var range = new TextRange(document.ContentStart, document.ContentEnd);
+            range.Load(stream, DataFormats.Xaml);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or System.Windows.Markup.XamlParseException)
+        {
+            document.Blocks.Clear();
+            document.Blocks.Add(new Paragraph(new Run(documentXaml)));
+        }
+
+        return document;
+    }
+
+    private static bool FlowDocumentHasContent(FlowDocument document)
+    {
+        var range = new TextRange(document.ContentStart, document.ContentEnd);
+        return !string.IsNullOrWhiteSpace(range.Text);
+    }
+
+    private static Rect CreateDiagramImageLinkBounds(Rect objectBounds, Rect exportBounds)
+    {
+        objectBounds.Intersect(exportBounds);
+        return objectBounds.IsEmpty
+            ? Rect.Empty
+            : new Rect(
+                objectBounds.Left - exportBounds.Left,
+                objectBounds.Top - exportBounds.Top,
+                objectBounds.Width,
+                objectBounds.Height);
     }
 
     private void AddMetadataQueryButton_Click(object sender, RoutedEventArgs e)
@@ -4793,13 +5161,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Margin = new Thickness(0, 10, 0, 0)
         };
 
-        layout.Children.Add(new TextBlock
-        {
-            FontWeight = FontWeights.SemiBold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
-            Text = "Documentation:"
-        });
-
         var documentationBox = new RichTextBox
         {
             MinHeight = 96,
@@ -4813,6 +5174,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         documentationBox.LostKeyboardFocus += (_, _) =>
             item.ItemDocumentationXaml = SerializeRichTextBoxDocument(documentationBox);
         _workflowItemDocumentationEditors[item.WorkflowItemId] = documentationBox;
+
+        var documentationHeader = new DockPanel
+        {
+            LastChildFill = true
+        };
+        var exportDocumentationButton = new Button
+        {
+            Width = 82,
+            Height = 24,
+            Content = "Export PDF"
+        };
+        ApplyWorkflowSidebarButtonStyle(exportDocumentationButton, CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB)));
+        exportDocumentationButton.Click += (_, _) =>
+        {
+            item.ItemDocumentationXaml = SerializeRichTextBoxDocument(documentationBox);
+            string title = CreateWorkflowItemDocumentationTitle(_workflowEditorTarget, item);
+            ExportDocumentationPdf(documentationBox.Document, title);
+        };
+        DockPanel.SetDock(exportDocumentationButton, Dock.Right);
+        documentationHeader.Children.Add(exportDocumentationButton);
+        documentationHeader.Children.Add(new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
+            Text = "Documentation:"
+        });
+        layout.Children.Add(documentationHeader);
         layout.Children.Add(documentationBox);
 
         var queryHeader = new DockPanel
@@ -4885,6 +5274,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         layout.Children.Add(collapseButton);
 
         return layout;
+    }
+
+    private static string CreateWorkflowItemDocumentationTitle(WorkflowDocument? workflow, WorkflowItem item)
+    {
+        string itemTitle = string.IsNullOrWhiteSpace(item.ItemDescription)
+            ? $"Workflow Item {item.ItemNumber}"
+            : $"Workflow Item {item.ItemNumber} - {item.ItemDescription.Trim()}";
+
+        return workflow == null || string.IsNullOrWhiteSpace(workflow.WorkflowName)
+            ? $"{itemTitle} Documentation"
+            : $"{workflow.WorkflowName.Trim()} - {itemTitle} Documentation";
     }
 
     private UIElement CreateWorkflowQueryBlock(WorkflowItem item, QueryItem query)

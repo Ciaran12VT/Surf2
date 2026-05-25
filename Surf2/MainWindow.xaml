@@ -1096,16 +1096,49 @@
                                                 Click="NewDiagramButton_Click"
                                                 Content="New"
                                                 ToolTip="Create a new blank diagram" />
-                                        <Button x:Name="ExportDiagramPngButton"
-                                                Width="92"
+                                        <Button x:Name="ExportDiagramButton"
+                                                Width="86"
                                                 Height="26"
                                                 Margin="0,0,8,0"
                                                 Padding="8,0"
                                                 Background="#0F766E"
                                                 Style="{StaticResource RoundedToolbarButtonStyle}"
-                                                Click="ExportDiagramPngButton_Click"
-                                                Content="Export PNG"
-                                                ToolTip="Export the entire diagram as a PNG" />
+                                                Click="ExportDiagramButton_Click"
+                                                ToolTip="Export the diagram">
+                                            <Button.ContextMenu>
+                                                <ContextMenu Padding="4"
+                                                             BorderBrush="#CBD5E1"
+                                                             BorderThickness="1"
+                                                             Background="#FFFFFF">
+                                                    <Button Width="116"
+                                                            Height="28"
+                                                            Margin="0,0,0,4"
+                                                            Padding="8,0"
+                                                            Background="#0F766E"
+                                                            Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                            Click="ExportDiagramPngMenuButton_Click"
+                                                            Content="PNG"
+                                                            ToolTip="Export the entire diagram as a PNG" />
+                                                    <Button Width="116"
+                                                            Height="28"
+                                                            Padding="8,0"
+                                                            Background="#2563EB"
+                                                            Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                            Click="ExportDiagramPdfMenuButton_Click"
+                                                            Content="PDF"
+                                                            ToolTip="Export the diagram and documentation as a linked PDF" />
+                                                </ContextMenu>
+                                            </Button.ContextMenu>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="Export" />
+                                                <Polygon Width="8"
+                                                         Height="5"
+                                                         Margin="6,1,0,0"
+                                                         VerticalAlignment="Center"
+                                                         Fill="White"
+                                                         Points="0,0 8,0 4,5" />
+                                            </StackPanel>
+                                        </Button>
                                         <Button x:Name="SaveDiagramButton"
                                                 Width="64"
                                                 Height="26"
@@ -1710,11 +1743,21 @@
                                                             Content="Open" />
                                                 </Grid>
 
-                                                <TextBlock Grid.Row="1"
-                                                           Margin="0,0,0,4"
-                                                           FontWeight="SemiBold"
-                                                           Foreground="#111827"
-                                                           Text="Documentation:" />
+                                                <DockPanel Grid.Row="1"
+                                                           Margin="0,0,0,4">
+                                                    <Button x:Name="ExportMetadataDocumentationPdfButton"
+                                                            DockPanel.Dock="Right"
+                                                            Width="82"
+                                                            Height="24"
+                                                            Background="#2563EB"
+                                                            Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                            Click="ExportMetadataDocumentationPdfButton_Click"
+                                                            Content="Export PDF" />
+                                                    <TextBlock VerticalAlignment="Center"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="#111827"
+                                                               Text="Documentation:" />
+                                                </DockPanel>
 
                                                 <WrapPanel Grid.Row="2"
                                                            Margin="0,0,0,6">
