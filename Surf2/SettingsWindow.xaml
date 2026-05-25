@@ -579,6 +579,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
@@ -594,18 +595,36 @@
                     <StackPanel Grid.Row="2"
                                 Margin="0,10,0,0"
                                 Orientation="Horizontal">
-                        <Button Width="132"
+                        <Button x:Name="TestConnectionButton"
+                                Width="132"
                                 Margin="0,0,8,0"
                                 Style="{StaticResource SettingsPrimaryButtonStyle}"
                                 Click="TestConnectionButton_Click"
                                 Content="Test Connection" />
-                        <Button Width="116"
+                        <Button x:Name="UseDefaultConnectionButton"
+                                Width="116"
                                 Style="{StaticResource SettingsPrimaryButtonStyle}"
                                 Click="UseDefaultConnectionButton_Click"
                                 Content="Use Default" />
                     </StackPanel>
 
-                    <Border Grid.Row="3"
+                    <StackPanel Grid.Row="3"
+                                Margin="0,10,0,0"
+                                Orientation="Horizontal">
+                        <Button x:Name="ExportDatabaseButton"
+                                Width="132"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsPrimaryButtonStyle}"
+                                Click="ExportDatabaseButton_Click"
+                                Content="Export Database" />
+                        <Button x:Name="ImportDatabaseButton"
+                                Width="132"
+                                Style="{StaticResource SettingsPrimaryButtonStyle}"
+                                Click="ImportDatabaseButton_Click"
+                                Content="Import Database" />
+                    </StackPanel>
+
+                    <Border Grid.Row="4"
                             Margin="0,14,0,0"
                             Padding="10"
                             BorderBrush="#D7DCE2"

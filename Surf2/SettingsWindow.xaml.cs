@@ -20,6 +20,7 @@ public partial class SettingsWindow : Window
     private readonly ObservableCollection<ReferenceHighlightStyleSetting> _highlightStyles = [];
     private readonly ObservableCollection<DiagramImageDefinition> _diagramImages = [];
     private readonly LocalConnectionSettingsStore _connectionSettingsStore = new();
+    private readonly PersistencePackageService _persistencePackageService = new();
     private bool _loadingSelection;
     private bool _loadingHighlightSelection;
     private bool _loadingDiagramImageSelection;
@@ -101,6 +102,8 @@ public partial class SettingsWindow : Window
     public PersistenceConnectionSettings ConnectionSettings { get; }
 
     public bool ConnectionSettingsWereChanged { get; private set; }
+
+    public bool PersistenceDatabaseImported { get; private set; }
 
     private void SectionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -646,6 +649,117 @@ public partial class SettingsWindow : Window
         PersistenceConnectionStringTextBox.Text = SqlServerConnectionOptions.DefaultConnectionString;
         PersistenceValidationText.Foreground = Brushes.DimGray;
         PersistenceValidationText.Text = "Default LocalDB connection restored.";
+    }
+
+    private async void ExportDatabaseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryNormalizeConnectionString(PersistenceConnectionStringTextBox.Text, out string connectionString, out string validationMessage))
+        {
+            PersistenceValidationText.Foreground = Brushes.Firebrick;
+            PersistenceValidationText.Text = validationMessage;
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export Database",
+            Filter = "Surf2 database export (*.surf2db.zip)|*.surf2db.zip|Zip files (*.zip)|*.zip|All files (*.*)|*.*",
+            DefaultExt = ".surf2db.zip",
+            FileName = $"surf2-export-{DateTime.Now:yyyyMMdd-HHmmss}.surf2db.zip"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        SetPersistenceActionsEnabled(false);
+        PersistenceValidationText.Foreground = Brushes.DimGray;
+        PersistenceValidationText.Text = "Exporting database...";
+
+        try
+        {
+            PersistenceExportResult result = await _persistencePackageService.ExportAsync(dialog.FileName, connectionString);
+            PersistenceValidationText.Foreground = Brushes.DarkGreen;
+            PersistenceValidationText.Text = $"Exported {result.DocumentCount} database document(s) and {result.LocalFileCount} local file(s).";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SqlException or InvalidOperationException or ArgumentException)
+        {
+            PersistenceValidationText.Foreground = Brushes.Firebrick;
+            PersistenceValidationText.Text = $"Export failed: {ex.Message}";
+        }
+        finally
+        {
+            SetPersistenceActionsEnabled(true);
+        }
+    }
+
+    private async void ImportDatabaseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryNormalizeConnectionString(PersistenceConnectionStringTextBox.Text, out string connectionString, out string validationMessage))
+        {
+            PersistenceValidationText.Foreground = Brushes.Firebrick;
+            PersistenceValidationText.Text = validationMessage;
+            return;
+        }
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "Import Database",
+            Filter = "Surf2 database export (*.surf2db.zip)|*.surf2db.zip|Zip files (*.zip)|*.zip|All files (*.*)|*.*"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        MessageBoxResult confirmation = MessageBox.Show(
+            this,
+            "Import this database export into the currently configured Surf2 database?",
+            "Import Database",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirmation != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        SetPersistenceActionsEnabled(false);
+        PersistenceValidationText.Foreground = Brushes.DimGray;
+        PersistenceValidationText.Text = "Importing database...";
+
+        try
+        {
+            PersistenceImportResult result = await _persistencePackageService.ImportAsync(dialog.FileName, connectionString);
+            PersistenceDatabaseImported = true;
+            MessageBox.Show(
+                this,
+                $"Imported {result.DocumentCount} database document(s) and restored {result.RestoredLocalFileCount} local file(s). Restart Surf2 to load the imported setup.",
+                "Import Database",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            DialogResult = true;
+            Close();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SqlException or InvalidOperationException or InvalidDataException or ArgumentException)
+        {
+            PersistenceValidationText.Foreground = Brushes.Firebrick;
+            PersistenceValidationText.Text = $"Import failed: {ex.Message}";
+        }
+        finally
+        {
+            SetPersistenceActionsEnabled(true);
+        }
+    }
+
+    private void SetPersistenceActionsEnabled(bool isEnabled)
+    {
+        TestConnectionButton.IsEnabled = isEnabled;
+        UseDefaultConnectionButton.IsEnabled = isEnabled;
+        ExportDatabaseButton.IsEnabled = isEnabled;
+        ImportDatabaseButton.IsEnabled = isEnabled;
     }
 
     private void SavePersistenceButton_Click(object sender, RoutedEventArgs e)

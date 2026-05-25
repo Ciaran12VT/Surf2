@@ -10481,6 +10481,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (settingsWindow.PersistenceDatabaseImported)
+        {
+            StatusText = "Imported database export. Restart Surf2 to load the imported setup.";
+            return;
+        }
+
         bool connectionSettingsChanged = settingsWindow.ConnectionSettingsWereChanged;
         _appSettings = settingsWindow.Settings;
         _appSettings.EnsureDefaults();
