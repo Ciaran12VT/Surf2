@@ -11,18 +11,19 @@ public sealed class FileTreeService
         IEnumerable<ScopedResource> resources,
         DatabaseSnapshotLibrary? databaseSnapshots = null,
         DiagramLibrary? diagramLibrary = null,
-        IEnumerable<VirtualFolder>? virtualFolders = null)
+        IEnumerable<VirtualFolder>? virtualFolders = null,
+        IReadOnlySet<string>? unloadedResourceIds = null)
     {
         var roots = new ObservableCollection<FileSystemNode>();
         List<ScopedResource> resourceList = resources.ToList();
 
         foreach (ScopedResource resource in resourceList.Where(resource => resource.Kind != ResourceKind.Diagram))
         {
-            FileSystemNode node = CreateRoot(resource, databaseSnapshots);
+            FileSystemNode node = CreateRoot(resource, databaseSnapshots, IsResourceLoaded(resource, unloadedResourceIds));
             roots.Add(node);
         }
 
-        FileSystemNode? diagramRoot = CreateDiagramRoot(resourceList, diagramLibrary);
+        FileSystemNode? diagramRoot = CreateDiagramRoot(resourceList, diagramLibrary, unloadedResourceIds);
         if (diagramRoot != null)
         {
             roots.Add(diagramRoot);
@@ -90,7 +91,8 @@ public sealed class FileTreeService
         string query,
         ObjectExplorerSearchTarget searchTarget,
         bool useRegex,
-        IEnumerable<VirtualFolder>? virtualFolders = null)
+        IEnumerable<VirtualFolder>? virtualFolders = null,
+        IReadOnlySet<string>? unloadedResourceIds = null)
     {
         var matcher = SearchMatcher.Create(query, useRegex);
         var roots = new ObservableCollection<FileSystemNode>();
@@ -98,7 +100,8 @@ public sealed class FileTreeService
         int matchCount = 0;
         int searchedCount = 0;
 
-        foreach (ScopedResource resource in resourceList.Where(resource => resource.Kind != ResourceKind.Diagram))
+        foreach (ScopedResource resource in resourceList
+                     .Where(resource => resource.Kind != ResourceKind.Diagram && IsResourceLoaded(resource, unloadedResourceIds)))
         {
             FileSystemNode? node = resource.Kind == ResourceKind.DatabaseSnapshot
                 ? SearchDatabaseResource(resource, databaseSnapshots, matcher, searchTarget, ref matchCount, ref searchedCount)
@@ -110,7 +113,7 @@ public sealed class FileTreeService
             }
         }
 
-        FileSystemNode? diagramRoot = SearchDiagramResources(resourceList, diagramLibrary, matcher, searchTarget, ref matchCount, ref searchedCount);
+        FileSystemNode? diagramRoot = SearchDiagramResources(resourceList, diagramLibrary, matcher, searchTarget, ref matchCount, ref searchedCount, unloadedResourceIds);
         if (diagramRoot != null)
         {
             roots.Add(diagramRoot);
@@ -120,11 +123,14 @@ public sealed class FileTreeService
         return new ObjectExplorerSearchResult(roots, matchCount, searchedCount);
     }
 
-    private static FileSystemNode CreateRoot(ScopedResource resource, DatabaseSnapshotLibrary? databaseSnapshots)
+    private static FileSystemNode CreateRoot(
+        ScopedResource resource,
+        DatabaseSnapshotLibrary? databaseSnapshots,
+        bool isScopeResourceLoaded)
     {
         if (resource.Kind == ResourceKind.DatabaseSnapshot)
         {
-            return CreateDatabaseRoot(resource, databaseSnapshots);
+            return CreateDatabaseRoot(resource, databaseSnapshots, isScopeResourceLoaded);
         }
 
         bool isDirectory = resource.Kind == ResourceKind.Folder;
@@ -142,7 +148,16 @@ public sealed class FileTreeService
                 ResourceKind.Folder => FileSystemNodeIconKind.Folder,
                 _ => null
             },
-            parentKey: FileSystemNode.RootParentKey);
+            parentKey: FileSystemNode.RootParentKey,
+            scopeResourceId: resource.ResourceId,
+            isScopeResourceRoot: true,
+            isScopeResourceLoaded: isScopeResourceLoaded);
+
+        if (!isScopeResourceLoaded)
+        {
+            root.IsLoaded = true;
+            return root;
+        }
 
         if (isDirectory)
         {
@@ -173,7 +188,10 @@ public sealed class FileTreeService
                 searchTarget,
                 ref matchCount,
                 ref searchedCount,
-                resource.Kind == ResourceKind.Project ? FileSystemNodeIconKind.Project : null);
+                resource.Kind == ResourceKind.Project ? FileSystemNodeIconKind.Project : null,
+                FileSystemNode.RootParentKey,
+                resource.ResourceId,
+                isScopeResourceRoot: true);
         }
 
         if (resource.Kind == ResourceKind.Folder && Directory.Exists(resource.Path))
@@ -186,7 +204,9 @@ public sealed class FileTreeService
                 ref matchCount,
                 ref searchedCount,
                 FileSystemNodeIconKind.Folder,
-                FileSystemNode.RootParentKey);
+                FileSystemNode.RootParentKey,
+                resource.ResourceId,
+                isScopeResourceRoot: true);
         }
 
         return null;
@@ -200,7 +220,9 @@ public sealed class FileTreeService
         ref int matchCount,
         ref int searchedCount,
         FileSystemNodeIconKind? iconKind = null,
-        string parentKey = FileSystemNode.RootParentKey)
+        string parentKey = FileSystemNode.RootParentKey,
+        string? scopeResourceId = null,
+        bool isScopeResourceRoot = false)
     {
         bool isMatch = searchTarget == ObjectExplorerSearchTarget.Name && matcher.IsMatch(displayName);
         searchedCount++;
@@ -210,7 +232,9 @@ public sealed class FileTreeService
             isDirectory: true,
             displayName: displayName,
             iconKind: iconKind,
-            parentKey: parentKey)
+            parentKey: parentKey,
+            scopeResourceId: scopeResourceId,
+            isScopeResourceRoot: isScopeResourceRoot)
         {
             IsLoaded = true,
             IsExpanded = true
@@ -266,7 +290,9 @@ public sealed class FileTreeService
         ref int matchCount,
         ref int searchedCount,
         FileSystemNodeIconKind? iconKind = null,
-        string parentKey = FileSystemNode.RootParentKey)
+        string parentKey = FileSystemNode.RootParentKey,
+        string? scopeResourceId = null,
+        bool isScopeResourceRoot = false)
     {
         bool isMatch;
         searchedCount++;
@@ -296,7 +322,9 @@ public sealed class FileTreeService
             isDirectory: false,
             displayName: displayName,
             iconKind: iconKind,
-            parentKey: parentKey);
+            parentKey: parentKey,
+            scopeResourceId: scopeResourceId,
+            isScopeResourceRoot: isScopeResourceRoot);
     }
 
     private static FileSystemNode? SearchDatabaseResource(
@@ -325,7 +353,9 @@ public sealed class FileTreeService
             isDirectory: true,
             displayName: displayName,
             iconKind: FileSystemNodeIconKind.Database,
-            parentKey: FileSystemNode.RootParentKey)
+            parentKey: FileSystemNode.RootParentKey,
+            scopeResourceId: resource.ResourceId,
+            isScopeResourceRoot: true)
         {
             IsLoaded = true,
             IsExpanded = true
@@ -457,7 +487,10 @@ public sealed class FileTreeService
         }
     }
 
-    private static FileSystemNode CreateDatabaseRoot(ScopedResource resource, DatabaseSnapshotLibrary? databaseSnapshots)
+    private static FileSystemNode CreateDatabaseRoot(
+        ScopedResource resource,
+        DatabaseSnapshotLibrary? databaseSnapshots,
+        bool isScopeResourceLoaded)
     {
         DatabaseMetadataSnapshot? snapshot = databaseSnapshots?.Snapshots.FirstOrDefault(candidate =>
             string.Equals(candidate.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase));
@@ -470,10 +503,14 @@ public sealed class FileTreeService
             exists: snapshot != null,
             displayName: displayName,
             iconKind: FileSystemNodeIconKind.Database,
-            parentKey: FileSystemNode.RootParentKey);
+            parentKey: FileSystemNode.RootParentKey,
+            scopeResourceId: resource.ResourceId,
+            isScopeResourceRoot: true,
+            isScopeResourceLoaded: isScopeResourceLoaded);
 
-        if (snapshot == null)
+        if (snapshot == null || !isScopeResourceLoaded)
         {
+            root.IsLoaded = true;
             return root;
         }
 
@@ -555,7 +592,8 @@ public sealed class FileTreeService
 
     private static FileSystemNode? CreateDiagramRoot(
         IEnumerable<ScopedResource> resources,
-        DiagramLibrary? diagramLibrary)
+        DiagramLibrary? diagramLibrary,
+        IReadOnlySet<string>? unloadedResourceIds)
     {
         List<ScopedResource> diagramResources = resources
             .Where(resource => resource.Kind == ResourceKind.Diagram)
@@ -574,7 +612,11 @@ public sealed class FileTreeService
 
         foreach (ScopedResource resource in diagramResources)
         {
-            root.Children.Add(CreateDiagramNode(resource, diagramLibrary?.Find(resource.Path), root.NodeKey));
+            root.Children.Add(CreateDiagramNode(
+                resource,
+                diagramLibrary?.Find(resource.Path),
+                root.NodeKey,
+                IsResourceLoaded(resource, unloadedResourceIds)));
         }
 
         return root;
@@ -586,10 +628,11 @@ public sealed class FileTreeService
         SearchMatcher matcher,
         ObjectExplorerSearchTarget searchTarget,
         ref int matchCount,
-        ref int searchedCount)
+        ref int searchedCount,
+        IReadOnlySet<string>? unloadedResourceIds)
     {
         List<ScopedResource> diagramResources = resources
-            .Where(resource => resource.Kind == ResourceKind.Diagram)
+            .Where(resource => resource.Kind == ResourceKind.Diagram && IsResourceLoaded(resource, unloadedResourceIds))
             .ToList();
 
         if (diagramResources.Count == 0)
@@ -633,13 +676,17 @@ public sealed class FileTreeService
             }
 
             matchCount++;
-            root.Children.Add(CreateDiagramNode(resource, diagram, root.NodeKey));
+            root.Children.Add(CreateDiagramNode(resource, diagram, root.NodeKey, isScopeResourceLoaded: true));
         }
 
         return rootMatch || root.Children.Count > 0 ? root : null;
     }
 
-    private static FileSystemNode CreateDiagramNode(ScopedResource resource, DiagramDocument? diagram, string parentKey)
+    private static FileSystemNode CreateDiagramNode(
+        ScopedResource resource,
+        DiagramDocument? diagram,
+        string parentKey,
+        bool isScopeResourceLoaded)
     {
         string displayName = GetDiagramDisplayName(resource, diagram);
         string suffix = diagram == null ? " (missing)" : string.Empty;
@@ -648,7 +695,10 @@ public sealed class FileTreeService
             isDirectory: false,
             exists: diagram != null,
             displayName: $"{displayName}{suffix}",
-            parentKey: parentKey)
+            parentKey: parentKey,
+            scopeResourceId: resource.ResourceId,
+            isScopeResourceRoot: true,
+            isScopeResourceLoaded: isScopeResourceLoaded)
         {
             IsVirtualDocument = true,
             HasUnresolvedQueries = DiagramQueryState.HasUnresolvedMetadataQueries(diagram)
@@ -785,6 +835,13 @@ public sealed class FileTreeService
         return string.IsNullOrWhiteSpace(parentNodeKey)
             ? FileSystemNode.RootParentKey
             : parentNodeKey;
+    }
+
+    private static bool IsResourceLoaded(ScopedResource resource, IReadOnlySet<string>? unloadedResourceIds)
+    {
+        return unloadedResourceIds == null ||
+               string.IsNullOrWhiteSpace(resource.ResourceId) ||
+               !unloadedResourceIds.Contains(resource.ResourceId);
     }
 
     private sealed class SearchMatcher

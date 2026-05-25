@@ -33,6 +33,7 @@ public sealed class FileSystemNode
     private static readonly Brush DatabaseIconBrush = CreateFrozenBrush(Color.FromRgb(0x0F, 0x76, 0x6E));
     private static readonly Brush DiagramsIconBrush = CreateFrozenBrush(Color.FromRgb(0x7C, 0x3A, 0xED));
     private static readonly Brush VirtualFolderIconBrush = CreateFrozenBrush(Color.FromRgb(0xC2, 0x41, 0x0C));
+    private static readonly Brush UnloadedBrush = CreateFrozenBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
     private static readonly Brush MissingIconBrush = Brushes.Firebrick;
 
     public FileSystemNode(
@@ -44,13 +45,19 @@ public sealed class FileSystemNode
         string? parentKey = null,
         string? nodeKey = null,
         bool isVirtualFolder = false,
-        string? virtualFolderId = null)
+        string? virtualFolderId = null,
+        string? scopeResourceId = null,
+        bool isScopeResourceRoot = false,
+        bool isScopeResourceLoaded = true)
     {
         FullPath = path;
         IsDirectory = isDirectory;
         Exists = exists;
         IsVirtualFolder = isVirtualFolder;
         VirtualFolderId = virtualFolderId ?? string.Empty;
+        ScopeResourceId = scopeResourceId ?? string.Empty;
+        IsScopeResourceRoot = isScopeResourceRoot;
+        IsScopeResourceLoaded = isScopeResourceLoaded;
         NodeKey = string.IsNullOrWhiteSpace(nodeKey) ? path : nodeKey;
         ParentKey = string.IsNullOrWhiteSpace(parentKey) ? RootParentKey : parentKey;
         NaturalParentKey = ParentKey;
@@ -81,6 +88,12 @@ public sealed class FileSystemNode
 
     public string VirtualFolderId { get; }
 
+    public string ScopeResourceId { get; }
+
+    public bool IsScopeResourceRoot { get; }
+
+    public bool IsScopeResourceLoaded { get; }
+
     public bool IsLoaded { get; set; }
 
     public bool IsExpanded { get; set; }
@@ -106,7 +119,7 @@ public sealed class FileSystemNode
         _ => FileIconGeometry
     };
 
-    public Brush IconBrush => IconKind switch
+    public Brush IconBrush => !IsScopeResourceLoaded ? UnloadedBrush : IconKind switch
     {
         FileSystemNodeIconKind.Folder => FolderIconBrush,
         FileSystemNodeIconKind.Project => ProjectIconBrush,
@@ -117,7 +130,13 @@ public sealed class FileSystemNode
         _ => FileIconBrush
     };
 
-    public Brush TextBrush => !Exists || HasUnresolvedQueries ? Brushes.Firebrick : IsDirectory ? Brushes.Black : Brushes.DimGray;
+    public Brush TextBrush => !IsScopeResourceLoaded
+        ? UnloadedBrush
+        : !Exists || HasUnresolvedQueries
+            ? Brushes.Firebrick
+            : IsDirectory
+                ? Brushes.Black
+                : Brushes.DimGray;
 
     public void AddLoadingPlaceholder()
     {

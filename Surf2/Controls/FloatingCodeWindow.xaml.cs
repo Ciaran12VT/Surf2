@@ -21,6 +21,8 @@ public partial class FloatingCodeWindow : UserControl
     private const double FontZoomStep = 1.1;
     private const double ShiftScrollDeadZone = 3;
     private const double ShiftScrollSpeedFactor = 0.08;
+    private static readonly Brush InactiveHeaderBrush = CreateFrozenBrush(Color.FromRgb(0x25, 0x32, 0x45));
+    private static readonly Brush ActiveHeaderBrush = CreateFrozenBrush(Color.FromRgb(0x36, 0x48, 0x62));
 
     private bool _isDragging;
     private bool _isDocked;
@@ -39,6 +41,7 @@ public partial class FloatingCodeWindow : UserControl
     private readonly SearchPanel _searchPanel;
     private readonly DispatcherTimer _shiftMouseScrollTimer;
     private bool _suppressCursorPositionChanged;
+    private bool _isActive;
 
     public FloatingCodeWindow(OpenDocumentState state, string content, IHighlightingDefinition? highlighting)
     {
@@ -65,11 +68,13 @@ public partial class FloatingCodeWindow : UserControl
         _shiftMouseScrollTimer.Tick += ShiftMouseScrollTimer_Tick;
 
         Editor.TextArea.Caret.PositionChanged += Caret_PositionChanged;
+        AddHandler(Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler(FloatingCodeWindow_PreviewMouseDown), true);
         Editor.PreviewMouseLeftButtonUp += Editor_PreviewMouseLeftButtonUp;
         Editor.PreviewMouseDoubleClick += Editor_PreviewMouseDoubleClick;
         PreviewKeyDown += FloatingCodeWindow_PreviewKeyDown;
         AddHandler(Mouse.PreviewMouseMoveEvent, new MouseEventHandler(FloatingCodeWindow_PreviewMouseMove), true);
         PreviewMouseWheel += FloatingCodeWindow_PreviewMouseWheel;
+        ApplyActiveState();
         Unloaded += (_, _) => StopShiftMouseScroll();
     }
 
@@ -78,6 +83,8 @@ public partial class FloatingCodeWindow : UserControl
     public event EventHandler? BoundsChanged;
 
     public event EventHandler? BringToFrontRequested;
+
+    public event EventHandler? ActivationRequested;
 
     public event EventHandler<ReferenceNavigationRequestedEventArgs>? ReferenceNavigationRequested;
 
@@ -94,6 +101,21 @@ public partial class FloatingCodeWindow : UserControl
     public OpenDocumentState State { get; }
 
     public string Text => Editor.Text;
+
+    public bool IsActive
+    {
+        get => _isActive;
+        set
+        {
+            if (_isActive == value)
+            {
+                return;
+            }
+
+            _isActive = value;
+            ApplyActiveState();
+        }
+    }
 
     public void ApplyKeyboardShortcutSettings(KeyboardShortcutSettings settings)
     {
@@ -472,6 +494,11 @@ public partial class FloatingCodeWindow : UserControl
             return;
         }
 
+        if (!IsActive)
+        {
+            return;
+        }
+
         double multiplier = e.Delta > 0 ? FontZoomStep : 1 / FontZoomStep;
         Editor.FontSize = Math.Clamp(Editor.FontSize * multiplier, MinimumFontSize, MaximumFontSize);
         State.FontSize = Editor.FontSize;
@@ -489,6 +516,13 @@ public partial class FloatingCodeWindow : UserControl
         }
 
         ModifierKeys modifiers = Keyboard.Modifiers;
+        if (!IsActive && (modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) != ModifierKeys.None)
+        {
+            _isCtrlMouseScrolling = false;
+            StopShiftMouseScroll();
+            return;
+        }
+
         bool isCtrlDown = (modifiers & ModifierKeys.Control) == ModifierKeys.Control;
         bool isShiftDown = (modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
 
@@ -509,7 +543,7 @@ public partial class FloatingCodeWindow : UserControl
             return;
         }
 
-        if (_isDocked && isCtrlDown && !isShiftDown && _enableTabCtrlMouseScrolling)
+        if (isCtrlDown && !isShiftDown && _enableTabCtrlMouseScrolling)
         {
             StopShiftMouseScroll();
             HandleCtrlMouseScroll(e);
@@ -561,6 +595,7 @@ public partial class FloatingCodeWindow : UserControl
     {
         ModifierKeys modifiers = Keyboard.Modifiers;
         if (Editor.Document == null ||
+            !IsActive ||
             !Editor.IsMouseOver ||
             (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
             (modifiers & ModifierKeys.Control) == ModifierKeys.Control ||
@@ -689,6 +724,20 @@ public partial class FloatingCodeWindow : UserControl
         _searchPanel.Open();
         _searchPanel.Reactivate();
         e.Handled = true;
+    }
+
+    private void FloatingCodeWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left)
+        {
+            ActivationRequested?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void ApplyActiveState()
+    {
+        HeaderBar.Background = IsActive ? ActiveHeaderBrush : InactiveHeaderBrush;
+        TitleText.FontWeight = IsActive ? FontWeights.Bold : FontWeights.SemiBold;
     }
 
     private void Editor_PreviewMouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -1164,6 +1213,13 @@ public partial class FloatingCodeWindow : UserControl
                 yield return descendant;
             }
         }
+    }
+
+    private static SolidColorBrush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
     }
 }
 

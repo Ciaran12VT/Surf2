@@ -12,5 +12,7 @@ public sealed class WorkspaceState
 
     public double ViewportVerticalOffset { get; set; }
 
+    public List<string> UnloadedResourceIds { get; set; } = [];
+
     public ObservableCollection<OpenDocumentState> OpenDocuments { get; set; } = [];
 }

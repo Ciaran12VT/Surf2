@@ -27,7 +27,8 @@ public sealed class ScopeReferenceIndexService
     public ScopeReferenceIndex Build(
         Scope? scope,
         DatabaseSnapshotLibrary? databaseSnapshots = null,
-        CodeWindowSettings? codeWindowSettings = null)
+        CodeWindowSettings? codeWindowSettings = null,
+        IReadOnlySet<string>? unloadedResourceIds = null)
     {
         var index = new ScopeReferenceIndex();
         if (scope == null)
@@ -39,6 +40,11 @@ public sealed class ScopeReferenceIndexService
 
         foreach (ScopedResource resource in scope.Resources)
         {
+            if (!IsResourceLoaded(resource, unloadedResourceIds))
+            {
+                continue;
+            }
+
             if (resource.Kind == ResourceKind.DatabaseSnapshot)
             {
                 AddDatabaseSnapshotReferences(index, resource, databaseSnapshots);
@@ -292,5 +298,12 @@ public sealed class ScopeReferenceIndexService
                 yield return file;
             }
         }
+    }
+
+    private static bool IsResourceLoaded(ScopedResource resource, IReadOnlySet<string>? unloadedResourceIds)
+    {
+        return unloadedResourceIds == null ||
+               string.IsNullOrWhiteSpace(resource.ResourceId) ||
+               !unloadedResourceIds.Contains(resource.ResourceId);
     }
 }

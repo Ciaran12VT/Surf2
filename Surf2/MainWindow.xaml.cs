@@ -233,6 +233,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _isUpdatingViewToggles;
     private bool _isUpdatingCodeViewMode;
     private bool _isUpdatingDiagramToolToggles;
+    private bool _isUpdatingOpenTabsSelection;
     private bool _isDiagramLocked = true;
     private bool _isUpdatingDiagramLockToggle;
     private bool _isUpdatingWorkbenchSelection;
@@ -268,6 +269,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private DiagramShapeControl? _activeDiagramDrawingShape;
     private DiagramImageControl? _activeDiagramDrawingImage;
     private DiagramLineControl? _activeDiagramDrawingLine;
+    private FloatingCodeWindow? _activeCodeWindow;
     private FrameworkElement? _selectedDiagramObject;
     private DiagramObjectSnapshot? _diagramClipboardSnapshot;
     private DiagramObjectSnapshot? _pendingDiagramInteractionSnapshot;
@@ -491,13 +493,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DatabaseSnapshotLibrary databaseSnapshots = _databaseSnapshots;
             DiagramLibrary diagramLibrary = _diagramLibrary;
             CodeWindowSettings codeWindowSettings = _appSettings.CodeWindows;
+            HashSet<string> unloadedResourceIds = GetUnloadedResourceIds();
 
             List<FileSystemNode> roots = await Task.Run(() =>
                 _fileTreeService
-                    .CreateRoots(scope.Resources, databaseSnapshots, diagramLibrary, scope.VirtualFolders)
+                    .CreateRoots(scope.Resources, databaseSnapshots, diagramLibrary, scope.VirtualFolders, unloadedResourceIds)
                     .ToList());
             ScopeReferenceIndex referenceIndex = await Task.Run(() =>
-                _referenceIndexService.Build(scope, databaseSnapshots, codeWindowSettings));
+                _referenceIndexService.Build(scope, databaseSnapshots, codeWindowSettings, unloadedResourceIds));
 
             if (loadVersion != _scopeLoadVersion || !ReferenceEquals(_activeScope, scope))
             {
@@ -513,7 +516,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _referenceIndex = referenceIndex;
             CurrentFolderDisplay = $"Scope: {scope.Name}";
             ApplyReferenceHighlightsToOpenWindows();
-            StatusText = $"Loaded scope '{scope.Name}' with {scope.Resources.Count} resource(s). Indexed {_referenceIndex.EntityCount} definition(s) across {_referenceIndex.IndexedFileCount} file(s).";
+            int loadedResourceCount = scope.Resources.Count(resource => IsScopeResourceLoaded(resource, unloadedResourceIds));
+            StatusText = $"Loaded scope '{scope.Name}' with {loadedResourceCount} of {scope.Resources.Count} resource(s) active. Indexed {_referenceIndex.EntityCount} definition(s) across {_referenceIndex.IndexedFileCount} file(s).";
         }
         finally
         {
@@ -525,7 +529,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         RootNodes.Clear();
 
-        foreach (FileSystemNode node in _fileTreeService.CreateRoots(scope.Resources, _databaseSnapshots, _diagramLibrary, scope.VirtualFolders))
+        foreach (FileSystemNode node in _fileTreeService.CreateRoots(scope.Resources, _databaseSnapshots, _diagramLibrary, scope.VirtualFolders, GetUnloadedResourceIds()))
         {
             RootNodes.Add(node);
         }
@@ -584,13 +588,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ObjectExplorerSearchTarget searchTarget = GetObjectExplorerSearchTarget();
         bool useRegex = ObjectExplorerRegexToggle.IsChecked == true;
         List<ScopedResource> resources = _activeScope.Resources.ToList();
+        HashSet<string> unloadedResourceIds = GetUnloadedResourceIds();
 
         try
         {
             StatusText = $"Searching Object Explorer {searchTarget.ToString().ToLowerInvariant()}...";
             await ShowObjectExplorerLoadingAsync("Searching resources...");
             ObjectExplorerSearchResult result = await Task.Run(() =>
-                _fileTreeService.CreateFilteredRoots(resources, _databaseSnapshots, _diagramLibrary, query, searchTarget, useRegex, _activeScope.VirtualFolders));
+                _fileTreeService.CreateFilteredRoots(resources, _databaseSnapshots, _diagramLibrary, query, searchTarget, useRegex, _activeScope.VirtualFolders, unloadedResourceIds));
 
             RootNodes.Clear();
             foreach (FileSystemNode node in result.Roots)
@@ -641,7 +646,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task InitializeDefaultStartupStateAsync()
     {
-        _workspaceState = new WorkspaceState();
+        _workspaceState = new WorkspaceState
+        {
+            UnloadedResourceIds = GetUnloadedResourceIds().ToList()
+        };
         _canvasZoom = 1;
         _diagramCanvasZoom = 1;
         ApplyCanvasZoom();
@@ -687,6 +695,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!node.IsScopeResourceLoaded)
+        {
+            StatusText = $"Load resource '{node.Name}' before opening it.";
+            return;
+        }
+
         if (DiagramDocumentService.IsDiagramDocumentPath(node.FullPath))
         {
             await OpenDiagramAsync(node.FullPath);
@@ -706,6 +720,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         e.Handled = true;
         item.IsSelected = true;
+        if (!node.IsScopeResourceLoaded)
+        {
+            StatusText = $"Load resource '{node.Name}' before opening it.";
+            return;
+        }
+
         if (DiagramDocumentService.IsDiagramDocumentPath(node.FullPath))
         {
             await OpenDiagramAsync(node.FullPath);
@@ -717,6 +737,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task OpenObjectExplorerNodeAsync(FileSystemNode node)
     {
+        if (!node.IsScopeResourceLoaded)
+        {
+            StatusText = $"Load resource '{node.Name}' before opening it.";
+            return;
+        }
+
         await OpenFileAsync(node.FullPath);
 
         if (!_databaseDocumentService.TryGetTableDataDocumentPathForTableDocument(
@@ -775,14 +801,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         bool canCreateDiagram = string.Equals(node.FullPath, DiagramDocumentService.DiagramRootPath, StringComparison.OrdinalIgnoreCase);
         bool canOpenContainingFolder = CanOpenContainingFolder(node);
         bool canCreateVirtualFolder = _activeScope != null;
-        if (!canCreateDiagram && !canOpenContainingFolder && !canCreateVirtualFolder && !node.IsVirtualFolder)
+        bool canToggleResourceLoad = CanToggleScopeResourceLoad(node);
+        if (!canCreateDiagram && !canOpenContainingFolder && !canCreateVirtualFolder && !node.IsVirtualFolder && !canToggleResourceLoad)
         {
             return null;
         }
 
         var contextMenu = new ContextMenu();
+        if (canToggleResourceLoad)
+        {
+            var loadResourceItem = new MenuItem
+            {
+                Header = node.IsScopeResourceLoaded ? "Unload" : "Load"
+            };
+            loadResourceItem.Click += async (_, _) => await SetScopeResourceLoadedAsync(node.ScopeResourceId, !node.IsScopeResourceLoaded);
+            contextMenu.Items.Add(loadResourceItem);
+        }
+
         if (node.IsVirtualFolder)
         {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
             var disbandVirtualFolderItem = new MenuItem
             {
                 Header = "Disband"
@@ -805,7 +847,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             newVirtualFolderHereItem.Click += async (_, _) => await CreateVirtualFolderAsync(node.NaturalParentKey);
             contextMenu.Items.Add(newVirtualFolderHereItem);
 
-            if (node.IsDirectory && !node.IsVirtualFolder)
+            if (node.IsDirectory && !node.IsVirtualFolder && node.IsScopeResourceLoaded)
             {
                 var newVirtualFolderInsideItem = new MenuItem
                 {
@@ -848,6 +890,75 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return contextMenu;
+    }
+
+    private bool CanToggleScopeResourceLoad(FileSystemNode node)
+    {
+        return _activeScope != null &&
+               node.IsScopeResourceRoot &&
+               !string.IsNullOrWhiteSpace(node.ScopeResourceId) &&
+               _activeScope.Resources.Any(resource =>
+                   string.Equals(resource.ResourceId, node.ScopeResourceId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task SetScopeResourceLoadedAsync(string resourceId, bool isLoaded)
+    {
+        if (_activeScope == null)
+        {
+            return;
+        }
+
+        ScopedResource? resource = _activeScope.Resources.FirstOrDefault(candidate =>
+            string.Equals(candidate.ResourceId, resourceId, StringComparison.OrdinalIgnoreCase));
+        if (resource == null)
+        {
+            StatusText = "Resource no longer exists in the active scope.";
+            return;
+        }
+
+        NormalizeUnloadedResourceIds();
+        List<string> unloadedResourceIds = _workspaceState.UnloadedResourceIds;
+        unloadedResourceIds.RemoveAll(id => string.Equals(id, resource.ResourceId, StringComparison.OrdinalIgnoreCase));
+        if (!isLoaded)
+        {
+            unloadedResourceIds.Add(resource.ResourceId);
+        }
+
+        NormalizeUnloadedResourceIds();
+        RebuildReferenceIndexForActiveScope();
+        ApplyReferenceHighlightsToOpenWindows();
+        ApplyReferenceHighlightsToPreview();
+        await SaveWorkspaceStateAsync();
+        await RefreshObjectExplorerForVirtualFolderChangeAsync();
+
+        string action = isLoaded ? "Loaded" : "Unloaded";
+        StatusText = $"{action} resource '{GetReferenceResourceDisplayName(resource)}'.";
+    }
+
+    private HashSet<string> GetUnloadedResourceIds()
+    {
+        return (_workspaceState.UnloadedResourceIds ?? [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private bool IsScopeResourceLoaded(ScopedResource resource)
+    {
+        return IsScopeResourceLoaded(resource, GetUnloadedResourceIds());
+    }
+
+    private static bool IsScopeResourceLoaded(ScopedResource resource, IReadOnlySet<string> unloadedResourceIds)
+    {
+        return string.IsNullOrWhiteSpace(resource.ResourceId) ||
+               !unloadedResourceIds.Contains(resource.ResourceId);
+    }
+
+    private void NormalizeUnloadedResourceIds()
+    {
+        _workspaceState.UnloadedResourceIds = (_workspaceState.UnloadedResourceIds ?? [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private void ObjectExplorer_ContextMenuOpening(object sender, ContextMenuEventArgs e)
@@ -2323,6 +2434,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SetActiveWorkspaceView(WorkspaceViewKind.Code);
         StopCodeShiftPan();
         StopCodeCtrlShiftZoom();
+
+        FrameworkElement? floatingWindow = GetFloatingCodeViewWindowFromEvent(e);
+        if (_codeViewMode == CodeViewMode.Canvas &&
+            e.ChangedButton == MouseButton.Left &&
+            IsMouseEventInsideElement(e, WorkspaceScrollViewer) &&
+            floatingWindow == null)
+        {
+            SetActiveCodeWindow(null);
+        }
+
+        if (floatingWindow != null)
+        {
+            return;
+        }
+
         if (TryHandleControlCodeCanvasPan(e))
         {
             e.Handled = true;
@@ -2331,6 +2457,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CodeViewHost_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (IsMouseEventOverActiveCodeWindow(e))
+        {
+            _isControlPanningCodeCanvas = false;
+            StopCodeShiftPan();
+            StopCodeCtrlShiftZoom();
+            return;
+        }
+
         if (TryHandleCodeCanvasCtrlShiftZoom(e))
         {
             e.Handled = true;
@@ -2354,6 +2488,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SetActiveWorkspaceView(WorkspaceViewKind.Code);
         StopCodeShiftPan();
         StopCodeCtrlShiftZoom();
+
+        if (IsMouseEventOverActiveCodeWindow(e))
+        {
+            return;
+        }
+    }
+
+    private FloatingCodeWindow? GetFloatingCodeWindowFromEvent(MouseEventArgs e)
+    {
+        return FindAncestor<FloatingCodeWindow>(e.OriginalSource as DependencyObject);
+    }
+
+    private FrameworkElement? GetFloatingCodeViewWindowFromEvent(MouseEventArgs e)
+    {
+        DependencyObject? source = e.OriginalSource as DependencyObject;
+        return FindAncestor<FloatingCodeWindow>(source) ??
+               (FrameworkElement?)FindAncestor<FloatingSpreadsheetWindow>(source);
+    }
+
+    private bool IsMouseEventOverActiveCodeWindow(MouseEventArgs e)
+    {
+        return _activeCodeWindow != null &&
+               ReferenceEquals(GetFloatingCodeWindowFromEvent(e), _activeCodeWindow);
+    }
+
+    private bool IsMouseOverActiveCodeWindow()
+    {
+        return _activeCodeWindow?.IsMouseOver == true;
     }
 
     private void DiagramViewHost_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -2597,6 +2759,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _codeViewMode != CodeViewMode.Canvas ||
             WorkspaceScrollViewer == null ||
             WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            IsMouseEventOverActiveCodeWindow(e) ||
             _isCanvasPanning ||
             e.LeftButton != MouseButtonState.Released ||
             e.MiddleButton != MouseButtonState.Released ||
@@ -2645,6 +2808,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _codeViewMode != CodeViewMode.Canvas ||
             WorkspaceScrollViewer == null ||
             WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            IsMouseEventOverActiveCodeWindow(e) ||
             _isCanvasPanning ||
             e.LeftButton != MouseButtonState.Released ||
             e.MiddleButton != MouseButtonState.Released ||
@@ -2692,6 +2856,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             WorkspaceScrollViewer == null ||
             WorkspaceScrollViewer.Visibility != Visibility.Visible ||
             !WorkspaceScrollViewer.IsMouseOver ||
+            IsMouseOverActiveCodeWindow() ||
             (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift ||
             (modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
@@ -2725,6 +2890,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             WorkspaceScrollViewer == null ||
             WorkspaceScrollViewer.Visibility != Visibility.Visible ||
             !WorkspaceScrollViewer.IsMouseOver ||
+            IsMouseOverActiveCodeWindow() ||
             (modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
             (modifiers & ModifierKeys.Shift) != ModifierKeys.Shift)
         {
@@ -2794,7 +2960,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_appSettings.KeyboardShortcuts.EnableCanvasCtrlMousePanning != true ||
             _codeViewMode != CodeViewMode.Canvas ||
             WorkspaceScrollViewer == null ||
-            WorkspaceScrollViewer.Visibility != Visibility.Visible)
+            WorkspaceScrollViewer.Visibility != Visibility.Visible ||
+            IsMouseEventOverActiveCodeWindow(e))
         {
             _isControlPanningCodeCanvas = false;
             return false;
@@ -4992,7 +5159,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? existingWindow))
         {
-            BringToFront(existingWindow);
+            ActivateCodeWindow(existingWindow);
             RevealWindow(existingWindow);
             int? existingTargetLineNumber = targetReference?.LineNumber ?? targetLineNumber;
             if (existingTargetLineNumber.HasValue)
@@ -5012,6 +5179,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_openSpreadsheetWindows.TryGetValue(filePath, out FloatingSpreadsheetWindow? existingSpreadsheetWindow))
         {
+            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
             BringToFront(existingSpreadsheetWindow);
             RevealWindow(existingSpreadsheetWindow);
             StatusText = $"Already open: {GetDocumentDisplayName(existingSpreadsheetWindow.State)}";
@@ -5125,7 +5293,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ApplyReferenceHighlights(GetReferenceHighlightStylesForFile(syntaxPath));
         window.CloseRequested += FloatingWindow_CloseRequested;
         window.BoundsChanged += FloatingWindow_BoundsChanged;
-        window.BringToFrontRequested += (_, _) => BringToFront(window);
+        window.ActivationRequested += (_, _) => ActivateCodeWindow(window);
+        window.BringToFrontRequested += (_, _) => ActivateCodeWindow(window);
         window.ReferenceNavigationRequested += FloatingWindow_ReferenceNavigationRequested;
         window.ReferencePreviewRequested += FloatingWindow_ReferencePreviewRequested;
         window.CursorPositionChanged += FloatingWindow_CursorPositionChanged;
@@ -5190,7 +5359,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ApplyGridBackcolor(GetCodeWindowBackcolor(documentPath));
         window.CloseRequested += SpreadsheetWindow_CloseRequested;
         window.BoundsChanged += FloatingWindow_BoundsChanged;
-        window.BringToFrontRequested += (_, _) => BringToFront(window);
+        window.BringToFrontRequested += (_, _) =>
+        {
+            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+            BringToFront(window);
+        };
 
         if (sourceWindow != null && existingState == null)
         {
@@ -5274,6 +5447,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseOpenWindow(FloatingCodeWindow window)
     {
+        if (ReferenceEquals(_activeCodeWindow, window))
+        {
+            SetActiveCodeWindow(null);
+        }
+
         window.LineAddressCopied -= FloatingWindow_LineAddressCopied;
         RemoveWindowFromCodeView(window);
         _openWindows.Remove(window.State.FilePath);
@@ -5316,6 +5494,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             BringToFront(window);
             RevealWindow(window);
+            if (window is FloatingCodeWindow codeWindow)
+            {
+                SetActiveCodeWindow(codeWindow);
+            }
+            else
+            {
+                SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+            }
         }
     }
 
@@ -5340,6 +5526,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (select)
         {
             CodeDocumentsTabControl.SelectedItem = tabItem;
+            if (window is FloatingCodeWindow codeWindow)
+            {
+                SetActiveCodeWindow(codeWindow);
+            }
+            else
+            {
+                SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+            }
         }
     }
 
@@ -6121,7 +6315,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void NavigateToReferenceOccurrence(FloatingCodeWindow window, CodeReferenceOccurrence occurrence)
     {
-        BringToFront(window);
+        ActivateCodeWindow(window);
         ScrollWindowToPositionAndReveal(window, occurrence.LineNumber, occurrence.ColumnNumber, selectLine: true);
         StatusText = $"Scrolled to {occurrence.Target.Kind} reference '{occurrence.Token}' on line {occurrence.LineNumber}.";
     }
@@ -6424,7 +6618,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return _activeScope.Resources
-            .Where(resource => resource.Kind != ResourceKind.Diagram && IsDocumentInScopedResource(resource, documentPath))
+            .Where(resource => resource.Kind != ResourceKind.Diagram &&
+                               IsScopeResourceLoaded(resource) &&
+                               IsDocumentInScopedResource(resource, documentPath))
             .OrderByDescending(GetReferenceResourceSpecificity)
             .ThenBy(resource => resource.DisplayName)
             .Select(CreateReferenceResourceContext)
@@ -7266,6 +7462,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        SetActiveCodeWindow(null);
         _isCanvasPanning = true;
         _canvasPanStartPoint = e.GetPosition(WorkspaceScrollViewer);
         _canvasPanStartHorizontalOffset = WorkspaceScrollViewer.HorizontalOffset;
@@ -7308,6 +7505,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void WorkspaceCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
+        {
+            return;
+        }
+
+        if (IsMouseEventOverActiveCodeWindow(e))
         {
             return;
         }
@@ -10448,6 +10650,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             CodeCanvasZoom = _canvasZoom,
             CodeViewportHorizontalOffset = WorkspaceScrollViewer.HorizontalOffset,
             CodeViewportVerticalOffset = WorkspaceScrollViewer.VerticalOffset,
+            UnloadedResourceIds = GetUnloadedResourceIds().ToList(),
             OpenDocuments = OpenTabs
                 .Select(tab => CloneOpenDocumentState(tab.State))
                 .ToList(),
@@ -10824,13 +11027,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? window))
         {
-            BringToFront(window);
+            ActivateCodeWindow(window);
             RevealWindow(window);
             return;
         }
 
         if (_openSpreadsheetWindows.TryGetValue(filePath, out FloatingSpreadsheetWindow? spreadsheetWindow))
         {
+            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
             BringToFront(spreadsheetWindow);
             RevealWindow(spreadsheetWindow);
         }
@@ -10843,6 +11047,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             CanvasZoom = workbench.CodeCanvasZoom,
             ViewportHorizontalOffset = workbench.CodeViewportHorizontalOffset,
             ViewportVerticalOffset = workbench.CodeViewportVerticalOffset,
+            UnloadedResourceIds = (workbench.UnloadedResourceIds ?? [])
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList(),
             OpenDocuments = new ObservableCollection<OpenDocumentState>(
                 workbench.OpenDocuments.Select(CloneOpenDocumentState))
         };
@@ -10885,6 +11093,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseAllOpenWindows()
     {
+        SetActiveCodeWindow(null);
         WorkspaceCanvas.Children.Clear();
         ClearCodeDocumentTabs();
         _openWindows.Clear();
@@ -10899,6 +11108,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OpenTabsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_isUpdatingOpenTabsSelection)
+        {
+            return;
+        }
+
         if (OpenTabsList.SelectedItem is OpenWindowItem item)
         {
             RevealOpenTab(item);
@@ -10982,11 +11196,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_openWindows.TryGetValue(item.FilePath, out FloatingCodeWindow? remainingWindow))
         {
-            BringToFront(remainingWindow);
+            ActivateCodeWindow(remainingWindow);
             RevealWindow(remainingWindow);
         }
         else if (_openSpreadsheetWindows.TryGetValue(item.FilePath, out FloatingSpreadsheetWindow? remainingSpreadsheetWindow))
         {
+            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
             BringToFront(remainingSpreadsheetWindow);
             RevealWindow(remainingSpreadsheetWindow);
         }
@@ -11006,7 +11221,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (_openWindows.TryGetValue(item.FilePath, out FloatingCodeWindow? window))
         {
-            BringToFront(window);
+            ActivateCodeWindow(window);
             RevealWindow(window);
             StatusText = $"Focused {item.FileName}";
             return;
@@ -11014,9 +11229,63 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_openSpreadsheetWindows.TryGetValue(item.FilePath, out FloatingSpreadsheetWindow? spreadsheetWindow))
         {
+            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
             BringToFront(spreadsheetWindow);
             RevealWindow(spreadsheetWindow);
             StatusText = $"Focused {item.FileName}";
+        }
+    }
+
+    private void ActivateCodeWindow(FloatingCodeWindow window)
+    {
+        SetActiveCodeWindow(window);
+        BringToFront(window);
+        StatusText = $"Focused {GetDocumentDisplayName(window.State)}";
+    }
+
+    private void SetActiveCodeWindow(FloatingCodeWindow? window, bool syncOpenTabsSelection = true)
+    {
+        if (!ReferenceEquals(_activeCodeWindow, window))
+        {
+            if (_activeCodeWindow != null)
+            {
+                _activeCodeWindow.IsActive = false;
+            }
+
+            _activeCodeWindow = window;
+
+            if (_activeCodeWindow != null)
+            {
+                _activeCodeWindow.IsActive = true;
+            }
+        }
+
+        if (syncOpenTabsSelection)
+        {
+            SelectOpenTabForActiveCodeWindow();
+        }
+    }
+
+    private void SelectOpenTabForActiveCodeWindow()
+    {
+        OpenWindowItem? activeItem = _activeCodeWindow == null
+            ? null
+            : OpenTabs.FirstOrDefault(tab =>
+                string.Equals(tab.FilePath, _activeCodeWindow.State.FilePath, StringComparison.OrdinalIgnoreCase));
+
+        if (ReferenceEquals(OpenTabsList.SelectedItem, activeItem))
+        {
+            return;
+        }
+
+        _isUpdatingOpenTabsSelection = true;
+        try
+        {
+            OpenTabsList.SelectedItem = activeItem;
+        }
+        finally
+        {
+            _isUpdatingOpenTabsSelection = false;
         }
     }
 
@@ -11373,6 +11642,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             OpenTabsList.SelectedItem = openTab;
         }
+
+        if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? window))
+        {
+            SetActiveCodeWindow(window);
+        }
+        else if (_openSpreadsheetWindows.ContainsKey(filePath))
+        {
+            SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+        }
     }
 
     private void ApplyDiagramCanvasZoom()
@@ -11664,7 +11942,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _referenceIndex = _activeScope == null
             ? ScopeReferenceIndex.Empty
-            : _referenceIndexService.Build(_activeScope, _databaseSnapshots, _appSettings.CodeWindows);
+            : _referenceIndexService.Build(_activeScope, _databaseSnapshots, _appSettings.CodeWindows, GetUnloadedResourceIds());
     }
 
     private void ApplySettingsToOpenWindows()

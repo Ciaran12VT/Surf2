@@ -34,6 +34,8 @@ public sealed class WorkbenchState
 
     public double CodeViewportVerticalOffset { get; set; }
 
+    public List<string> UnloadedResourceIds { get; set; } = [];
+
     public List<OpenDocumentState> OpenDocuments { get; set; } = [];
 
     public string ActiveDocumentPath { get; set; } = string.Empty;
