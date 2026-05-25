@@ -79,10 +79,27 @@ public partial class ReferencePickerWindow : Window
                 return match;
             }
 
-            current = VisualTreeHelper.GetParent(current);
+            current = GetDependencyParent(current);
         }
 
         return null;
+    }
+
+    private static DependencyObject? GetDependencyParent(DependencyObject dependencyObject)
+    {
+        try
+        {
+            DependencyObject? visualParent = VisualTreeHelper.GetParent(dependencyObject);
+            if (visualParent != null)
+            {
+                return visualParent;
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+
+        return LogicalTreeHelper.GetParent(dependencyObject);
     }
 
     private sealed class ReferencePickerItem

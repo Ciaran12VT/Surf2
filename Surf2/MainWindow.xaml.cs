@@ -407,6 +407,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
 
             RefreshDiagramImageToolMenu();
+            ApplyInternalLoggingSetting("startup settings loaded");
             RefreshSavedWorkbenches();
             await MigrateSavedFolderToDefaultScopeAsync();
 
@@ -699,6 +700,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         e.Handled = true;
         item.IsSelected = true;
+        InternalLogService.Info(
+            "Object Explorer mouse double-click.",
+            ("NodeName", node.Name),
+            ("Path", node.FullPath),
+            ("NodeKey", node.NodeKey),
+            ("IsLoaded", node.IsScopeResourceLoaded),
+            ("IsDiagram", DiagramDocumentService.IsDiagramDocumentPath(node.FullPath)),
+            ("OriginalSource", e.OriginalSource?.GetType().FullName));
+
         if (!node.IsScopeResourceLoaded)
         {
             StatusText = $"Load resource '{node.Name}' before opening it.";
@@ -724,6 +734,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         e.Handled = true;
         item.IsSelected = true;
+        InternalLogService.Info(
+            "Object Explorer item preview double-click.",
+            ("NodeName", node.Name),
+            ("Path", node.FullPath),
+            ("NodeKey", node.NodeKey),
+            ("IsLoaded", node.IsScopeResourceLoaded),
+            ("IsDiagram", DiagramDocumentService.IsDiagramDocumentPath(node.FullPath)),
+            ("OriginalSource", e.OriginalSource?.GetType().FullName));
+
         if (!node.IsScopeResourceLoaded)
         {
             StatusText = $"Load resource '{node.Name}' before opening it.";
@@ -741,12 +760,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task OpenObjectExplorerDiagramNodeAsync(FileSystemNode node)
     {
+        InternalLogService.Info(
+            "Opening Object Explorer diagram node.",
+            ("NodeName", node.Name),
+            ("Path", node.FullPath),
+            ("NodeKey", node.NodeKey));
+
         try
         {
             await OpenDiagramAsync(node.FullPath);
+            InternalLogService.Info(
+                "Opened Object Explorer diagram node.",
+                ("NodeName", node.Name),
+                ("Path", node.FullPath),
+                ("NodeKey", node.NodeKey));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        catch (Exception ex)
         {
+            InternalLogService.Error(
+                ex,
+                "Failed to open Object Explorer diagram node.",
+                ("NodeName", node.Name),
+                ("Path", node.FullPath),
+                ("NodeKey", node.NodeKey));
             StatusText = $"Could not open {node.Name}: {ex.Message}";
         }
     }
@@ -756,20 +792,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string nodeKey = string.IsNullOrWhiteSpace(node.NodeKey) ? node.FullPath : node.NodeKey;
         if (!_openingObjectExplorerNodeKeys.Add(nodeKey))
         {
+            InternalLogService.Warning(
+                "Skipped duplicate Object Explorer node open.",
+                ("NodeName", node.Name),
+                ("Path", node.FullPath),
+                ("NodeKey", nodeKey));
             return;
         }
+
+        InternalLogService.Info(
+            "Opening Object Explorer node.",
+            ("NodeName", node.Name),
+            ("Path", node.FullPath),
+            ("NodeKey", nodeKey),
+            ("OpenTabsCount", OpenTabs.Count),
+            ("CodeViewMode", _codeViewMode));
 
         try
         {
             await OpenObjectExplorerNodeAsync(node);
+            InternalLogService.Info(
+                "Opened Object Explorer node.",
+                ("NodeName", node.Name),
+                ("Path", node.FullPath),
+                ("NodeKey", nodeKey),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or NotSupportedException)
+        catch (Exception ex)
         {
+            InternalLogService.Error(
+                ex,
+                "Failed to open Object Explorer node.",
+                ("NodeName", node.Name),
+                ("Path", node.FullPath),
+                ("NodeKey", nodeKey),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode));
             StatusText = $"Could not open {node.Name}: {ex.Message}";
         }
         finally
         {
             _openingObjectExplorerNodeKeys.Remove(nodeKey);
+            InternalLogService.Info(
+                "Finished Object Explorer node open attempt.",
+                ("NodeName", node.Name),
+                ("Path", node.FullPath),
+                ("NodeKey", nodeKey),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode));
         }
     }
 
@@ -10528,6 +10599,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         bool connectionSettingsChanged = settingsWindow.ConnectionSettingsWereChanged;
         _appSettings = settingsWindow.Settings;
         _appSettings.EnsureDefaults();
+        ApplyInternalLoggingSetting("settings saved");
         await _settingsStore.SaveAsync(_appSettings);
         RebuildReferenceIndexForActiveScope();
         ApplySettingsToOpenWindows();
@@ -10543,6 +10615,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = connectionSettingsChanged
             ? "Settings saved. Persistence connection changes apply next time Surf2 starts."
             : "Settings saved.";
+    }
+
+    private void ApplyInternalLoggingSetting(string source)
+    {
+        _appSettings.Diagnostics ??= new DiagnosticsSettings();
+        InternalLogService.Configure(_appSettings.Diagnostics.EnableInternalLogging);
+        InternalLogService.Info(
+            "Applied internal logging setting.",
+            ("Source", source),
+            ("Enabled", _appSettings.Diagnostics.EnableInternalLogging),
+            ("LogFile", InternalLogService.IsEnabled ? InternalLogService.LogFilePath : "<disabled>"),
+            ("LogDirectory", InternalLogService.IsEnabled ? InternalLogService.LogDirectory : "<disabled>"));
     }
 
     private async void SaveWorkbenchButton_Click(object sender, RoutedEventArgs e)
@@ -11159,6 +11243,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (OpenTabsList.SelectedItem is OpenWindowItem item)
         {
+            InternalLogService.Info(
+                "Open tabs list selection changed.",
+                ("FileName", item.FileName),
+                ("Path", item.FilePath),
+                ("SelectedIndex", OpenTabsList.SelectedIndex),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode),
+                ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
             RevealOpenTabSafely(item);
         }
     }
@@ -11168,6 +11260,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ListBoxItem? listBoxItem = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
         if (listBoxItem?.DataContext is OpenWindowItem item)
         {
+            InternalLogService.Info(
+                "Open tabs list mouse button up.",
+                ("FileName", item.FileName),
+                ("Path", item.FilePath),
+                ("SelectedIndex", OpenTabsList.SelectedIndex),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode),
+                ("OriginalSource", e.OriginalSource?.GetType().FullName));
             RevealOpenTabSafely(item);
         }
     }
@@ -11191,6 +11291,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (listBoxItem.DataContext is OpenWindowItem item)
         {
+            InternalLogService.Info(
+                "Open tabs list right button down.",
+                ("FileName", item.FileName),
+                ("Path", item.FilePath),
+                ("SelectedIndex", OpenTabsList.SelectedIndex),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode),
+                ("OriginalSource", e.OriginalSource?.GetType().FullName));
             RevealOpenTabSafely(item);
         }
     }
@@ -11282,13 +11390,39 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RevealOpenTabSafely(OpenWindowItem item)
     {
+        InternalLogService.Info(
+            "Revealing open tab.",
+            ("FileName", item.FileName),
+            ("Path", item.FilePath),
+            ("OpenTabsCount", OpenTabs.Count),
+            ("CodeWindowExists", _openWindows.ContainsKey(item.FilePath)),
+            ("SpreadsheetWindowExists", _openSpreadsheetWindows.ContainsKey(item.FilePath)),
+            ("CodeViewMode", _codeViewMode),
+            ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
+
         try
         {
             RevealOpenTab(item);
+            InternalLogService.Info(
+                "Revealed open tab.",
+                ("FileName", item.FileName),
+                ("Path", item.FilePath),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode),
+                ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Could not focus open tab '{item.FilePath}': {ex}");
+            InternalLogService.Error(
+                ex,
+                "Failed to reveal open tab.",
+                ("FileName", item.FileName),
+                ("Path", item.FilePath),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeWindowExists", _openWindows.ContainsKey(item.FilePath)),
+                ("SpreadsheetWindowExists", _openSpreadsheetWindows.ContainsKey(item.FilePath)),
+                ("CodeViewMode", _codeViewMode),
+                ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
             StatusText = $"Could not focus {item.FileName}: {ex.Message}";
         }
     }
@@ -11339,6 +11473,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             return;
         }
+
+        InternalLogService.Info(
+            "Selecting open tab item.",
+            ("FileName", item?.FileName),
+            ("Path", item?.FilePath),
+            ("OpenTabsCount", OpenTabs.Count),
+            ("CodeViewMode", _codeViewMode),
+            ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
 
         _isUpdatingOpenTabsSelection = true;
         try
@@ -11396,11 +11538,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         TabItem? tabItem = FindCodeDocumentTab(filePath);
         if (tabItem == null)
         {
+            InternalLogService.Warning(
+                "Could not find code document tab to select.",
+                ("Path", filePath),
+                ("TabCount", CodeDocumentsTabControl.Items.Count),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("CodeViewMode", _codeViewMode));
             return false;
         }
 
         if (!ReferenceEquals(CodeDocumentsTabControl.SelectedItem, tabItem))
         {
+            InternalLogService.Info(
+                "Selecting code document tab.",
+                ("Path", filePath),
+                ("TabCount", CodeDocumentsTabControl.Items.Count),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("SelectedIndex", CodeDocumentsTabControl.SelectedIndex),
+                ("CodeViewMode", _codeViewMode),
+                ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
             CodeDocumentsTabControl.SelectedItem = tabItem;
         }
 
@@ -11704,6 +11860,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
+            InternalLogService.Info(
+                "Code documents tab selection changed.",
+                ("Path", filePath),
+                ("SelectedIndex", CodeDocumentsTabControl.SelectedIndex),
+                ("TabCount", CodeDocumentsTabControl.Items.Count),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("OpenCodeWindows", _openWindows.Count),
+                ("OpenSpreadsheetWindows", _openSpreadsheetWindows.Count),
+                ("CodeViewMode", _codeViewMode),
+                ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
+
             OpenWindowItem? openTab = OpenTabs.FirstOrDefault(tab =>
                 string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
 
@@ -11721,7 +11888,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Could not switch code document tab '{filePath}': {ex}");
+            InternalLogService.Error(
+                ex,
+                "Failed to switch code document tab.",
+                ("Path", filePath),
+                ("SelectedIndex", CodeDocumentsTabControl.SelectedIndex),
+                ("TabCount", CodeDocumentsTabControl.Items.Count),
+                ("OpenTabsCount", OpenTabs.Count),
+                ("OpenCodeWindows", _openWindows.Count),
+                ("OpenSpreadsheetWindows", _openSpreadsheetWindows.Count),
+                ("CodeViewMode", _codeViewMode),
+                ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
             StatusText = $"Could not switch tab: {ex.Message}";
         }
     }
@@ -12477,6 +12654,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {
+        InternalLogService.Info(
+            "MainWindow closing.",
+            ("ShutdownSaveCompleted", _shutdownSaveCompleted),
+            ("ShutdownRequested", _shutdownRequested),
+            ("OpenTabsCount", OpenTabs.Count),
+            ("OpenCodeWindows", _openWindows.Count),
+            ("OpenSpreadsheetWindows", _openSpreadsheetWindows.Count),
+            ("CodeViewMode", _codeViewMode),
+            ("ActiveCodeWindow", _activeCodeWindow?.State.FilePath));
+
         if (_shutdownSaveCompleted)
         {
             return;
@@ -12499,14 +12686,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             await SaveApplicationStateForShutdownAsync();
+            InternalLogService.Info("Saved application state during shutdown.");
         }
-        catch
+        catch (Exception ex)
         {
+            InternalLogService.Error(ex, "Failed to save application state during shutdown.");
             // Avoid blocking application shutdown if persistence fails.
         }
         finally
         {
             _shutdownSaveCompleted = true;
+            InternalLogService.Info("Closing MainWindow after shutdown save attempt.");
             Close();
         }
     }
@@ -12526,7 +12716,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return match;
             }
 
-            current = VisualTreeHelper.GetParent(current);
+            current = GetDependencyParent(current);
         }
 
         return null;

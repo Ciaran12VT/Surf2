@@ -10,6 +10,8 @@ public sealed class AppSettings
 
     public KeyboardShortcutSettings KeyboardShortcuts { get; set; } = new();
 
+    public DiagnosticsSettings Diagnostics { get; set; } = new();
+
     public bool LoadMostRecentWorkbenchOnStartup { get; set; }
 
     public bool EnsureDefaults()
@@ -39,6 +41,12 @@ public sealed class AppSettings
             changed = true;
         }
 
+        if (Diagnostics == null)
+        {
+            Diagnostics = new DiagnosticsSettings();
+            changed = true;
+        }
+
         changed |= CodeWindows.EnsureDefaultBackcolorEntries();
         changed |= ReferenceHighlights.EnsureDefaultStyleEntries();
         return changed;
@@ -50,6 +58,7 @@ public sealed class AppSettings
         ReferenceHighlights ??= new ReferenceHighlightSettings();
         DiagramImages ??= new DiagramImageSettings();
         KeyboardShortcuts ??= new KeyboardShortcutSettings();
+        Diagnostics ??= new DiagnosticsSettings();
         CodeWindows.BackcolorsByExtension ??= [];
         ReferenceHighlights.Styles ??= [];
         DiagramImages.Images ??= [];
@@ -76,7 +85,21 @@ public sealed class AppSettings
                     .ToList()
             },
             DiagramImages = DiagramImages.Clone(),
-            KeyboardShortcuts = KeyboardShortcuts.Clone()
+            KeyboardShortcuts = KeyboardShortcuts.Clone(),
+            Diagnostics = Diagnostics.Clone()
+        };
+    }
+}
+
+public sealed class DiagnosticsSettings
+{
+    public bool EnableInternalLogging { get; set; }
+
+    public DiagnosticsSettings Clone()
+    {
+        return new DiagnosticsSettings
+        {
+            EnableInternalLogging = EnableInternalLogging
         };
     }
 }

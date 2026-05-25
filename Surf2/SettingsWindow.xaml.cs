@@ -67,6 +67,7 @@ public partial class SettingsWindow : Window
         DiagramImageList.ItemsSource = _diagramImages;
         LoadConnectionSettings();
         LoadKeyboardShortcutSettings();
+        LoadDiagnosticsSettings();
         LoadMostRecentWorkbenchCheckBox.IsChecked = Settings.LoadMostRecentWorkbenchOnStartup;
 
         if (_backcolors.Count > 0)
@@ -112,7 +113,8 @@ public partial class SettingsWindow : Window
             DiagramImageSettingsPanel == null ||
             KeyboardShortcutSettingsPanel == null ||
             WorkbenchSettingsPanel == null ||
-            PersistenceSettingsPanel == null)
+            PersistenceSettingsPanel == null ||
+            DiagnosticsSettingsPanel == null)
         {
             return;
         }
@@ -123,6 +125,7 @@ public partial class SettingsWindow : Window
         KeyboardShortcutSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
         WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
         PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
+        DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 6 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -290,6 +293,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
     }
@@ -400,6 +404,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
     }
@@ -586,6 +591,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
     }
@@ -783,6 +789,7 @@ public partial class SettingsWindow : Window
         ConnectionSettingsWereChanged = true;
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
 
         DialogResult = true;
         Close();
@@ -799,6 +806,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
     }
@@ -814,6 +822,23 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
+        DialogResult = true;
+        Close();
+    }
+
+    private void SaveDiagnosticsSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveBackcolorSettings() ||
+            !SaveReferenceHighlightSettings(validateActive: false) ||
+            !SaveDiagramImageSettings(validateActive: false))
+        {
+            return;
+        }
+
+        SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
     }
@@ -860,6 +885,18 @@ public partial class SettingsWindow : Window
     private void SaveWorkbenchSettings()
     {
         Settings.LoadMostRecentWorkbenchOnStartup = LoadMostRecentWorkbenchCheckBox.IsChecked == true;
+    }
+
+    private void LoadDiagnosticsSettings()
+    {
+        Settings.Diagnostics ??= new DiagnosticsSettings();
+        EnableInternalLoggingCheckBox.IsChecked = Settings.Diagnostics.EnableInternalLogging;
+    }
+
+    private void SaveDiagnosticsSettings()
+    {
+        Settings.Diagnostics ??= new DiagnosticsSettings();
+        Settings.Diagnostics.EnableInternalLogging = EnableInternalLoggingCheckBox.IsChecked == true;
     }
 
     private bool SaveBackcolorSettings()

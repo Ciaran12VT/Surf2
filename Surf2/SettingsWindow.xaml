@@ -92,6 +92,7 @@
                 <ListBoxItem Content="Keyboard Shortcuts" />
                 <ListBoxItem Content="Workbench" />
                 <ListBoxItem Content="Persistence" />
+                <ListBoxItem Content="Diagnostics" />
             </ListBox>
         </Grid>
 
@@ -770,6 +771,49 @@
                                 Margin="0,0,8,0"
                                 Style="{StaticResource SettingsSaveButtonStyle}"
                                 Click="SaveWorkbenchSettingsButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
+
+            <Grid x:Name="DiagnosticsSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Diagnostics" />
+
+                <CheckBox x:Name="EnableInternalLoggingCheckBox"
+                          Grid.Row="1"
+                          Margin="0,14,0,0"
+                          Content="Enable internal logging" />
+
+                <Border Grid.Row="2"
+                        Margin="0,14,0,0"
+                        Padding="10"
+                        BorderBrush="#D7DCE2"
+                        BorderThickness="1"
+                        Background="#F8FAFC">
+                    <TextBlock TextWrapping="Wrap"
+                               Text="When enabled, Surf2 writes internal diagnostic logs to an internal-logs folder beside the app or to the per-user fallback location if that folder is not writable." />
+                </Border>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveDiagnosticsSettingsButton_Click"
                                 Content="Save" />
                         <Button Width="86"
                                 Style="{StaticResource SettingsCloseButtonStyle}"
