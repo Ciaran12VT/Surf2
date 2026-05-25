@@ -194,6 +194,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly IDiagramStore _diagramStore = new SqlServerDiagramStore();
     private readonly IWorkbenchStore _workbenchStore = new SqlServerWorkbenchStore();
     private readonly DatabaseDocumentService _databaseDocumentService = new();
+    private readonly DatabaseMetadataImportService _databaseMetadataImportService = new();
     private readonly Dictionary<string, FloatingCodeWindow> _openWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FloatingSpreadsheetWindow> _openSpreadsheetWindows = new(StringComparer.OrdinalIgnoreCase);
 
@@ -396,6 +397,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _workbenchLibrary = await _workbenchStore.LoadAsync();
             bool workbenchLibraryChanged = NormalizeWorkbenchLibrary();
             _appSettings = await _settingsStore.LoadAsync();
+            bool databaseSnapshotsChanged = NormalizeDatabaseSnapshots();
             if (_appSettings.EnsureDefaults())
             {
                 await _settingsStore.SaveAsync(_appSettings);
@@ -404,6 +406,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (workbenchLibraryChanged)
             {
                 await _workbenchStore.SaveAsync(_workbenchLibrary);
+            }
+
+            if (databaseSnapshotsChanged)
+            {
+                await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
             }
 
             RefreshDiagramImageToolMenu();
@@ -11077,6 +11084,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 workbench.ScopeName = "No scope";
                 changed = true;
             }
+        }
+
+        return changed;
+    }
+
+    private bool NormalizeDatabaseSnapshots()
+    {
+        bool changed = false;
+        foreach (DatabaseMetadataSnapshot snapshot in _databaseSnapshots.Snapshots)
+        {
+            changed |= _databaseMetadataImportService.NormalizeSnapshot(snapshot);
         }
 
         return changed;

@@ -208,8 +208,8 @@
                             Width="92"
                             Margin="0,0,6,0"
                             Style="{StaticResource ScopePrimaryButtonStyle}"
-                            Click="RenameResourceButton_Click"
-                            Content="Rename" />
+                            Click="EditResourceButton_Click"
+                            Content="Edit" />
                     <Button Grid.Column="5"
                             Width="92"
                             Margin="0,0,12,0"

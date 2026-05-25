@@ -38,6 +38,7 @@ public sealed class DatabaseMetadataImportService
         }
 
         ApplyDataSetCounts(snapshot);
+        ApplyFullDataTableNames(snapshot);
         if (string.IsNullOrWhiteSpace(snapshot.DisplayName))
         {
             snapshot.DisplayName = string.IsNullOrWhiteSpace(snapshot.DatabaseName)
@@ -47,6 +48,18 @@ public sealed class DatabaseMetadataImportService
 
         result.Snapshot = snapshot;
         return result;
+    }
+
+    public bool NormalizeSnapshot(DatabaseMetadataSnapshot snapshot)
+    {
+        int originalDataSetCount = snapshot.TableDataSets.Count;
+        List<string> originalFullDataTableNames = (snapshot.FullDataTableNames ?? []).ToList();
+        MergeDuplicateDataSets(snapshot);
+        ApplyDataSetCounts(snapshot);
+        ApplyFullDataTableNames(snapshot);
+
+        return originalDataSetCount != snapshot.TableDataSets.Count ||
+               !originalFullDataTableNames.SequenceEqual(snapshot.FullDataTableNames ?? [], StringComparer.OrdinalIgnoreCase);
     }
 
     private static Dictionary<string, List<ImportChunk>> ReadChunks(string clipboardText, List<string> warnings)
@@ -174,7 +187,13 @@ public sealed class DatabaseMetadataImportService
                 {
                     dataSet.SchemaName = NormalizeSchema(dataSet.SchemaName);
                     dataSet.ImportedAtUtc = snapshot.ImportedAtUtc;
-                    snapshot.TableDataSets.Add(dataSet);
+                    SqlTableDataSet existingDataSet = GetOrCreateDataSet(snapshot, dataSet.SchemaName, dataSet.TableName);
+                    existingDataSet.RowCount = Math.Max(dataSet.RowCount, existingDataSet.Rows.Count);
+                    existingDataSet.ImportedAtUtc = dataSet.ImportedAtUtc;
+                    if (dataSet.Rows.Count > 0)
+                    {
+                        existingDataSet.Rows = dataSet.Rows.Select(row => row.Clone()).ToList();
+                    }
                 }
 
                 break;
@@ -199,6 +218,15 @@ public sealed class DatabaseMetadataImportService
 
     private static void ApplyDataSetCounts(DatabaseMetadataSnapshot snapshot)
     {
+        MergeDuplicateDataSets(snapshot);
+
+        foreach (SqlTable table in snapshot.Tables)
+        {
+            table.HasFullData = false;
+            table.FullDataRowCount = 0;
+            table.FullDataImportedAtUtc = null;
+        }
+
         foreach (SqlTableDataSet dataSet in snapshot.TableDataSets)
         {
             if (dataSet.RowCount <= 0)
@@ -217,6 +245,58 @@ public sealed class DatabaseMetadataImportService
                 table.FullDataImportedAtUtc = dataSet.ImportedAtUtc;
             }
         }
+    }
+
+    private static void MergeDuplicateDataSets(DatabaseMetadataSnapshot snapshot)
+    {
+        if (snapshot.TableDataSets.Count < 2)
+        {
+            return;
+        }
+
+        snapshot.TableDataSets = snapshot.TableDataSets
+            .GroupBy(
+                dataSet => $"{NormalizeSchema(dataSet.SchemaName)}|{dataSet.TableName}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                SqlTableDataSet rowSource = group
+                    .OrderByDescending(dataSet => dataSet.Rows.Count)
+                    .First();
+                long rowCount = group
+                    .Select(dataSet => Math.Max(dataSet.RowCount, dataSet.Rows.Count))
+                    .DefaultIfEmpty(0)
+                    .Max();
+
+                return new SqlTableDataSet
+                {
+                    SchemaName = NormalizeSchema(rowSource.SchemaName),
+                    TableName = rowSource.TableName,
+                    RowCount = rowCount,
+                    ImportedAtUtc = group.Max(dataSet => dataSet.ImportedAtUtc),
+                    Rows = rowSource.Rows.Select(row => row.Clone()).ToList()
+                };
+            })
+            .OrderBy(dataSet => dataSet.SchemaName)
+            .ThenBy(dataSet => dataSet.TableName)
+            .ToList();
+    }
+
+    private static void ApplyFullDataTableNames(DatabaseMetadataSnapshot snapshot)
+    {
+        snapshot.FullDataTableNames ??= [];
+        List<string> importedFullDataTables = snapshot.TableDataSets
+            .Select(dataSet => SqlName.FormatPlainMultipartName(dataSet.SchemaName, dataSet.TableName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        snapshot.FullDataTableNames = snapshot.FullDataTableNames
+            .Concat(importedFullDataTables)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static SqlTableDataSet GetOrCreateDataSet(DatabaseMetadataSnapshot snapshot, string schemaName, string tableName)

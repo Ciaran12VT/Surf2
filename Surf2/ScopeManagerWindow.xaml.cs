@@ -193,11 +193,17 @@ public partial class ScopeManagerWindow : Window
         AddResource(scope, ResourceKind.DatabaseSnapshot, snapshot.SnapshotId, snapshot.DisplayName, snapshot.DatabaseName);
     }
 
-    private void RenameResourceButton_Click(object sender, RoutedEventArgs e)
+    private void EditResourceButton_Click(object sender, RoutedEventArgs e)
     {
         if (ResourceList.SelectedItem is not ScopedResource resource)
         {
-            StatusTextBlock.Text = "Select a resource to rename.";
+            StatusTextBlock.Text = "Select a resource to edit.";
+            return;
+        }
+
+        if (resource.Kind == ResourceKind.DatabaseSnapshot)
+        {
+            EditDatabaseResource(resource);
             return;
         }
 
@@ -214,7 +220,42 @@ public partial class ScopeManagerWindow : Window
         resource.DisplayNameOverride = renameWindow.ResourceName;
         ResourceList.Items.Refresh();
         WasChanged = true;
-        StatusTextBlock.Text = "Renamed resource.";
+        StatusTextBlock.Text = "Edited resource.";
+    }
+
+    private void EditDatabaseResource(ScopedResource resource)
+    {
+        DatabaseMetadataSnapshot? snapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+            string.Equals(candidate.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase));
+        if (snapshot == null)
+        {
+            StatusTextBlock.Text = "Could not find the database snapshot for this resource.";
+            return;
+        }
+
+        var databaseWindow = new DatabaseResourceWindow(snapshot)
+        {
+            Owner = this
+        };
+
+        if (databaseWindow.ShowDialog() != true || databaseWindow.Snapshot == null)
+        {
+            return;
+        }
+
+        DatabaseMetadataSnapshot updatedSnapshot = databaseWindow.Snapshot;
+        updatedSnapshot.SnapshotId = snapshot.SnapshotId;
+        int index = _databaseSnapshots.Snapshots.IndexOf(snapshot);
+        if (index >= 0)
+        {
+            _databaseSnapshots.Snapshots[index] = updatedSnapshot;
+        }
+
+        resource.DisplayNameOverride = updatedSnapshot.DisplayName;
+        resource.DetailsOverride = updatedSnapshot.DatabaseName;
+        ResourceList.Items.Refresh();
+        WasChanged = true;
+        StatusTextBlock.Text = $"Edited database resource '{updatedSnapshot.DisplayName}'.";
     }
 
     private void RemoveResourceButton_Click(object sender, RoutedEventArgs e)

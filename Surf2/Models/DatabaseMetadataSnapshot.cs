@@ -23,6 +23,8 @@ public sealed class DatabaseMetadataSnapshot
 
     public List<SqlTableDataSet> TableDataSets { get; set; } = [];
 
+    public List<string> FullDataTableNames { get; set; } = [];
+
     [JsonIgnore]
     public DatabaseImportCounts Counts => DatabaseImportCounts.FromSnapshot(this);
 
@@ -32,6 +34,77 @@ public sealed class DatabaseMetadataSnapshot
             string.Equals(dataSet.SchemaName, schemaName, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(dataSet.TableName, tableName, StringComparison.OrdinalIgnoreCase));
     }
+
+    public DatabaseMetadataSnapshot Clone()
+    {
+        return new DatabaseMetadataSnapshot
+        {
+            SnapshotId = SnapshotId,
+            DisplayName = DisplayName,
+            DatabaseName = DatabaseName,
+            ImportedAtUtc = ImportedAtUtc,
+            Objects = Objects.Select(item => new SqlDatabaseObject
+            {
+                SchemaName = item.SchemaName,
+                ObjectName = item.ObjectName,
+                Kind = item.Kind,
+                TypeDescription = item.TypeDescription,
+                Definition = item.Definition,
+                ParentSchemaName = item.ParentSchemaName,
+                ParentObjectName = item.ParentObjectName
+            }).ToList(),
+            Tables = Tables.Select(table => new SqlTable
+            {
+                SchemaName = table.SchemaName,
+                TableName = table.TableName,
+                HasFullData = table.HasFullData,
+                FullDataRowCount = table.FullDataRowCount,
+                FullDataImportedAtUtc = table.FullDataImportedAtUtc
+            }).ToList(),
+            Columns = Columns.Select(column => new SqlColumn
+            {
+                SchemaName = column.SchemaName,
+                TableName = column.TableName,
+                ColumnName = column.ColumnName,
+                DataType = column.DataType,
+                MaxLength = column.MaxLength,
+                NumericPrecision = column.NumericPrecision,
+                NumericScale = column.NumericScale,
+                IsNullable = column.IsNullable,
+                IsIdentity = column.IsIdentity,
+                Ordinal = column.Ordinal
+            }).ToList(),
+            PrimaryKeys = PrimaryKeys.Select(primaryKey => new SqlPrimaryKeyColumn
+            {
+                SchemaName = primaryKey.SchemaName,
+                TableName = primaryKey.TableName,
+                ConstraintName = primaryKey.ConstraintName,
+                ColumnName = primaryKey.ColumnName,
+                KeyOrdinal = primaryKey.KeyOrdinal
+            }).ToList(),
+            TableDataSets = TableDataSets.Select(dataSet => new SqlTableDataSet
+            {
+                SchemaName = dataSet.SchemaName,
+                TableName = dataSet.TableName,
+                RowCount = dataSet.RowCount,
+                ImportedAtUtc = dataSet.ImportedAtUtc,
+                Rows = dataSet.Rows.Select(row => row.Clone()).ToList()
+            }).ToList(),
+            FullDataTableNames = (FullDataTableNames ?? []).ToList()
+        };
+    }
+}
+
+public enum DatabaseEntityEditKind
+{
+    StoredProcedures,
+    Views,
+    Functions,
+    Triggers,
+    Tables,
+    Fields,
+    PrimaryKeys,
+    FullDataTables
 }
 
 public sealed class SqlDatabaseObject
@@ -169,8 +242,13 @@ public sealed class DatabaseImportCounts
             Tables = snapshot.Tables.Count,
             Fields = snapshot.Columns.Count,
             PrimaryKeys = snapshot.PrimaryKeys.Select(key => $"{key.SchemaName}.{key.TableName}.{key.ConstraintName}").Distinct(StringComparer.OrdinalIgnoreCase).Count(),
-            FullDataTables = snapshot.TableDataSets.Count,
-            DataRows = snapshot.TableDataSets.Sum(dataSet => Math.Max(dataSet.RowCount, dataSet.Rows.Count))
+            FullDataTables = snapshot.TableDataSets
+                .Select(dataSet => $"{dataSet.SchemaName}.{dataSet.TableName}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count(),
+            DataRows = snapshot.TableDataSets
+                .GroupBy(dataSet => $"{dataSet.SchemaName}.{dataSet.TableName}", StringComparer.OrdinalIgnoreCase)
+                .Sum(group => group.Max(dataSet => Math.Max(dataSet.RowCount, dataSet.Rows.Count)))
         };
     }
 }

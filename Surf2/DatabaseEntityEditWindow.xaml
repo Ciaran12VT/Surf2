@@ -1,0 +1,83 @@
+<Window x:Class="Surf2.DatabaseEntityEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Edit Database Entities"
+        Width="780"
+        Height="560"
+        MinWidth="680"
+        MinHeight="460"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="94" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="TitleTextBlock"
+                   FontSize="14"
+                   FontWeight="SemiBold" />
+
+        <ListView x:Name="EntityList"
+                  Grid.Row="1"
+                  Margin="0,10,0,10">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Width="230"
+                                    DisplayMemberBinding="{Binding DisplayName}"
+                                    Header="Entity" />
+                    <GridViewColumn Width="260"
+                                    DisplayMemberBinding="{Binding Details}"
+                                    Header="Details" />
+                    <GridViewColumn Width="90"
+                                    DisplayMemberBinding="{Binding Status}"
+                                    Header="Status" />
+                    <GridViewColumn Width="160"
+                                    Header="Actions">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Width="58"
+                                            Margin="0,0,6,0"
+                                            Style="{StaticResource SurfCompactPrimaryButtonStyle}"
+                                            Click="CopyEntityQueryButton_Click"
+                                            Content="Copy"
+                                            Tag="{Binding}" />
+                                    <Button Width="76"
+                                            Style="{StaticResource SurfCompactSaveButtonStyle}"
+                                            Click="PasteEntityUpdateButton_Click"
+                                            Content="Update"
+                                            Tag="{Binding}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <TextBox x:Name="MessagesTextBox"
+                 Grid.Row="2"
+                 IsReadOnly="True"
+                 TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" />
+
+        <DockPanel Grid.Row="3" Margin="0,12,0,0">
+            <TextBlock x:Name="StatusTextBlock"
+                       VerticalAlignment="Center"
+                       Foreground="#4B5563" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Width="86"
+                        Margin="0,0,8,0"
+                        Style="{StaticResource SurfSaveButtonStyle}"
+                        Click="OkButton_Click"
+                        Content="OK" />
+                <Button Width="86"
+                        Style="{StaticResource SurfCloseButtonStyle}"
+                        Click="CancelButton_Click"
+                        Content="Cancel" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

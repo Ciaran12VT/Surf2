@@ -1,4 +1,7 @@
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
 using Surf2.Models;
 using Surf2.Services;
@@ -12,11 +15,29 @@ public partial class DatabaseResourceWindow : Window
 
     private readonly DatabaseMetadataImportService _importService = new();
     private readonly DatabaseMetadataQueryService _queryService = new();
+    private readonly Dictionary<DatabaseEntityEditKind, int> _pendingEntityEditCounts = new();
+    private readonly string? _editingSnapshotId;
 
     public DatabaseResourceWindow()
     {
         InitializeComponent();
         UpdateCounts(DatabaseImportCounts.FromSnapshot(new DatabaseMetadataSnapshot()));
+    }
+
+    public DatabaseResourceWindow(DatabaseMetadataSnapshot snapshot)
+        : this()
+    {
+        _editingSnapshotId = snapshot.SnapshotId;
+        Snapshot = snapshot.Clone();
+        _importService.NormalizeSnapshot(Snapshot);
+        Title = "Edit Database";
+        AddButton.Content = "Save";
+        AddButton.IsEnabled = true;
+        SnapshotNameTextBox.Text = Snapshot.DisplayName;
+        FullDataTablesTextBox.Text = string.Join(Environment.NewLine, GetPersistedFullDataTableNames(Snapshot));
+        UpdateCounts(Snapshot.Counts);
+        ImportMessagesTextBox.Text = $"Loaded database snapshot '{Snapshot.DisplayName}' for editing.";
+        StatusTextBlock.Text = "Edit the name, rerun the full query, or click a count to update individual entities.";
     }
 
     public DatabaseMetadataSnapshot? Snapshot { get; private set; }
@@ -46,6 +67,12 @@ public partial class DatabaseResourceWindow : Window
         }
 
         Snapshot = result.Snapshot;
+        if (!string.IsNullOrWhiteSpace(_editingSnapshotId))
+        {
+            Snapshot.SnapshotId = _editingSnapshotId;
+        }
+
+        Snapshot.FullDataTableNames = GetFullDataTableNames().ToList();
         if (!hasManualName && !string.IsNullOrWhiteSpace(Snapshot.DatabaseName))
         {
             SnapshotNameTextBox.Text = Snapshot.DatabaseName;
@@ -74,6 +101,8 @@ public partial class DatabaseResourceWindow : Window
             : string.IsNullOrWhiteSpace(Snapshot.DatabaseName)
                 ? "Database Snapshot"
                 : Snapshot.DatabaseName;
+        Snapshot.FullDataTableNames = GetFullDataTableNames().ToList();
+        _importService.NormalizeSnapshot(Snapshot);
 
         DialogResult = true;
         Close();
@@ -94,20 +123,116 @@ public partial class DatabaseResourceWindow : Window
 
     private void UpdateCounts(DatabaseImportCounts counts)
     {
-        SetCount(StoredProceduresCountText, "Stored Procedures", counts.StoredProcedures);
-        SetCount(ViewsCountText, "Views", counts.Views);
-        SetCount(FunctionsCountText, "Functions", counts.Functions);
-        SetCount(TriggersCountText, "Triggers", counts.Triggers);
-        SetCount(TablesCountText, "Tables", counts.Tables);
-        SetCount(FieldsCountText, "Fields", counts.Fields);
-        SetCount(PrimaryKeysCountText, "Primary Keys", counts.PrimaryKeys);
-        SetCount(FullDataTablesCountText, "Full Data Tables", counts.FullDataTables);
-        SetCount(DataRowsCountText, "Data Rows", counts.DataRows);
+        SetCount(StoredProceduresCountText, "Stored Procedures", counts.StoredProcedures, GetPendingEditCount(DatabaseEntityEditKind.StoredProcedures));
+        SetCount(ViewsCountText, "Views", counts.Views, GetPendingEditCount(DatabaseEntityEditKind.Views));
+        SetCount(FunctionsCountText, "Functions", counts.Functions, GetPendingEditCount(DatabaseEntityEditKind.Functions));
+        SetCount(TriggersCountText, "Triggers", counts.Triggers, GetPendingEditCount(DatabaseEntityEditKind.Triggers));
+        SetCount(TablesCountText, "Tables", counts.Tables, GetPendingEditCount(DatabaseEntityEditKind.Tables));
+        SetCount(FieldsCountText, "Fields", counts.Fields, GetPendingEditCount(DatabaseEntityEditKind.Fields));
+        SetCount(PrimaryKeysCountText, "Primary Keys", counts.PrimaryKeys, GetPendingEditCount(DatabaseEntityEditKind.PrimaryKeys));
+        SetCount(FullDataTablesCountText, "Full Data Tables", counts.FullDataTables, GetPendingEditCount(DatabaseEntityEditKind.FullDataTables));
+        SetCount(DataRowsCountText, "Data Rows", counts.DataRows, 0);
     }
 
-    private static void SetCount(System.Windows.Controls.TextBlock textBlock, string label, long count)
+    private void EntityCountText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        textBlock.Text = $"{label}: {count}";
+        if (Snapshot == null)
+        {
+            StatusTextBlock.Text = "Paste database metadata before editing individual entities.";
+            return;
+        }
+
+        if ((sender as FrameworkElement)?.Tag is not string tag ||
+            !Enum.TryParse(tag, out DatabaseEntityEditKind kind))
+        {
+            return;
+        }
+
+        var editWindow = new DatabaseEntityEditWindow(Snapshot, kind)
+        {
+            Owner = this
+        };
+
+        if (editWindow.ShowDialog() != true)
+        {
+            return;
+        }
+
+        Snapshot = editWindow.Snapshot;
+        Snapshot.DisplayName = SnapshotNameTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(Snapshot.DisplayName))
+        {
+            Snapshot.DisplayName = string.IsNullOrWhiteSpace(Snapshot.DatabaseName)
+                ? "Database Snapshot"
+                : Snapshot.DatabaseName;
+        }
+
+        Snapshot.FullDataTableNames = GetFullDataTableNames()
+            .Concat(GetPersistedFullDataTableNames(Snapshot))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (editWindow.UpdatedCount > 0)
+        {
+            _pendingEntityEditCounts[kind] = GetPendingEditCount(kind) + editWindow.UpdatedCount;
+        }
+
+        UpdateCounts(Snapshot.Counts);
+        AddButton.IsEnabled = true;
+        ImportMessagesTextBox.Text = editWindow.UpdatedCount == 0
+            ? $"No {GetKindLabel(kind).ToLowerInvariant()} were changed."
+            : $"Prepared {editWindow.UpdatedCount} {GetKindLabel(kind).ToLowerInvariant()} update(s). Click Save to persist them.";
+        StatusTextBlock.Text = "Entity updates are staged. Click Save to persist them.";
+    }
+
+    private int GetPendingEditCount(DatabaseEntityEditKind kind)
+    {
+        return _pendingEntityEditCounts.TryGetValue(kind, out int count) ? count : 0;
+    }
+
+    private static IEnumerable<string> GetPersistedFullDataTableNames(DatabaseMetadataSnapshot snapshot)
+    {
+        IEnumerable<string> configuredNames = snapshot.FullDataTableNames ?? [];
+        IEnumerable<string> importedNames = snapshot.TableDataSets
+            .Select(dataSet => SqlName.FormatPlainMultipartName(dataSet.SchemaName, dataSet.TableName));
+
+        return configuredNames
+            .Concat(importedNames)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string GetKindLabel(DatabaseEntityEditKind kind)
+    {
+        return kind switch
+        {
+            DatabaseEntityEditKind.StoredProcedures => "Stored Procedures",
+            DatabaseEntityEditKind.Views => "Views",
+            DatabaseEntityEditKind.Functions => "Functions",
+            DatabaseEntityEditKind.Triggers => "Triggers",
+            DatabaseEntityEditKind.Tables => "Tables",
+            DatabaseEntityEditKind.Fields => "Fields",
+            DatabaseEntityEditKind.PrimaryKeys => "Primary Keys",
+            DatabaseEntityEditKind.FullDataTables => "Full Data Tables",
+            _ => "Entities"
+        };
+    }
+
+    private static void SetCount(TextBlock textBlock, string label, long count, int pendingEditCount)
+    {
+        textBlock.Inlines.Clear();
+        textBlock.Inlines.Add(new Run($"{label}: {count}"));
+        if (pendingEditCount > 0)
+        {
+            textBlock.Inlines.Add(new Run($" (+{pendingEditCount})")
+            {
+                Foreground = Brushes.RoyalBlue,
+                FontWeight = FontWeights.SemiBold
+            });
+        }
+
         textBlock.Foreground = count > 0 ? PopulatedCountBrush : EmptyCountBrush;
         textBlock.FontWeight = count > 0 ? FontWeights.SemiBold : FontWeights.Normal;
     }

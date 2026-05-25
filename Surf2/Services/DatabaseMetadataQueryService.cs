@@ -7,6 +7,64 @@ public sealed class DatabaseMetadataQueryService
 {
     private const int ChunkSize = 30000;
 
+    public string CreateEntityQuery(
+        DatabaseEntityEditKind kind,
+        string schemaName,
+        string entityName,
+        string tableName = "",
+        string columnName = "",
+        string constraintName = "")
+    {
+        string schema = string.IsNullOrWhiteSpace(schemaName) ? "dbo" : schemaName.Trim();
+        string name = entityName.Trim();
+        string table = tableName.Trim();
+        string column = columnName.Trim();
+        string constraint = constraintName.Trim();
+
+        var builder = new StringBuilder();
+        builder.AppendLine(CreateQueryPreamble());
+
+        switch (kind)
+        {
+            case DatabaseEntityEditKind.StoredProcedures:
+                builder.AppendLine(CreateSqlObjectBlock(schema, name, "'P'"));
+                break;
+
+            case DatabaseEntityEditKind.Views:
+                builder.AppendLine(CreateSqlObjectBlock(schema, name, "'V'"));
+                break;
+
+            case DatabaseEntityEditKind.Functions:
+                builder.AppendLine(CreateSqlObjectBlock(schema, name, "'FN', 'IF', 'TF'"));
+                break;
+
+            case DatabaseEntityEditKind.Triggers:
+                builder.AppendLine(CreateSqlObjectBlock(schema, name, "'TR'"));
+                break;
+
+            case DatabaseEntityEditKind.Tables:
+                builder.AppendLine(CreateTableMetadataBlock(schema, name));
+                break;
+
+            case DatabaseEntityEditKind.Fields:
+                builder.AppendLine(CreateColumnBlock(schema, table, column));
+                break;
+
+            case DatabaseEntityEditKind.PrimaryKeys:
+                builder.AppendLine(CreatePrimaryKeyBlock(schema, table, constraint));
+                break;
+
+            case DatabaseEntityEditKind.FullDataTables:
+                builder.AppendLine(CreateTableMetadataBlock(schema, name));
+                builder.AppendLine(CreateFullTableDataBlock(SqlTableName.FromParts(schema, name)));
+                break;
+        }
+
+        builder.AppendLine();
+        builder.AppendLine(CreateChunkedOutputFooter());
+        return builder.ToString();
+    }
+
     public string CreateImportQuery(IEnumerable<string> fullDataTableNames)
     {
         List<SqlTableName> fullDataTables = fullDataTableNames
@@ -32,7 +90,7 @@ public sealed class DatabaseMetadataQueryService
         return builder.ToString();
     }
 
-    private static string CreateMetadataQueryHeader()
+    private static string CreateQueryPreamble()
     {
         return $$"""
 SET NOCOUNT ON;
@@ -59,6 +117,13 @@ SELECT
         SELECT DB_NAME() AS [DatabaseName]
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
     );
+""";
+    }
+
+    private static string CreateMetadataQueryHeader()
+    {
+        return $$"""
+{{CreateQueryPreamble()}}
 
 INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
 SELECT
@@ -148,6 +213,189 @@ INNER JOIN sys.columns c
 WHERE kc.type = 'PK'
   AND t.is_ms_shipped = 0
   AND SCHEMA_NAME(t.schema_id) <> N'sys';
+""";
+    }
+
+    private static string CreateSqlObjectBlock(string schemaName, string objectName, string typeList)
+    {
+        string schemaLiteral = ToSqlStringLiteral(schemaName);
+        string objectLiteral = ToSqlStringLiteral(objectName);
+
+        return $$"""
+INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+SELECT
+    N'SqlObject',
+    CONCAT(SCHEMA_NAME(o.schema_id), N'.', o.name),
+    (
+        SELECT
+            SCHEMA_NAME(o.schema_id) AS [SchemaName],
+            o.name AS [ObjectName],
+            o.type_desc AS [TypeDescription],
+            ISNULL(m.definition, N'') AS [Definition],
+            ISNULL(SCHEMA_NAME(parent.schema_id), N'') AS [ParentSchemaName],
+            ISNULL(parent.name, N'') AS [ParentObjectName]
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    )
+FROM sys.objects o
+INNER JOIN sys.sql_modules m
+    ON o.object_id = m.object_id
+LEFT JOIN sys.objects parent
+    ON o.parent_object_id = parent.object_id
+WHERE o.type IN ({{typeList}})
+  AND OBJECTPROPERTY(o.object_id, 'IsMSShipped') = 0
+  AND SCHEMA_NAME(o.schema_id) = N{{schemaLiteral}}
+  AND o.name = N{{objectLiteral}};
+""";
+    }
+
+    private static string CreateTableMetadataBlock(string schemaName, string tableName)
+    {
+        string schemaLiteral = ToSqlStringLiteral(schemaName);
+        string tableLiteral = ToSqlStringLiteral(tableName);
+
+        return $$"""
+INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+SELECT
+    N'Table',
+    CONCAT(SCHEMA_NAME(t.schema_id), N'.', t.name),
+    (
+        SELECT
+            SCHEMA_NAME(t.schema_id) AS [SchemaName],
+            t.name AS [TableName]
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    )
+FROM sys.tables t
+WHERE t.is_ms_shipped = 0
+  AND SCHEMA_NAME(t.schema_id) = N{{schemaLiteral}}
+  AND t.name = N{{tableLiteral}};
+
+INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+SELECT
+    N'Column',
+    CONCAT(SCHEMA_NAME(t.schema_id), N'.', t.name, N'.', c.name),
+    (
+        SELECT
+            SCHEMA_NAME(t.schema_id) AS [SchemaName],
+            t.name AS [TableName],
+            c.name AS [ColumnName],
+            ty.name AS [DataType],
+            c.max_length AS [MaxLength],
+            c.precision AS [NumericPrecision],
+            c.scale AS [NumericScale],
+            c.is_nullable AS [IsNullable],
+            c.is_identity AS [IsIdentity],
+            c.column_id AS [Ordinal]
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    )
+FROM sys.tables t
+INNER JOIN sys.columns c
+    ON t.object_id = c.object_id
+INNER JOIN sys.types ty
+    ON c.user_type_id = ty.user_type_id
+WHERE t.is_ms_shipped = 0
+  AND SCHEMA_NAME(t.schema_id) = N{{schemaLiteral}}
+  AND t.name = N{{tableLiteral}};
+
+INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+SELECT
+    N'PrimaryKey',
+    CONCAT(SCHEMA_NAME(t.schema_id), N'.', t.name, N'.', kc.name, N'.', c.name),
+    (
+        SELECT
+            SCHEMA_NAME(t.schema_id) AS [SchemaName],
+            t.name AS [TableName],
+            kc.name AS [ConstraintName],
+            c.name AS [ColumnName],
+            ic.key_ordinal AS [KeyOrdinal]
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    )
+FROM sys.key_constraints kc
+INNER JOIN sys.tables t
+    ON kc.parent_object_id = t.object_id
+INNER JOIN sys.index_columns ic
+    ON kc.parent_object_id = ic.object_id
+   AND kc.unique_index_id = ic.index_id
+INNER JOIN sys.columns c
+    ON ic.object_id = c.object_id
+   AND ic.column_id = c.column_id
+WHERE kc.type = 'PK'
+  AND t.is_ms_shipped = 0
+  AND SCHEMA_NAME(t.schema_id) = N{{schemaLiteral}}
+  AND t.name = N{{tableLiteral}};
+""";
+    }
+
+    private static string CreateColumnBlock(string schemaName, string tableName, string columnName)
+    {
+        string schemaLiteral = ToSqlStringLiteral(schemaName);
+        string tableLiteral = ToSqlStringLiteral(tableName);
+        string columnLiteral = ToSqlStringLiteral(columnName);
+
+        return $$"""
+INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+SELECT
+    N'Column',
+    CONCAT(SCHEMA_NAME(t.schema_id), N'.', t.name, N'.', c.name),
+    (
+        SELECT
+            SCHEMA_NAME(t.schema_id) AS [SchemaName],
+            t.name AS [TableName],
+            c.name AS [ColumnName],
+            ty.name AS [DataType],
+            c.max_length AS [MaxLength],
+            c.precision AS [NumericPrecision],
+            c.scale AS [NumericScale],
+            c.is_nullable AS [IsNullable],
+            c.is_identity AS [IsIdentity],
+            c.column_id AS [Ordinal]
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    )
+FROM sys.tables t
+INNER JOIN sys.columns c
+    ON t.object_id = c.object_id
+INNER JOIN sys.types ty
+    ON c.user_type_id = ty.user_type_id
+WHERE t.is_ms_shipped = 0
+  AND SCHEMA_NAME(t.schema_id) = N{{schemaLiteral}}
+  AND t.name = N{{tableLiteral}}
+  AND c.name = N{{columnLiteral}};
+""";
+    }
+
+    private static string CreatePrimaryKeyBlock(string schemaName, string tableName, string constraintName)
+    {
+        string schemaLiteral = ToSqlStringLiteral(schemaName);
+        string tableLiteral = ToSqlStringLiteral(tableName);
+        string constraintLiteral = ToSqlStringLiteral(constraintName);
+
+        return $$"""
+INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+SELECT
+    N'PrimaryKey',
+    CONCAT(SCHEMA_NAME(t.schema_id), N'.', t.name, N'.', kc.name, N'.', c.name),
+    (
+        SELECT
+            SCHEMA_NAME(t.schema_id) AS [SchemaName],
+            t.name AS [TableName],
+            kc.name AS [ConstraintName],
+            c.name AS [ColumnName],
+            ic.key_ordinal AS [KeyOrdinal]
+        FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+    )
+FROM sys.key_constraints kc
+INNER JOIN sys.tables t
+    ON kc.parent_object_id = t.object_id
+INNER JOIN sys.index_columns ic
+    ON kc.parent_object_id = ic.object_id
+   AND kc.unique_index_id = ic.index_id
+INNER JOIN sys.columns c
+    ON ic.object_id = c.object_id
+   AND c.column_id = ic.column_id
+WHERE kc.type = 'PK'
+  AND t.is_ms_shipped = 0
+  AND SCHEMA_NAME(t.schema_id) = N{{schemaLiteral}}
+  AND t.name = N{{tableLiteral}}
+  AND kc.name = N{{constraintLiteral}};
 """;
     }
 
@@ -274,6 +522,13 @@ DROP TABLE #Surf2Payloads;
         public string TableName { get; }
 
         public string VariableSuffix { get; }
+
+        public static SqlTableName FromParts(string schemaName, string tableName)
+        {
+            return new SqlTableName(
+                string.IsNullOrWhiteSpace(schemaName) ? "dbo" : schemaName.Trim(),
+                tableName.Trim());
+        }
 
         public static SqlTableName? TryParse(string? value)
         {
