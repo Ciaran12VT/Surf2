@@ -871,6 +871,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _openWindows.TryGetValue(node.FullPath, out FloatingCodeWindow? sourceWindow);
         await OpenFileAsync(tableDataDocumentPath, sourceWindow: sourceWindow, suppressHistory: true);
+        ApplyObjectExplorerSpreadsheetFilters(tableDataDocumentPath, node);
+    }
+
+    private void ApplyObjectExplorerSpreadsheetFilters(string documentPath, FileSystemNode node)
+    {
+        if (node.SpreadsheetSearchFilters.Count == 0 ||
+            !_openSpreadsheetWindows.TryGetValue(documentPath, out FloatingSpreadsheetWindow? spreadsheetWindow))
+        {
+            return;
+        }
+
+        spreadsheetWindow.ApplyColumnFilters(node.SpreadsheetSearchFilters);
+        string columnText = node.SpreadsheetSearchFilters.Count == 1 ? "column" : "columns";
+        StatusText = $"Opened {node.Name} and filtered full data ({node.SpreadsheetSearchFilters.Count} {columnText}).";
     }
 
     private void ObjectExplorerItem_Expanded(object sender, RoutedEventArgs e)
@@ -5631,7 +5645,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Tag = state.FilePath,
             ToolTip = state.FilePath
         };
-        tabItem.Header = GetDocumentDisplayName(state);
+        tabItem.Header = CreateCodeDocumentTabHeader(state);
         tabItem.Content = window;
 
         if (!CodeDocumentsTabControl.Items.Contains(tabItem))
@@ -5731,6 +5745,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         tabItem.Content = null;
         CodeDocumentsTabControl.Items.Remove(tabItem);
+    }
+
+    private FrameworkElement CreateCodeDocumentTabHeader(OpenDocumentState state)
+    {
+        var panel = new DockPanel
+        {
+            LastChildFill = true
+        };
+
+        var closeButton = new Button
+        {
+            Content = "x",
+            Tag = state.FilePath,
+            Margin = new Thickness(8, 0, 0, 0),
+            Style = (Style)FindResource("TinyCloseButtonStyle"),
+            ToolTip = "Close"
+        };
+        closeButton.Click += CodeDocumentTabCloseButton_Click;
+        DockPanel.SetDock(closeButton, Dock.Right);
+
+        var label = new TextBlock
+        {
+            Text = GetDocumentDisplayName(state),
+            MaxWidth = 260,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+
+        panel.Children.Add(closeButton);
+        panel.Children.Add(label);
+        return panel;
     }
 
     private void ClearCodeDocumentTabs()
@@ -11275,6 +11320,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OpenTabsList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) != null)
+        {
+            return;
+        }
+
         ListBoxItem? listBoxItem = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
         if (listBoxItem?.DataContext is OpenWindowItem item)
         {
@@ -11328,13 +11378,39 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        if (_openWindows.TryGetValue(item.FilePath, out FloatingCodeWindow? window))
+        await CloseOpenTabAsync(item.FilePath);
+    }
+
+    private async void OpenTabCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is OpenWindowItem item)
+        {
+            await CloseOpenTabAsync(item.FilePath);
+        }
+
+        e.Handled = true;
+    }
+
+    private async void CodeDocumentTabCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        string? filePath = (sender as FrameworkElement)?.Tag as string;
+        if (!string.IsNullOrWhiteSpace(filePath))
+        {
+            await CloseOpenTabAsync(filePath);
+        }
+
+        e.Handled = true;
+    }
+
+    private async Task CloseOpenTabAsync(string filePath)
+    {
+        if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? window))
         {
             await CloseOpenWindowAsync(window);
             return;
         }
 
-        if (_openSpreadsheetWindows.TryGetValue(item.FilePath, out FloatingSpreadsheetWindow? spreadsheetWindow))
+        if (_openSpreadsheetWindows.TryGetValue(filePath, out FloatingSpreadsheetWindow? spreadsheetWindow))
         {
             await CloseSpreadsheetWindowAsync(spreadsheetWindow);
         }

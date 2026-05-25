@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Surf2.Models;
 
@@ -461,9 +462,18 @@ public sealed class FileTreeService
             }
 
             searchedCount++;
-            bool isMatch = searchTarget == ObjectExplorerSearchTarget.Name
-                ? matcher.IsMatch(displayName)
-                : matcher.IsMatch(documentService.CreateTableDocument(snapshot, table));
+            IReadOnlyList<int> fullDataMatchColumnIndexes = [];
+            bool isMatch;
+            if (searchTarget == ObjectExplorerSearchTarget.Name)
+            {
+                isMatch = matcher.IsMatch(displayName);
+            }
+            else
+            {
+                bool tableDocumentMatch = matcher.IsMatch(documentService.CreateTableDocument(snapshot, table));
+                fullDataMatchColumnIndexes = FindFullDataMatchColumnIndexes(snapshot, table, matcher);
+                isMatch = tableDocumentMatch || fullDataMatchColumnIndexes.Count > 0;
+            }
 
             if (!isMatch)
             {
@@ -471,20 +481,121 @@ public sealed class FileTreeService
             }
 
             matchCount++;
-            folder.Children.Add(new FileSystemNode(
+            var node = new FileSystemNode(
                 DatabaseDocumentService.CreateTableDocumentPath(snapshot, table),
                 isDirectory: false,
                 displayName: label,
                 parentKey: folder.NodeKey)
             {
                 IsVirtualDocument = true
-            });
+            };
+
+            foreach (int columnIndex in fullDataMatchColumnIndexes)
+            {
+                node.SpreadsheetSearchFilters[columnIndex] = matcher.Query;
+            }
+
+            folder.Children.Add(node);
         }
 
         if (folder.Children.Count > 0)
         {
             root.Children.Add(folder);
         }
+    }
+
+    private static IReadOnlyList<int> FindFullDataMatchColumnIndexes(
+        DatabaseMetadataSnapshot snapshot,
+        SqlTable table,
+        SearchMatcher matcher)
+    {
+        SqlTableDataSet? dataSet = snapshot.GetTableDataSet(table.SchemaName, table.TableName);
+        if (dataSet == null || dataSet.Rows.Count == 0)
+        {
+            return [];
+        }
+
+        List<string> headers = GetTableDataHeaders(snapshot, table, dataSet);
+        if (headers.Count == 0)
+        {
+            return [];
+        }
+
+        var matchingColumnIndexes = new SortedSet<int>();
+        foreach (JsonElement row in dataSet.Rows)
+        {
+            if (row.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            for (int columnIndex = 0; columnIndex < headers.Count; columnIndex++)
+            {
+                if (matchingColumnIndexes.Contains(columnIndex))
+                {
+                    continue;
+                }
+
+                if (TryGetPropertyIgnoreCase(row, headers[columnIndex], out JsonElement value) &&
+                    matcher.IsMatch(FormatJsonSearchValue(value)))
+                {
+                    matchingColumnIndexes.Add(columnIndex);
+                }
+            }
+        }
+
+        return matchingColumnIndexes.ToList();
+    }
+
+    private static List<string> GetTableDataHeaders(
+        DatabaseMetadataSnapshot snapshot,
+        SqlTable table,
+        SqlTableDataSet dataSet)
+    {
+        List<string> headers = snapshot.Columns
+            .Where(column =>
+                string.Equals(column.SchemaName, table.SchemaName, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(column.TableName, table.TableName, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(column => column.Ordinal)
+            .Select(column => column.ColumnName)
+            .ToList();
+
+        if (headers.Count == 0 && dataSet.Rows.FirstOrDefault().ValueKind == JsonValueKind.Object)
+        {
+            headers = dataSet.Rows[0]
+                .EnumerateObject()
+                .Select(property => property.Name)
+                .ToList();
+        }
+
+        return headers;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement row, string propertyName, out JsonElement value)
+    {
+        foreach (JsonProperty property in row.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string FormatJsonSearchValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+            JsonValueKind.String => value.GetString() ?? string.Empty,
+            JsonValueKind.True => "True",
+            JsonValueKind.False => "False",
+            _ => value.ToString()
+        };
     }
 
     private static FileSystemNode CreateDatabaseRoot(
@@ -854,6 +965,8 @@ public sealed class FileTreeService
             _query = query;
             _regex = regex;
         }
+
+        public string Query => _query;
 
         public static SearchMatcher Create(string query, bool useRegex)
         {

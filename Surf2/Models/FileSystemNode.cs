@@ -102,6 +102,8 @@ public sealed class FileSystemNode
 
     public bool HasUnresolvedQueries { get; set; }
 
+    public Dictionary<int, string> SpreadsheetSearchFilters { get; } = [];
+
     public FileSystemNodeIconKind IconKind { get; }
 
     public ObservableCollection<FileSystemNode> Children { get; } = [];

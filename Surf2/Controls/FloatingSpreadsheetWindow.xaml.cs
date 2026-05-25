@@ -22,8 +22,12 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private readonly ObservableCollection<CsvGridRow> _rows = [];
     private readonly Dictionary<int, string> _filters = [];
+    private readonly Dictionary<int, string> _pendingColumnFilters = [];
+    private readonly HashSet<int> _anyMatchFilterColumnIndexes = [];
     private readonly DispatcherTimer _filterDebounceTimer;
     private bool _isDragging;
+    private bool _isApplyingColumnFilters;
+    private bool _matchAnyColumnFilter;
     private Point _dragStartPoint;
     private double _dragStartLeft;
     private double _dragStartTop;
@@ -97,6 +101,22 @@ public partial class FloatingSpreadsheetWindow : UserControl
         SpreadsheetGrid.RowBackground = backcolor;
     }
 
+    public void ApplyColumnFilters(IReadOnlyDictionary<int, string> filters)
+    {
+        _pendingColumnFilters.Clear();
+        foreach ((int columnIndex, string filter) in filters)
+        {
+            if (columnIndex < 0 || string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            _pendingColumnFilters[columnIndex] = filter;
+        }
+
+        ApplyPendingColumnFilters();
+    }
+
     private async Task LoadCsvAsync(string content)
     {
         LoadingOverlay.Visibility = Visibility.Visible;
@@ -114,7 +134,11 @@ public partial class FloatingSpreadsheetWindow : UserControl
             _totalRowCount = _rows.Count;
             _columnCount = document.Headers.Count;
             BuildColumns(document.Headers);
-            ApplyFilters();
+            if (!ApplyPendingColumnFilters())
+            {
+                ApplyFilters();
+            }
+
             LoadingOverlay.Visibility = Visibility.Collapsed;
         }
         catch (Exception ex)
@@ -145,6 +169,55 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
             SpreadsheetGrid.Columns.Add(column);
         }
+    }
+
+    private bool ApplyPendingColumnFilters()
+    {
+        if (_pendingColumnFilters.Count == 0 || SpreadsheetGrid.Columns.Count == 0)
+        {
+            return false;
+        }
+
+        _filterDebounceTimer.Stop();
+        _filters.Clear();
+        _anyMatchFilterColumnIndexes.Clear();
+        _matchAnyColumnFilter = false;
+
+        int appliedFilterCount = 0;
+        _isApplyingColumnFilters = true;
+        try
+        {
+            ClearFilterTextBoxes();
+
+            foreach ((int columnIndex, string filter) in _pendingColumnFilters)
+            {
+                if (columnIndex >= SpreadsheetGrid.Columns.Count)
+                {
+                    continue;
+                }
+
+                _filters[columnIndex] = filter;
+                _anyMatchFilterColumnIndexes.Add(columnIndex);
+                SetFilterTextBoxText(columnIndex, filter);
+                appliedFilterCount++;
+            }
+        }
+        finally
+        {
+            _isApplyingColumnFilters = false;
+        }
+
+        _pendingColumnFilters.Clear();
+        _filterDebounceTimer.Stop();
+
+        if (appliedFilterCount == 0)
+        {
+            return false;
+        }
+
+        _matchAnyColumnFilter = appliedFilterCount > 1;
+        ApplyFilters();
+        return true;
     }
 
     private FrameworkElement CreateColumnHeader(string headerText, int columnIndex)
@@ -207,6 +280,12 @@ public partial class FloatingSpreadsheetWindow : UserControl
             _filters[columnIndex] = filter;
         }
 
+        if (!_isApplyingColumnFilters)
+        {
+            _matchAnyColumnFilter = false;
+            _anyMatchFilterColumnIndexes.Clear();
+        }
+
         _filterDebounceTimer.Stop();
         _filterDebounceTimer.Start();
     }
@@ -230,6 +309,30 @@ public partial class FloatingSpreadsheetWindow : UserControl
         if (item is not CsvGridRow row)
         {
             return false;
+        }
+
+        if (_matchAnyColumnFilter && _anyMatchFilterColumnIndexes.Count > 0)
+        {
+            bool hasAnyColumnFilter = false;
+            foreach (int columnIndex in _anyMatchFilterColumnIndexes)
+            {
+                if (!_filters.TryGetValue(columnIndex, out string? filter) ||
+                    string.IsNullOrWhiteSpace(filter))
+                {
+                    continue;
+                }
+
+                hasAnyColumnFilter = true;
+                if (row[columnIndex].IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            if (hasAnyColumnFilter)
+            {
+                return false;
+            }
         }
 
         foreach ((int columnIndex, string filter) in _filters)
@@ -259,7 +362,15 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private void ClearFiltersButton_Click(object sender, RoutedEventArgs e)
     {
         _filters.Clear();
+        _pendingColumnFilters.Clear();
+        _anyMatchFilterColumnIndexes.Clear();
+        _matchAnyColumnFilter = false;
+        ClearFilterTextBoxes();
+        ApplyFilters();
+    }
 
+    private void ClearFilterTextBoxes()
+    {
         foreach (DataGridColumn column in SpreadsheetGrid.Columns)
         {
             if (column.Header is not DependencyObject header)
@@ -272,8 +383,28 @@ public partial class FloatingSpreadsheetWindow : UserControl
                 textBox.Text = string.Empty;
             }
         }
+    }
 
-        ApplyFilters();
+    private void SetFilterTextBoxText(int columnIndex, string filter)
+    {
+        if (columnIndex < 0 || columnIndex >= SpreadsheetGrid.Columns.Count)
+        {
+            return;
+        }
+
+        if (SpreadsheetGrid.Columns[columnIndex].Header is not DependencyObject header)
+        {
+            return;
+        }
+
+        foreach (TextBox textBox in FindVisualChildren<TextBox>(header))
+        {
+            if (textBox.Tag is int tag && tag == columnIndex)
+            {
+                textBox.Text = filter;
+                return;
+            }
+        }
     }
 
     private void HeaderBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
