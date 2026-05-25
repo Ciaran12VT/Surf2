@@ -280,6 +280,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<string, FrameworkElement> _workflowItemContainers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBox> _workflowItemDescriptionEditors = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _expandedObjectExplorerNodeKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _openingObjectExplorerNodeKeys = new(StringComparer.OrdinalIgnoreCase);
     private string? _selectedDiagramImageId;
     private string? _pendingPortalName;
     private PendingPortalPairPlacement? _pendingPortalPairPlacement;
@@ -690,11 +691,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void ObjectExplorer_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
-        if (ObjectExplorer.SelectedItem is not FileSystemNode node || node.IsDirectory)
+        TreeViewItem? item = FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject);
+        if (item?.DataContext is not FileSystemNode node || node.IsDirectory)
         {
             return;
         }
 
+        e.Handled = true;
+        item.IsSelected = true;
         if (!node.IsScopeResourceLoaded)
         {
             StatusText = $"Load resource '{node.Name}' before opening it.";
@@ -703,11 +707,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (DiagramDocumentService.IsDiagramDocumentPath(node.FullPath))
         {
-            await OpenDiagramAsync(node.FullPath);
+            await OpenObjectExplorerDiagramNodeAsync(node);
             return;
         }
 
-        await OpenObjectExplorerNodeAsync(node);
+        await OpenObjectExplorerNodeSafelyAsync(node);
     }
 
     private async void ObjectExplorerItem_PreviewMouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -728,11 +732,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (DiagramDocumentService.IsDiagramDocumentPath(node.FullPath))
         {
-            await OpenDiagramAsync(node.FullPath);
+            await OpenObjectExplorerDiagramNodeAsync(node);
             return;
         }
 
-        await OpenObjectExplorerNodeAsync(node);
+        await OpenObjectExplorerNodeSafelyAsync(node);
+    }
+
+    private async Task OpenObjectExplorerDiagramNodeAsync(FileSystemNode node)
+    {
+        try
+        {
+            await OpenDiagramAsync(node.FullPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {
+            StatusText = $"Could not open {node.Name}: {ex.Message}";
+        }
+    }
+
+    private async Task OpenObjectExplorerNodeSafelyAsync(FileSystemNode node)
+    {
+        string nodeKey = string.IsNullOrWhiteSpace(node.NodeKey) ? node.FullPath : node.NodeKey;
+        if (!_openingObjectExplorerNodeKeys.Add(nodeKey))
+        {
+            return;
+        }
+
+        try
+        {
+            await OpenObjectExplorerNodeAsync(node);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or NotSupportedException)
+        {
+            StatusText = $"Could not open {node.Name}: {ex.Message}";
+        }
+        finally
+        {
+            _openingObjectExplorerNodeKeys.Remove(nodeKey);
+        }
     }
 
     private async Task OpenObjectExplorerNodeAsync(FileSystemNode node)

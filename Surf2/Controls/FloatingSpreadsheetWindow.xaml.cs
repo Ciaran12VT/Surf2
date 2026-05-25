@@ -117,7 +117,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
             ApplyFilters();
             LoadingOverlay.Visibility = Visibility.Collapsed;
         }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        catch (Exception ex)
         {
             LoadingText.Text = $"Could not load CSV: {ex.Message}";
         }
