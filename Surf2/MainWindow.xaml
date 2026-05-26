@@ -637,9 +637,12 @@
                                        Text="Find:" />
                             <TextBox x:Name="ObjectExplorerSearchTextBox"
                                      Grid.Column="1"
+                                     AllowDrop="True"
                                      Height="24"
                                      Margin="6,0,6,0"
-                                     KeyDown="ObjectExplorerSearchTextBox_KeyDown" />
+                                     KeyDown="ObjectExplorerSearchTextBox_KeyDown"
+                                     PreviewDragOver="ObjectExplorerSearchTextBox_PreviewDragOver"
+                                     PreviewDrop="ObjectExplorerSearchTextBox_PreviewDrop" />
                             <ToggleButton x:Name="ObjectExplorerRegexToggle"
                                           Grid.Column="2"
                                           Width="38"

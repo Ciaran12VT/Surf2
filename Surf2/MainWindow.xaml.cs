@@ -638,6 +638,58 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await ApplyObjectExplorerSearchAsync();
     }
 
+    private void ObjectExplorerSearchTextBox_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(ObjectExplorerDragDataFormat)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void ObjectExplorerSearchTextBox_PreviewDrop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(ObjectExplorerDragDataFormat) is not FileSystemNode node)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        string searchText = GetObjectExplorerDropSearchText(node);
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        ObjectExplorerSearchTextBox.Text = searchText;
+        ObjectExplorerSearchTextBox.Focus();
+        ObjectExplorerSearchTextBox.SelectAll();
+        e.Effects = DragDropEffects.Copy;
+        e.Handled = true;
+        await ApplyObjectExplorerSearchAsync();
+    }
+
+    private static string GetObjectExplorerDropSearchText(FileSystemNode node)
+    {
+        string name = node.Name.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return string.Empty;
+        }
+
+        string extension = node.Extension;
+        if (!node.IsDirectory &&
+            !string.IsNullOrWhiteSpace(extension) &&
+            name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[..^extension.Length];
+        }
+
+        return name.Trim();
+    }
+
     private async Task ApplyObjectExplorerSearchAsync()
     {
         if (_activeScope == null)
