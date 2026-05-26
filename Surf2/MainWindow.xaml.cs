@@ -181,6 +181,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const double DiagramCtrlShiftZoomSpeedFactor = 0.00008;
     private const string ObjectExplorerDragDataFormat = "Surf2.ObjectExplorerNode";
     private const string OpenTabDragDataFormat = "Surf2.OpenTab";
+    private const string DiagramObjectClipboardDataFormat = "Surf2.DiagramObject";
+    private const string SearchTokenClipboardDataFormat = "Surf2.SearchToken";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
     [
@@ -640,7 +642,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ObjectExplorerSearchTextBox_PreviewDragOver(object sender, DragEventArgs e)
     {
-        e.Effects = e.Data.GetDataPresent(ObjectExplorerDragDataFormat)
+        e.Effects = TryGetSearchTextFromDragData(e.Data, out _)
             ? DragDropEffects.Copy
             : DragDropEffects.None;
         e.Handled = true;
@@ -648,46 +650,106 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void ObjectExplorerSearchTextBox_PreviewDrop(object sender, DragEventArgs e)
     {
-        if (e.Data.GetData(ObjectExplorerDragDataFormat) is not FileSystemNode node)
+        if (!TryGetSearchTextFromDragData(e.Data, out string searchText))
         {
             e.Effects = DragDropEffects.None;
             e.Handled = true;
             return;
         }
 
-        string searchText = GetObjectExplorerDropSearchText(node);
-        if (string.IsNullOrWhiteSpace(searchText))
-        {
-            e.Effects = DragDropEffects.None;
-            e.Handled = true;
-            return;
-        }
-
-        ObjectExplorerSearchTextBox.Text = searchText;
-        ObjectExplorerSearchTextBox.Focus();
-        ObjectExplorerSearchTextBox.SelectAll();
         e.Effects = DragDropEffects.Copy;
         e.Handled = true;
+        await ApplySearchTextToObjectExplorerSearchAsync(searchText);
+    }
+
+    private async void ObjectExplorerSearchTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control ||
+            e.Key != Key.V ||
+            !TryGetSearchTextFromClipboard(out string searchText))
+        {
+            return;
+        }
+
+        e.Handled = true;
+        await ApplySearchTextToObjectExplorerSearchAsync(searchText);
+    }
+
+    private async void ObjectExplorerSearchTextBox_Pasting(object sender, DataObjectPastingEventArgs e)
+    {
+        if (!TryGetSearchTextFromDataObject(e.DataObject, out string searchText))
+        {
+            return;
+        }
+
+        e.CancelCommand();
+        await ApplySearchTextToObjectExplorerSearchAsync(searchText);
+    }
+
+    private async Task ApplySearchTextToObjectExplorerSearchAsync(string searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            return;
+        }
+
+        ObjectExplorerSearchTextBox.Text = searchText.Trim();
+        ObjectExplorerSearchTextBox.Focus();
+        ObjectExplorerSearchTextBox.SelectAll();
         await ApplyObjectExplorerSearchAsync();
     }
 
-    private static string GetObjectExplorerDropSearchText(FileSystemNode node)
+    private static bool TryGetSearchTextFromDragData(IDataObject data, out string searchText)
     {
-        string name = node.Name.Trim();
-        if (string.IsNullOrWhiteSpace(name))
+        searchText = string.Empty;
+
+        if (data.GetData(ObjectExplorerDragDataFormat) is FileSystemNode node)
+        {
+            searchText = GetFileSystemNodeSearchText(node);
+        }
+        else if (data.GetData(OpenTabDragDataFormat) is OpenWindowItem openTab)
+        {
+            searchText = GetOpenTabSearchText(openTab);
+        }
+
+        searchText = searchText.Trim();
+        return !string.IsNullOrWhiteSpace(searchText);
+    }
+
+    private static bool TryGetSearchTextFromDataObject(IDataObject dataObject, out string searchText)
+    {
+        searchText = dataObject.GetData(SearchTokenClipboardDataFormat) as string ?? string.Empty;
+        searchText = searchText.Trim();
+        return !string.IsNullOrWhiteSpace(searchText);
+    }
+
+    private static string GetFileSystemNodeSearchText(FileSystemNode node)
+    {
+        return CreateSearchTextFromName(
+            node.Name,
+            node.IsDirectory ? string.Empty : node.Extension);
+    }
+
+    private static string GetOpenTabSearchText(OpenWindowItem openTab)
+    {
+        return CreateSearchTextFromName(openTab.FileName, Path.GetExtension(openTab.FilePath));
+    }
+
+    private static string CreateSearchTextFromName(string name, string? extension)
+    {
+        string searchText = name.Trim();
+        if (string.IsNullOrWhiteSpace(searchText))
         {
             return string.Empty;
         }
 
-        string extension = node.Extension;
-        if (!node.IsDirectory &&
-            !string.IsNullOrWhiteSpace(extension) &&
-            name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(extension) &&
+            searchText.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
         {
-            name = name[..^extension.Length];
+            searchText = searchText[..^extension.Length];
         }
 
-        return name.Trim();
+        return searchText.Trim();
     }
 
     private async Task ApplyObjectExplorerSearchAsync()
@@ -6643,6 +6705,80 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private static bool TrySetSearchTextClipboard(string searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            return false;
+        }
+
+        try
+        {
+            var dataObject = new DataObject();
+            dataObject.SetData(SearchTokenClipboardDataFormat, searchText);
+            dataObject.SetText(searchText);
+            Clipboard.SetDataObject(dataObject, true);
+            return true;
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TrySetDiagramObjectClipboard(string searchText)
+    {
+        string clipboardText = string.IsNullOrWhiteSpace(searchText)
+            ? "Diagram Object"
+            : searchText.Trim();
+
+        try
+        {
+            var dataObject = new DataObject();
+            dataObject.SetData(DiagramObjectClipboardDataFormat, clipboardText);
+            dataObject.SetData(SearchTokenClipboardDataFormat, clipboardText);
+            dataObject.SetText(clipboardText);
+            Clipboard.SetDataObject(dataObject, true);
+            return true;
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            return false;
+        }
+    }
+
+    private static bool ClipboardContainsDiagramObject()
+    {
+        try
+        {
+            return Clipboard.GetData(DiagramObjectClipboardDataFormat) is string;
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetSearchTextFromClipboard(out string searchText)
+    {
+        searchText = string.Empty;
+
+        try
+        {
+            if (Clipboard.GetData(SearchTokenClipboardDataFormat) is not string clipboardText)
+            {
+                return false;
+            }
+
+            searchText = clipboardText.Trim();
+            return !string.IsNullOrWhiteSpace(searchText);
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            return false;
+        }
+    }
+
     private static async Task<string> SaveSqlTraceFileAsync(string documentName, string traceText)
     {
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -9421,12 +9557,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        DependencyObject? originalSource = e.OriginalSource as DependencyObject;
+        bool isTextInput = IsTextInputElement(originalSource);
+        if (e.Key == Key.C &&
+            !isTextInput &&
+            TryCopySelectedExplorerSearchText(originalSource))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (!IsDiagramViewCommandTarget())
         {
             return;
         }
-
-        bool isTextInput = IsTextInputElement(e.OriginalSource as DependencyObject);
 
         switch (e.Key)
         {
@@ -9539,6 +9683,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return false;
+    }
+
+    private bool TryCopySelectedExplorerSearchText(DependencyObject? originalSource)
+    {
+        if (originalSource != null &&
+            IsDescendantOf(originalSource, ObjectExplorer) &&
+            ObjectExplorer.SelectedItem is FileSystemNode node)
+        {
+            return CopySearchTextToClipboard(GetFileSystemNodeSearchText(node), "Object Explorer item");
+        }
+
+        if (originalSource != null &&
+            IsDescendantOf(originalSource, OpenTabsList) &&
+            OpenTabsList.SelectedItem is OpenWindowItem openTab)
+        {
+            return CopySearchTextToClipboard(GetOpenTabSearchText(openTab), "tab");
+        }
+
+        return false;
+    }
+
+    private bool CopySearchTextToClipboard(string searchText, string sourceDescription)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            StatusText = $"Could not copy {sourceDescription} for search.";
+            return true;
+        }
+
+        bool copied = TrySetSearchTextClipboard(searchText.Trim());
+        StatusText = copied
+            ? $"Copied '{searchText.Trim()}' for search."
+            : $"Could not copy {sourceDescription} for search.";
+        return true;
     }
 
     private bool TryHandleCodeTabNavigationShortcut(Key key, DependencyObject? originalSource)
@@ -10292,15 +10470,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CopySelectedDiagramObject()
     {
+        string searchText = GetDiagramObjectSearchText(_selectedDiagramObject);
+
         if (_selectedDiagramObject is DiagramWorkflowMarkerControl)
         {
-            StatusText = "Workflow markers are tied to workflow items and cannot be copied.";
+            bool copiedSearchText = TrySetSearchTextClipboard(searchText);
+            StatusText = copiedSearchText
+                ? "Copied workflow marker text for search. Workflow markers are tied to workflow items and cannot be copied as diagram objects."
+                : "Workflow markers are tied to workflow items and cannot be copied.";
             return;
         }
 
         if (_selectedDiagramObject is DiagramPortalControl)
         {
-            StatusText = "Portal links are unique and cannot be copied.";
+            bool copiedSearchText = TrySetSearchTextClipboard(searchText);
+            StatusText = copiedSearchText
+                ? "Copied portal text for search. Portal links are unique and cannot be copied as diagram objects."
+                : "Portal links are unique and cannot be copied.";
             return;
         }
 
@@ -10312,7 +10498,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _diagramClipboardSnapshot = snapshot.Clone();
-        StatusText = "Copied diagram object.";
+        bool copiedClipboard = TrySetDiagramObjectClipboard(searchText);
+        StatusText = copiedClipboard
+            ? "Copied diagram object and object name."
+            : "Copied diagram object.";
+    }
+
+    private static string GetDiagramObjectSearchText(FrameworkElement? diagramObject)
+    {
+        string name = diagramObject switch
+        {
+            DiagramShapeControl shape when !string.IsNullOrWhiteSpace(shape.LabelText) => shape.LabelText,
+            DiagramShapeControl => "Shape",
+            DiagramImageControl image when !string.IsNullOrWhiteSpace(image.LabelText) => image.LabelText,
+            DiagramImageControl image when !string.IsNullOrWhiteSpace(image.ImageName) => image.ImageName,
+            DiagramImageControl => "Image",
+            DiagramLineControl => "Line",
+            DiagramLabelControl label when !string.IsNullOrWhiteSpace(label.LabelText) => label.LabelText,
+            DiagramLabelControl => "Label",
+            DiagramPortalControl portal => portal.PortalName,
+            DiagramWorkflowMarkerControl marker when !string.IsNullOrWhiteSpace(marker.ItemDescription) => marker.ItemDescription,
+            DiagramWorkflowMarkerControl marker => $"Workflow Item {marker.ItemNumber}",
+            _ => string.Empty
+        };
+
+        return CreateSearchTextFromName(name, string.Empty);
     }
 
     private void CutSelectedDiagramObject()
@@ -10342,6 +10552,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _diagramClipboardSnapshot = snapshot.Clone();
+        TrySetDiagramObjectClipboard(GetDiagramObjectSearchText(_selectedDiagramObject));
         RemoveDiagramObject(_selectedDiagramObject, pushUndo: true);
         StatusText = "Cut diagram object.";
     }
@@ -10353,6 +10564,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (ClipboardContainsDiagramObject())
+        {
+            PasteDiagramObject();
+            return;
+        }
+
         BitmapSource? clipboardImage = TryGetClipboardImage();
         if (clipboardImage != null)
         {
@@ -10360,7 +10577,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        PasteDiagramObject();
+        StatusText = "Copy a diagram object or image before pasting.";
     }
 
     private static BitmapSource? TryGetClipboardImage()

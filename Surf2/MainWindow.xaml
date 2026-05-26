@@ -640,8 +640,10 @@
                                      AllowDrop="True"
                                      Height="24"
                                      Margin="6,0,6,0"
+                                     DataObject.Pasting="ObjectExplorerSearchTextBox_Pasting"
                                      KeyDown="ObjectExplorerSearchTextBox_KeyDown"
                                      PreviewDragOver="ObjectExplorerSearchTextBox_PreviewDragOver"
+                                     PreviewKeyDown="ObjectExplorerSearchTextBox_PreviewKeyDown"
                                      PreviewDrop="ObjectExplorerSearchTextBox_PreviewDrop" />
                             <ToggleButton x:Name="ObjectExplorerRegexToggle"
                                           Grid.Column="2"
