@@ -718,7 +718,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static bool TryGetSearchTextFromDataObject(IDataObject dataObject, out string searchText)
     {
-        searchText = dataObject.GetData(SearchTokenClipboardDataFormat) as string ?? string.Empty;
+        if (!dataObject.GetDataPresent(SearchTokenClipboardDataFormat, autoConvert: false))
+        {
+            searchText = string.Empty;
+            return false;
+        }
+
+        searchText = dataObject.GetData(SearchTokenClipboardDataFormat, autoConvert: false) as string ?? string.Empty;
         searchText = searchText.Trim();
         return !string.IsNullOrWhiteSpace(searchText);
     }
@@ -6715,7 +6721,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             var dataObject = new DataObject();
-            dataObject.SetData(SearchTokenClipboardDataFormat, searchText);
+            dataObject.SetData(SearchTokenClipboardDataFormat, searchText, autoConvert: false);
             dataObject.SetText(searchText);
             Clipboard.SetDataObject(dataObject, true);
             return true;
@@ -6735,8 +6741,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             var dataObject = new DataObject();
-            dataObject.SetData(DiagramObjectClipboardDataFormat, clipboardText);
-            dataObject.SetData(SearchTokenClipboardDataFormat, clipboardText);
+            dataObject.SetData(DiagramObjectClipboardDataFormat, clipboardText, autoConvert: false);
+            dataObject.SetData(SearchTokenClipboardDataFormat, clipboardText, autoConvert: false);
             dataObject.SetText(clipboardText);
             Clipboard.SetDataObject(dataObject, true);
             return true;
@@ -6751,7 +6757,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            return Clipboard.GetData(DiagramObjectClipboardDataFormat) is string;
+            IDataObject? dataObject = Clipboard.GetDataObject();
+            return dataObject?.GetDataPresent(DiagramObjectClipboardDataFormat, autoConvert: false) == true &&
+                dataObject.GetData(DiagramObjectClipboardDataFormat, autoConvert: false) is string;
         }
         catch (System.Runtime.InteropServices.ExternalException)
         {
@@ -6765,7 +6773,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            if (Clipboard.GetData(SearchTokenClipboardDataFormat) is not string clipboardText)
+            IDataObject? dataObject = Clipboard.GetDataObject();
+            if (dataObject?.GetDataPresent(SearchTokenClipboardDataFormat, autoConvert: false) != true ||
+                dataObject.GetData(SearchTokenClipboardDataFormat, autoConvert: false) is not string clipboardText)
             {
                 return false;
             }
