@@ -145,7 +145,6 @@ public sealed class FileTreeService
             $"{resource.DisplayName}{suffix}",
             resource.Kind switch
             {
-                ResourceKind.Project => FileSystemNodeIconKind.Project,
                 ResourceKind.Folder => FileSystemNodeIconKind.Folder,
                 _ => null
             },
@@ -180,7 +179,7 @@ public sealed class FileTreeService
             return null;
         }
 
-        if (resource.Kind is ResourceKind.File or ResourceKind.Project)
+        if (resource.Kind == ResourceKind.File)
         {
             return SearchFile(
                 resource.Path,
@@ -189,7 +188,7 @@ public sealed class FileTreeService
                 searchTarget,
                 ref matchCount,
                 ref searchedCount,
-                resource.Kind == ResourceKind.Project ? FileSystemNodeIconKind.Project : null,
+                null,
                 FileSystemNode.RootParentKey,
                 resource.ResourceId,
                 isScopeResourceRoot: true);

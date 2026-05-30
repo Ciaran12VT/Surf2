@@ -137,28 +137,6 @@ public partial class ScopeManagerWindow : Window
         }
     }
 
-    private void AddProjectButton_Click(object sender, RoutedEventArgs e)
-    {
-        Scope? scope = EnsureSelectedScope();
-        if (scope == null)
-        {
-            return;
-        }
-
-        var dialog = new OpenFileDialog
-        {
-            Title = "Add a project to this scope",
-            CheckFileExists = true,
-            Filter = "Project files|*.csproj;*.vbproj;*.fsproj;*.sln;*.slnx|All files|*.*",
-            Multiselect = false
-        };
-
-        if (dialog.ShowDialog(this) == true)
-        {
-            AddResource(scope, ResourceKind.Project, dialog.FileName);
-        }
-    }
-
     private void AddDatabaseButton_Click(object sender, RoutedEventArgs e)
     {
         Scope? scope = EnsureSelectedScope();

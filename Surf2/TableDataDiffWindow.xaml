@@ -1,0 +1,53 @@
+<Window x:Class="Surf2.TableDataDiffWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Table Data Diff"
+        Width="1180"
+        Height="720"
+        MinWidth="860"
+        MinHeight="520"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="HeaderText"
+                   FontSize="13"
+                   FontWeight="SemiBold"
+                   Foreground="#1F2937"
+                   TextTrimming="CharacterEllipsis" />
+
+        <DataGrid x:Name="RowsDataGrid"
+                  Grid.Row="1"
+                  Margin="0,10,0,10"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  IsReadOnly="True"
+                  GridLinesVisibility="Horizontal">
+            <DataGrid.Columns>
+                <DataGridTextColumn Width="190"
+                                    Binding="{Binding Key}"
+                                    Header="Key" />
+                <DataGridTextColumn Width="95"
+                                    Binding="{Binding Status}"
+                                    Header="Status" />
+                <DataGridTextColumn Width="240"
+                                    Binding="{Binding ChangedColumns}"
+                                    Header="Changed Columns" />
+                <DataGridTextColumn Width="*"
+                                    Binding="{Binding LeftPreview}"
+                                    Header="Left Row" />
+                <DataGridTextColumn Width="*"
+                                    Binding="{Binding RightPreview}"
+                                    Header="Right Row" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock x:Name="StatusTextBlock"
+                   Grid.Row="2"
+                   Foreground="#64748B" />
+    </Grid>
+</Window>

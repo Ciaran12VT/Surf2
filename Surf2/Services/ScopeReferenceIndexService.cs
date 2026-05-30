@@ -213,24 +213,6 @@ public sealed class ScopeReferenceIndexService
             yield break;
         }
 
-        if (resource.Kind == ResourceKind.Project && File.Exists(resource.Path))
-        {
-            yield return resource.Path;
-
-            string? projectDirectory = Path.GetDirectoryName(resource.Path);
-            if (string.IsNullOrWhiteSpace(projectDirectory) || !Directory.Exists(projectDirectory))
-            {
-                yield break;
-            }
-
-            foreach (string filePath in EnumerateFilesSafely(projectDirectory))
-            {
-                yield return filePath;
-            }
-
-            yield break;
-        }
-
         if (Directory.Exists(resource.Path))
         {
             foreach (string filePath in EnumerateFilesSafely(resource.Path))

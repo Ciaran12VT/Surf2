@@ -230,6 +230,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly NavigationHistoryService _navigationHistoryService = new();
     private readonly SqlTraceService _sqlTraceService = new();
     private readonly LinkableResourceService _linkableResourceService = new();
+    private readonly ResourceComparisonService _resourceComparisonService = new();
     private readonly IWorkspaceStore _workspaceStore = new SqlServerWorkspaceStore();
     private readonly IScopeStore _scopeStore = new SqlServerScopeStore();
     private readonly ISettingsStore _settingsStore = new SqlServerSettingsStore();
@@ -1112,14 +1113,63 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         bool canOpenContainingFolder = CanOpenContainingFolder(node);
         bool canCreateVirtualFolder = _activeScope != null;
         bool canToggleResourceLoad = CanToggleScopeResourceLoad(node);
-        if (!canCreateDiagram && !canOpenContainingFolder && !canCreateVirtualFolder && !node.IsVirtualFolder && !canToggleResourceLoad)
+        ComparisonResource? comparisonResource = _activeScope == null
+            ? null
+            : _resourceComparisonService.CreateResourceFromNode(node, _databaseSnapshots);
+        bool canCompare = comparisonResource != null;
+        bool canCompareTableData = _activeScope != null &&
+                                   _resourceComparisonService.CanCompareTableData(node, _databaseSnapshots);
+        if (!canCreateDiagram &&
+            !canOpenContainingFolder &&
+            !canCreateVirtualFolder &&
+            !node.IsVirtualFolder &&
+            !canToggleResourceLoad &&
+            !canCompare &&
+            !canCompareTableData)
         {
             return null;
         }
 
         var contextMenu = new ContextMenu();
+        if (canCompare || canCompareTableData)
+        {
+            if (comparisonResource?.IsTableMetadata == true)
+            {
+                var compareTableMetadataItem = new MenuItem
+                {
+                    Header = "Compare Table Metadata"
+                };
+                compareTableMetadataItem.Click += async (_, _) => await CompareObjectExplorerNodeAsync(node, tableData: false);
+                contextMenu.Items.Add(compareTableMetadataItem);
+
+                if (canCompareTableData)
+                {
+                    var compareTableDataItem = new MenuItem
+                    {
+                        Header = "Compare Table Data"
+                    };
+                    compareTableDataItem.Click += async (_, _) => await CompareObjectExplorerNodeAsync(node, tableData: true);
+                    contextMenu.Items.Add(compareTableDataItem);
+                }
+            }
+            else if (comparisonResource != null)
+            {
+                var compareItem = new MenuItem
+                {
+                    Header = "Compare"
+                };
+                compareItem.Click += async (_, _) => await CompareObjectExplorerNodeAsync(node, tableData: false);
+                contextMenu.Items.Add(compareItem);
+            }
+        }
+
         if (canToggleResourceLoad)
         {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
             var loadResourceItem = new MenuItem
             {
                 Header = node.IsScopeResourceLoaded ? "Unload" : "Load"
@@ -1200,6 +1250,194 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return contextMenu;
+    }
+
+    private async Task CompareObjectExplorerNodeAsync(FileSystemNode node, bool tableData)
+    {
+        if (_activeScope == null)
+        {
+            StatusText = "Open a scope before comparing resources.";
+            return;
+        }
+
+        ComparisonResource? source = _resourceComparisonService.CreateResourceFromNode(node, _databaseSnapshots, tableData);
+        if (source == null)
+        {
+            StatusText = "This Object Explorer item cannot be compared.";
+            return;
+        }
+
+        IReadOnlyList<ComparisonResource> candidates;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            candidates = _resourceComparisonService.CreateCandidates(
+                source,
+                _activeScope,
+                _databaseSnapshots,
+                RootNodes,
+                GetUnloadedResourceIds());
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+
+        if (candidates.Count == 0)
+        {
+            StatusText = $"No comparable {source.TypeDisplay} resources were found in the active scope.";
+            return;
+        }
+
+        var picker = new ComparisonResourcePickerWindow(candidates)
+        {
+            Owner = this,
+            Title = $"Select {source.TypeDisplay} to Compare"
+        };
+
+        if (picker.ShowDialog() != true || picker.SelectedResource == null)
+        {
+            return;
+        }
+
+        await OpenResourceComparisonAsync(source, picker.SelectedResource);
+    }
+
+    private async Task OpenResourceComparisonAsync(ComparisonResource left, ComparisonResource right)
+    {
+        if (left.IsCollection && right.IsCollection)
+        {
+            await OpenCollectionDiffAsync(left, right);
+            return;
+        }
+
+        if (left.IsTableData && right.IsTableData)
+        {
+            OpenTableDataDiff(left, right);
+            return;
+        }
+
+        OpenFileDiff(left, right);
+    }
+
+    private async Task OpenCollectionDiffAsync(ComparisonResource left, ComparisonResource right)
+    {
+        ResourceCollectionDiffResult result;
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            result = await Task.Run(() => _resourceComparisonService.BuildCollectionDiff(left, right, _databaseSnapshots));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            StatusText = $"Could not compare collections: {ex.Message}";
+            return;
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+
+        var window = new ResourceCollectionDiffWindow(result, OpenCollectionDiffRow)
+        {
+            Owner = this
+        };
+        window.Show();
+        StatusText = $"Compared {left.DisplayName} and {right.DisplayName}.";
+    }
+
+    private void OpenCollectionDiffRow(ResourceCollectionDiffRow row)
+    {
+        ResourceComparisonDocument? leftDocument = row.LeftDocument;
+        ResourceComparisonDocument? rightDocument = row.RightDocument;
+        if (leftDocument == null && rightDocument == null)
+        {
+            return;
+        }
+
+        ComparisonResource left = leftDocument?.Resource ?? CreateMissingComparisonResource(rightDocument!.Resource, "(missing left)");
+        ComparisonResource right = rightDocument?.Resource ?? CreateMissingComparisonResource(leftDocument!.Resource, "(missing right)");
+
+        if (leftDocument?.Kind == ComparisonResourceKind.TableData &&
+            rightDocument?.Kind == ComparisonResourceKind.TableData)
+        {
+            OpenTableDataDiff(left, right);
+            return;
+        }
+
+        string leftContent = leftDocument?.Content ?? string.Empty;
+        string rightContent = rightDocument?.Content ?? string.Empty;
+        var window = new ResourceFileDiffWindow(left, right, leftContent, rightContent)
+        {
+            Owner = this
+        };
+        window.Show();
+    }
+
+    private static ComparisonResource CreateMissingComparisonResource(ComparisonResource template, string name)
+    {
+        return template with
+        {
+            DisplayName = name,
+            Path = string.Empty,
+            IdentityKey = $"missing:{template.IdentityKey}:{name}"
+        };
+    }
+
+    private void OpenFileDiff(ComparisonResource left, ComparisonResource right)
+    {
+        if (!_resourceComparisonService.TryGetTextContent(left, _databaseSnapshots, out string leftContent, out _, out string leftError))
+        {
+            StatusText = leftError;
+            return;
+        }
+
+        if (!_resourceComparisonService.TryGetTextContent(right, _databaseSnapshots, out string rightContent, out _, out string rightError))
+        {
+            StatusText = rightError;
+            return;
+        }
+
+        var window = new ResourceFileDiffWindow(left, right, leftContent, rightContent)
+        {
+            Owner = this
+        };
+        window.Show();
+        StatusText = $"Comparing {left.DisplayName} and {right.DisplayName}.";
+    }
+
+    private void OpenTableDataDiff(ComparisonResource left, ComparisonResource right)
+    {
+        IReadOnlyList<string> keyColumns = _resourceComparisonService.GetPreferredTableDataKeyColumns(left, right, _databaseSnapshots);
+        if (keyColumns.Count == 0)
+        {
+            IReadOnlyList<string> columns = _resourceComparisonService.GetCommonTableDataColumns(left, right, _databaseSnapshots);
+            if (columns.Count == 0)
+            {
+                StatusText = "No common table data columns are available to use as a key.";
+                return;
+            }
+
+            var keyPicker = new TableDataKeyPickerWindow(columns)
+            {
+                Owner = this
+            };
+
+            if (keyPicker.ShowDialog() != true || keyPicker.SelectedColumns.Count == 0)
+            {
+                return;
+            }
+
+            keyColumns = keyPicker.SelectedColumns;
+        }
+
+        TableDataDiffResult result = _resourceComparisonService.BuildTableDataDiff(left, right, keyColumns, _databaseSnapshots);
+        var window = new TableDataDiffWindow(result)
+        {
+            Owner = this
+        };
+        window.Show();
+        StatusText = $"Comparing table data for {left.DisplayName} and {right.DisplayName}.";
     }
 
     private bool CanToggleScopeResourceLoad(FileSystemNode node)
@@ -7594,21 +7832,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return resource.Kind switch
         {
             ResourceKind.File => IsSameFileSystemPath(resource.Path, documentPath),
-            ResourceKind.Project => IsProjectResourceDocument(resource, documentPath),
             ResourceKind.Folder => IsPathInDirectory(documentPath, resource.Path),
             _ => false
         };
-    }
-
-    private static bool IsProjectResourceDocument(ScopedResource resource, string documentPath)
-    {
-        if (IsSameFileSystemPath(resource.Path, documentPath))
-        {
-            return true;
-        }
-
-        string? projectDirectory = Path.GetDirectoryName(resource.Path);
-        return !string.IsNullOrWhiteSpace(projectDirectory) && IsPathInDirectory(documentPath, projectDirectory);
     }
 
     private ReferenceResourceContext CreateReferenceResourceContext(ScopedResource resource)
@@ -8011,7 +8237,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             ResourceKind.File => 300_000 + pathLength,
             ResourceKind.DatabaseSnapshot => 300_000 + pathLength,
-            ResourceKind.Project => 200_000 + pathLength,
             ResourceKind.Folder => 100_000 + pathLength,
             _ => pathLength
         };

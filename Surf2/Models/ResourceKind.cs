@@ -4,7 +4,6 @@ public enum ResourceKind
 {
     Folder,
     File,
-    Project,
     DatabaseSnapshot,
     Diagram
 }

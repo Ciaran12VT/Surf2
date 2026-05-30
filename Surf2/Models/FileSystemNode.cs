@@ -8,7 +8,6 @@ public enum FileSystemNodeIconKind
 {
     File,
     Folder,
-    Project,
     Database,
     Diagrams,
     VirtualFolder,
@@ -22,14 +21,12 @@ public sealed class FileSystemNode
 
     private static readonly Geometry FileIconGeometry = CreateFrozenGeometry("M5,2.5 L11,2.5 L14,5.5 L14,15.5 L5,15.5 Z M11,2.5 L11,5.5 L14,5.5");
     private static readonly Geometry FolderIconGeometry = CreateFrozenGeometry("M2.5,5.5 L7,5.5 L8.5,7.2 L15.5,7.2 Q16.5,7.2 16.5,8.2 L16.5,14.5 Q16.5,15.5 15.5,15.5 L2.5,15.5 Q1.5,15.5 1.5,14.5 L1.5,6.5 Q1.5,5.5 2.5,5.5 Z");
-    private static readonly Geometry ProjectIconGeometry = CreateFrozenGeometry("M2.5,5.5 L7,5.5 L8.5,7.2 L15.5,7.2 Q16.5,7.2 16.5,8.2 L16.5,14.5 Q16.5,15.5 15.5,15.5 L2.5,15.5 Q1.5,15.5 1.5,14.5 L1.5,6.5 Q1.5,5.5 2.5,5.5 Z M6,10.5 L4.7,12 L6,13.5 M9.8,10 L8.7,14 M12.2,10.5 L13.5,12 L12.2,13.5");
     private static readonly Geometry DatabaseIconGeometry = CreateFrozenGeometry("M4,5 C4,3.7 14,3.7 14,5 C14,6.3 4,6.3 4,5 M4,5 L4,13 C4,14.3 14,14.3 14,13 L14,5 M4,9 C4,10.3 14,10.3 14,9");
     private static readonly Geometry DiagramsIconGeometry = CreateFrozenGeometry("M5,3.5 L13,3.5 L13,7.5 L5,7.5 Z M9,7.5 L9,10 M5,13.5 L2,13.5 L2,16.5 L5,16.5 Z M16,13.5 L13,13.5 L13,16.5 L16,16.5 Z M9,10 L3.5,13.5 M9,10 L14.5,13.5");
     private static readonly Geometry MissingIconGeometry = CreateFrozenGeometry("M9,2.5 L16,15.5 L2,15.5 Z M9,6.5 L9,10.5 M9,13.2 L9.1,13.2");
 
     private static readonly Brush FileIconBrush = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B));
     private static readonly Brush FolderIconBrush = CreateFrozenBrush(Color.FromRgb(0xB4, 0x79, 0x00));
-    private static readonly Brush ProjectIconBrush = CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB));
     private static readonly Brush DatabaseIconBrush = CreateFrozenBrush(Color.FromRgb(0x0F, 0x76, 0x6E));
     private static readonly Brush DiagramsIconBrush = CreateFrozenBrush(Color.FromRgb(0x7C, 0x3A, 0xED));
     private static readonly Brush VirtualFolderIconBrush = CreateFrozenBrush(Color.FromRgb(0xC2, 0x41, 0x0C));
@@ -113,7 +110,6 @@ public sealed class FileSystemNode
     public Geometry IconGeometry => IconKind switch
     {
         FileSystemNodeIconKind.Folder => FolderIconGeometry,
-        FileSystemNodeIconKind.Project => ProjectIconGeometry,
         FileSystemNodeIconKind.Database => DatabaseIconGeometry,
         FileSystemNodeIconKind.Diagrams => DiagramsIconGeometry,
         FileSystemNodeIconKind.VirtualFolder => FolderIconGeometry,
@@ -124,7 +120,6 @@ public sealed class FileSystemNode
     public Brush IconBrush => !IsScopeResourceLoaded ? UnloadedBrush : IconKind switch
     {
         FileSystemNodeIconKind.Folder => FolderIconBrush,
-        FileSystemNodeIconKind.Project => ProjectIconBrush,
         FileSystemNodeIconKind.Database => DatabaseIconBrush,
         FileSystemNodeIconKind.Diagrams => DiagramsIconBrush,
         FileSystemNodeIconKind.VirtualFolder => VirtualFolderIconBrush,

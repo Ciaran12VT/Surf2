@@ -22,8 +22,7 @@ public sealed class LinkableResourceService
                     break;
 
                 case ResourceKind.File:
-                case ResourceKind.Project:
-                    AddFileOrProjectResource(scopedResource, resources, addedPaths);
+                    AddFileResource(scopedResource, resources, addedPaths);
                     break;
 
                 case ResourceKind.DatabaseSnapshot:
@@ -79,29 +78,17 @@ public sealed class LinkableResourceService
         }
     }
 
-    private static void AddFileOrProjectResource(
+    private static void AddFileResource(
         ScopedResource scopedResource,
         List<LinkableResource> resources,
         HashSet<string> addedPaths)
     {
-        if (Directory.Exists(scopedResource.Path))
-        {
-            AddFolder(scopedResource.Path, scopedResource.DisplayName, resources, addedPaths);
-            if (scopedResource.IncludeChildren)
-            {
-                AddFolderContents(scopedResource.Path, resources, addedPaths);
-            }
-
-            return;
-        }
-
         if (!File.Exists(scopedResource.Path))
         {
             return;
         }
 
-        string type = scopedResource.Kind == ResourceKind.Project ? "Project" : "File";
-        AddFile(scopedResource.Path, scopedResource.DisplayName, type, resources, addedPaths);
+        AddFile(scopedResource.Path, scopedResource.DisplayName, "File", resources, addedPaths);
     }
 
     private static void AddDatabaseResource(

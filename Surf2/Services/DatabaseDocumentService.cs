@@ -31,6 +31,25 @@ public sealed class DatabaseDocumentService
         return path.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool TryParseDocumentPath(string documentPath, out DatabaseDocumentReference reference)
+    {
+        reference = DatabaseDocumentReference.Empty;
+        if (!TryParsePath(documentPath, out string snapshotId, out string documentType, out string kind, out string fullName))
+        {
+            return false;
+        }
+
+        SqlDatabaseObjectKind? objectKind = null;
+        if (!string.IsNullOrWhiteSpace(kind) &&
+            Enum.TryParse(kind, ignoreCase: true, out SqlDatabaseObjectKind parsedKind))
+        {
+            objectKind = parsedKind;
+        }
+
+        reference = new DatabaseDocumentReference(snapshotId, documentType, objectKind, fullName);
+        return true;
+    }
+
     public bool TryGetTableDataDocumentPathForTableDocument(
         string tableDocumentPath,
         DatabaseSnapshotLibrary snapshotLibrary,
@@ -380,4 +399,13 @@ public sealed class DatabaseDocumentService
     {
         return length < 0 ? "max" : length.ToString();
     }
+}
+
+public sealed record DatabaseDocumentReference(
+    string SnapshotId,
+    string DocumentType,
+    SqlDatabaseObjectKind? ObjectKind,
+    string FullName)
+{
+    public static DatabaseDocumentReference Empty { get; } = new(string.Empty, string.Empty, null, string.Empty);
 }
