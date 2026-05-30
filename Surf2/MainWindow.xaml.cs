@@ -7330,10 +7330,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         else
         {
-            foreach (CodeReferenceOccurrence occurrence in kindOccurrences)
-            {
-                kindMenu.Items.Add(CreateSqlReferenceOccurrenceMenuItem(window, occurrence));
-            }
+            AddReferenceEntityMenus(kindMenu, window, kindOccurrences);
         }
 
         referencesMenu.Items.Add(kindMenu);
@@ -7362,10 +7359,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             foreach (IGrouping<ReferenceEntityKind, CodeReferenceOccurrence> kindGroup in internalOccurrences.GroupBy(occurrence => occurrence.Target.Kind))
             {
                 var kindMenu = new MenuItem { Header = GetReferenceKindGroupHeader(kindGroup.Key, sourceLanguage) };
-                foreach (CodeReferenceOccurrence occurrence in kindGroup)
-                {
-                    kindMenu.Items.Add(CreateReferenceOccurrenceMenuItem(window, occurrence));
-                }
+                AddReferenceEntityMenus(kindMenu, window, kindGroup);
 
                 internalMenu.Items.Add(kindMenu);
             }
@@ -7433,10 +7427,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                      .GroupBy(occurrence => occurrence.Target.Kind))
         {
             var kindMenu = new MenuItem { Header = GetReferenceKindGroupHeader(kindGroup.Key, sourceLanguage) };
-            foreach (CodeReferenceOccurrence occurrence in kindGroup)
-            {
-                kindMenu.Items.Add(CreateReferenceOccurrenceMenuItem(window, occurrence));
-            }
+            AddReferenceEntityMenus(kindMenu, window, kindGroup);
 
             resourceMenu.Items.Add(kindMenu);
         }
@@ -7459,38 +7450,78 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ToolTip = fileGroup.Key
             };
 
-            foreach (CodeReferenceOccurrence occurrence in fileGroup)
-            {
-                fileMenu.Items.Add(CreateReferenceOccurrenceMenuItem(window, occurrence));
-            }
+            AddReferenceEntityMenus(fileMenu, window, fileGroup);
 
             resourceMenu.Items.Add(fileMenu);
         }
     }
 
-    private MenuItem CreateReferenceOccurrenceMenuItem(FloatingCodeWindow window, CodeReferenceOccurrence occurrence)
+    private void AddReferenceEntityMenus(
+        MenuItem parentMenu,
+        FloatingCodeWindow window,
+        IEnumerable<CodeReferenceOccurrence> occurrences)
     {
-        var item = new MenuItem
+        foreach (IGrouping<string, CodeReferenceOccurrence> entityGroup in occurrences
+                     .GroupBy(CreateReferenceEntityMenuKey, StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(group => FormatReferenceEntityMenuHeader(group.First()), StringComparer.CurrentCultureIgnoreCase)
+                     .ThenBy(group => group.First().Target.Kind))
         {
-            Header = FormatReferenceOccurrenceHeader(occurrence),
-            ToolTip = $"{occurrence.Target.Kind}: {GetReferenceDisplayName(occurrence.Target)} in {GetDisplayNameFromPath(occurrence.Target.FilePath)}"
-        };
+            CodeReferenceOccurrence firstOccurrence = entityGroup.First();
+            var entityMenu = new MenuItem
+            {
+                Header = FormatReferenceEntityMenuHeader(firstOccurrence),
+                ToolTip = $"{firstOccurrence.Target.Kind}: {FormatReferenceEntityMenuHeader(firstOccurrence)} in {GetDisplayNameFromPath(firstOccurrence.Target.FilePath)}"
+            };
 
-        item.Click += (_, e) =>
-        {
-            e.Handled = true;
-            NavigateToReferenceOccurrence(window, occurrence);
-        };
+            foreach (CodeReferenceOccurrence lineOccurrence in entityGroup
+                         .GroupBy(occurrence => occurrence.LineNumber)
+                         .OrderBy(group => group.Key)
+                         .Select(group => group.OrderBy(occurrence => occurrence.ColumnNumber).First()))
+            {
+                entityMenu.Items.Add(CreateReferenceLineOccurrenceMenuItem(window, lineOccurrence));
+            }
 
-        return item;
+            parentMenu.Items.Add(entityMenu);
+        }
     }
 
-    private MenuItem CreateSqlReferenceOccurrenceMenuItem(FloatingCodeWindow window, CodeReferenceOccurrence occurrence)
+    private static string CreateReferenceEntityMenuKey(CodeReferenceOccurrence occurrence)
+    {
+        ReferenceEntity target = occurrence.Target;
+        string parameterCount = target.ParameterCount?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
+        return string.Join(
+            "|",
+            target.Kind,
+            NormalizeReferenceEntityMenuName(target),
+            parameterCount);
+    }
+
+    private static string NormalizeReferenceEntityMenuName(ReferenceEntity target)
+    {
+        string displayName = GetReferenceDisplayName(target);
+        return target.Kind is ReferenceEntityKind.StoredProcedure
+            or ReferenceEntityKind.View
+            or ReferenceEntityKind.Trigger
+            or ReferenceEntityKind.Table
+            or ReferenceEntityKind.Field
+            ? NormalizeSqlReferenceToken(displayName)
+            : displayName.Trim();
+    }
+
+    private static string FormatReferenceEntityMenuHeader(CodeReferenceOccurrence occurrence)
+    {
+        string parameterLabel = occurrence.Target.ParameterCount.HasValue
+            ? $" ({occurrence.Target.ParameterCount.Value} params)"
+            : string.Empty;
+        return $"{GetReferenceDisplayName(occurrence.Target)}{parameterLabel}";
+    }
+
+    private MenuItem CreateReferenceLineOccurrenceMenuItem(FloatingCodeWindow window, CodeReferenceOccurrence occurrence)
     {
         var item = new MenuItem
         {
-            Header = $"{GetReferenceDisplayName(occurrence.Target)} - line {occurrence.LineNumber}",
-            ToolTip = $"{occurrence.Target.Kind}: {GetReferenceDisplayName(occurrence.Target)} in {GetDisplayNameFromPath(occurrence.Target.FilePath)}"
+            Header = $"Line {occurrence.LineNumber}",
+            ToolTip = $"{occurrence.Target.Kind}: {FormatReferenceEntityMenuHeader(occurrence)} referenced on line {occurrence.LineNumber}"
         };
 
         item.Click += (_, e) =>
@@ -8161,14 +8192,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return null;
-    }
-
-    private static string FormatReferenceOccurrenceHeader(CodeReferenceOccurrence occurrence)
-    {
-        string parameterLabel = occurrence.Target.ParameterCount.HasValue
-            ? $" ({occurrence.Target.ParameterCount.Value} params)"
-            : string.Empty;
-        return $"{occurrence.Token}{parameterLabel} - line {occurrence.LineNumber}";
     }
 
     private static string GetReferenceKindGroupHeader(ReferenceEntityKind kind, string sourceLanguage)
