@@ -317,7 +317,7 @@ public sealed class FileTreeService
         }
 
         matchCount++;
-        return new FileSystemNode(
+        var node = new FileSystemNode(
             filePath,
             isDirectory: false,
             displayName: displayName,
@@ -325,6 +325,8 @@ public sealed class FileTreeService
             parentKey: parentKey,
             scopeResourceId: scopeResourceId,
             isScopeResourceRoot: isScopeResourceRoot);
+        ApplyContentSearchMetadata(node, matcher, searchTarget);
+        return node;
     }
 
     private static FileSystemNode? SearchDatabaseResource(
@@ -404,9 +406,10 @@ public sealed class FileTreeService
             string content = databaseObject.Definition;
             searchedCount++;
 
+            bool contentMatch = searchTarget == ObjectExplorerSearchTarget.Content && matcher.IsMatch(content);
             bool isMatch = searchTarget == ObjectExplorerSearchTarget.Name
                 ? matcher.IsMatch(displayName)
-                : matcher.IsMatch(content);
+                : contentMatch;
 
             if (!isMatch)
             {
@@ -414,14 +417,20 @@ public sealed class FileTreeService
             }
 
             matchCount++;
-            folder.Children.Add(new FileSystemNode(
+            var node = new FileSystemNode(
                 DatabaseDocumentService.CreateObjectDocumentPath(snapshot, databaseObject),
                 isDirectory: false,
                 displayName: displayName,
                 parentKey: folder.NodeKey)
             {
                 IsVirtualDocument = true
-            });
+            };
+            if (contentMatch)
+            {
+                ApplyContentSearchMetadata(node, matcher, searchTarget);
+            }
+
+            folder.Children.Add(node);
         }
 
         if (folder.Children.Count > 0)
@@ -462,6 +471,7 @@ public sealed class FileTreeService
 
             searchedCount++;
             IReadOnlyList<int> fullDataMatchColumnIndexes = [];
+            bool tableDocumentMatch = false;
             bool isMatch;
             if (searchTarget == ObjectExplorerSearchTarget.Name)
             {
@@ -469,7 +479,7 @@ public sealed class FileTreeService
             }
             else
             {
-                bool tableDocumentMatch = matcher.IsMatch(documentService.CreateTableDocument(snapshot, table));
+                tableDocumentMatch = matcher.IsMatch(documentService.CreateTableDocument(snapshot, table));
                 fullDataMatchColumnIndexes = FindFullDataMatchColumnIndexes(snapshot, table, matcher);
                 isMatch = tableDocumentMatch || fullDataMatchColumnIndexes.Count > 0;
             }
@@ -492,6 +502,12 @@ public sealed class FileTreeService
             foreach (int columnIndex in fullDataMatchColumnIndexes)
             {
                 node.SpreadsheetSearchFilters[columnIndex] = matcher.Query;
+            }
+
+            if (searchTarget == ObjectExplorerSearchTarget.Content &&
+                tableDocumentMatch)
+            {
+                ApplyContentSearchMetadata(node, matcher, searchTarget);
             }
 
             folder.Children.Add(node);
@@ -568,6 +584,20 @@ public sealed class FileTreeService
         }
 
         return headers;
+    }
+
+    private static void ApplyContentSearchMetadata(
+        FileSystemNode node,
+        SearchMatcher matcher,
+        ObjectExplorerSearchTarget searchTarget)
+    {
+        if (searchTarget != ObjectExplorerSearchTarget.Content)
+        {
+            return;
+        }
+
+        node.ContentSearchPattern = matcher.Query;
+        node.ContentSearchUseRegex = matcher.UseRegex;
     }
 
     private static bool TryGetPropertyIgnoreCase(JsonElement row, string propertyName, out JsonElement value)
@@ -966,6 +996,8 @@ public sealed class FileTreeService
         }
 
         public string Query => _query;
+
+        public bool UseRegex => _regex != null;
 
         public static SearchMatcher Create(string query, bool useRegex)
         {

@@ -83,6 +83,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         IReadOnlyList<DiagramObjectSnapshot>? BeforeGroup = null,
         IReadOnlyList<DiagramObjectSnapshot>? AfterGroup = null);
 
+    private sealed record ReferenceDiagramObjectClipboard(
+        string ReferenceText,
+        string LineAddress);
+
     private sealed record MetadataLinkTarget(
         string Link,
         int? LineNumber);
@@ -333,6 +337,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private FrameworkElement? _selectedDiagramObject;
     private System.Windows.Shapes.Rectangle? _diagramSelectionRectangle;
     private DiagramObjectSnapshot? _diagramClipboardSnapshot;
+    private ReferenceDiagramObjectClipboard? _referenceDiagramObjectClipboard;
     private DiagramObjectSnapshot? _pendingDiagramInteractionSnapshot;
     private readonly Stack<DiagramUndoAction> _diagramUndoStack = new();
     private readonly HashSet<FrameworkElement> _selectedDiagramObjects = [];
@@ -1047,12 +1052,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _databaseSnapshots,
                 out string tableDataDocumentPath))
         {
+            ApplyObjectExplorerContentSearchNavigation(node);
             return;
         }
 
         _openWindows.TryGetValue(node.FullPath, out FloatingCodeWindow? sourceWindow);
         await OpenFileAsync(tableDataDocumentPath, sourceWindow: sourceWindow, suppressHistory: true);
         ApplyObjectExplorerSpreadsheetFilters(tableDataDocumentPath, node);
+        ApplyObjectExplorerContentSearchNavigation(node);
     }
 
     private void ApplyObjectExplorerSpreadsheetFilters(string documentPath, FileSystemNode node)
@@ -1066,6 +1073,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         spreadsheetWindow.ApplyColumnFilters(node.SpreadsheetSearchFilters);
         string columnText = node.SpreadsheetSearchFilters.Count == 1 ? "column" : "columns";
         StatusText = $"Opened {node.Name} and filtered full data ({node.SpreadsheetSearchFilters.Count} {columnText}).";
+    }
+
+    private bool ApplyObjectExplorerContentSearchNavigation(FileSystemNode node)
+    {
+        if (string.IsNullOrWhiteSpace(node.ContentSearchPattern) ||
+            !_openWindows.TryGetValue(node.FullPath, out FloatingCodeWindow? codeWindow))
+        {
+            return false;
+        }
+
+        ActivateCodeWindow(codeWindow);
+        RevealWindow(codeWindow);
+        if (!codeWindow.TryShowSearchAndScrollToFirstMatch(
+                node.ContentSearchPattern,
+                node.ContentSearchUseRegex,
+                out int lineNumber,
+                out int columnNumber))
+        {
+            return false;
+        }
+
+        RevealDocumentPositionInWindowAfterScroll(codeWindow, lineNumber, columnNumber);
+        StatusText = $"Opened {node.Name} at first content match.";
+        return true;
     }
 
     private void ObjectExplorerItem_Expanded(object sender, RoutedEventArgs e)
@@ -6747,6 +6778,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (TryCreateCopyDiagramObjectMenuInfo(window, out CodeReferenceDiagramObjectInfo? diagramObjectInfo) &&
+            diagramObjectInfo != null)
+        {
+            InsertCopyDiagramObjectMenuItem(e.ContextMenu, diagramObjectInfo);
+        }
+
         if (IsCSharpDocument(window.State.FilePath))
         {
             InsertDynamicReferencesMenu(e.ContextMenu, CreateCSharpReferencesContextMenu(window));
@@ -6769,6 +6806,53 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private bool TryCreateCopyDiagramObjectMenuInfo(
+        FloatingCodeWindow window,
+        out CodeReferenceDiagramObjectInfo? diagramObjectInfo)
+    {
+        diagramObjectInfo = null;
+        if (!window.TryCreateCurrentReferenceDiagramObjectInfo(out CodeReferenceDiagramObjectInfo info) ||
+            _referenceIndex.Resolve(info.Token, info.ArgumentCount).Count == 0)
+        {
+            return false;
+        }
+
+        diagramObjectInfo = info;
+        return true;
+    }
+
+    private void InsertCopyDiagramObjectMenuItem(ContextMenu contextMenu, CodeReferenceDiagramObjectInfo info)
+    {
+        var item = new MenuItem
+        {
+            Header = "Copy Diagram Object",
+            Tag = DynamicReferencesContextMenuTag,
+            ToolTip = $"Copy '{info.ReferenceText}' as a diagram object linked to {info.LineAddress}"
+        };
+        item.Click += (_, e) =>
+        {
+            e.Handled = true;
+            CopyReferenceDiagramObject(info);
+        };
+
+        int insertIndex = FindMenuItemIndexByHeader(contextMenu, "Copy Line Address");
+        contextMenu.Items.Insert(insertIndex >= 0 ? insertIndex + 1 : 0, item);
+    }
+
+    private static int FindMenuItemIndexByHeader(ContextMenu contextMenu, string header)
+    {
+        for (int i = 0; i < contextMenu.Items.Count; i++)
+        {
+            if (contextMenu.Items[i] is MenuItem item &&
+                string.Equals(item.Header?.ToString(), header, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     private void FloatingWindow_ScopeFindRequested(object? sender, EventArgs e)
     {
         ObjectExplorerSearchTextBox.Focus();
@@ -6782,6 +6866,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = e.Copied
             ? $"Copied line address: {e.LineAddress}"
             : $"Could not copy line address: {e.ErrorMessage}";
+    }
+
+    private void CopyReferenceDiagramObject(CodeReferenceDiagramObjectInfo info)
+    {
+        _referenceDiagramObjectClipboard = new ReferenceDiagramObjectClipboard(info.ReferenceText, info.LineAddress);
+        _diagramClipboardSnapshot = null;
+        bool copiedClipboard = TrySetDiagramObjectClipboard(info.ReferenceText);
+        StatusText = copiedClipboard
+            ? $"Copied reference '{info.ReferenceText}' as a diagram object."
+            : $"Copied reference '{info.ReferenceText}' as a diagram object, but could not update the system clipboard.";
     }
 
     private MenuItem CreateCSharpReferencesContextMenu(FloatingCodeWindow window)
@@ -10756,6 +10850,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _diagramClipboardSnapshot = snapshot.Clone();
+        _referenceDiagramObjectClipboard = null;
         bool copiedClipboard = TrySetDiagramObjectClipboard(searchText);
         StatusText = copiedClipboard
             ? "Copied diagram object and object name."
@@ -10810,6 +10905,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _diagramClipboardSnapshot = snapshot.Clone();
+        _referenceDiagramObjectClipboard = null;
         TrySetDiagramObjectClipboard(GetDiagramObjectSearchText(_selectedDiagramObject));
         RemoveDiagramObject(_selectedDiagramObject, pushUndo: true);
         StatusText = "Cut diagram object.";
@@ -10824,6 +10920,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (ClipboardContainsDiagramObject())
         {
+            if (_referenceDiagramObjectClipboard != null)
+            {
+                PasteReferenceDiagramObject();
+                return;
+            }
+
             PasteDiagramObject();
             return;
         }
@@ -10836,6 +10938,123 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         StatusText = "Copy a diagram object or image before pasting.";
+    }
+
+    private void PasteReferenceDiagramObject()
+    {
+        if (TryBlockDiagramObjectEditWhenLocked("paste diagram objects"))
+        {
+            return;
+        }
+
+        if (_referenceDiagramObjectClipboard == null)
+        {
+            StatusText = "Copy a reference diagram object before pasting.";
+            return;
+        }
+
+        DiagramObjectSnapshot pastedSnapshot = CreateReferenceDiagramObjectSnapshot(_referenceDiagramObjectClipboard);
+        FrameworkElement? pastedObject = CreateDiagramObjectFromSnapshot(pastedSnapshot);
+        if (pastedObject == null)
+        {
+            StatusText = "Could not paste reference diagram object.";
+            return;
+        }
+
+        ApplyDefaultDiagramZIndex(pastedObject);
+        pastedSnapshot.ZIndex = Panel.GetZIndex(pastedObject);
+        DiagramCanvas.Children.Add(pastedObject);
+        SelectDiagramObject(pastedObject);
+        PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: pastedSnapshot);
+        StatusText = $"Pasted reference '{_referenceDiagramObjectClipboard.ReferenceText}' as {FormatReferenceDiagramObjectType(pastedSnapshot)}.";
+    }
+
+    private DiagramObjectSnapshot CreateReferenceDiagramObjectSnapshot(ReferenceDiagramObjectClipboard clipboard)
+    {
+        const double defaultShapeWidth = 220;
+        const double defaultShapeHeight = 86;
+        const double defaultLabelWidth = 240;
+        const double defaultLabelHeight = 44;
+
+        Point pastePoint = GetDiagramPasteTargetPoint();
+        var metadata = new DiagramObjectMetadata
+        {
+            Link = clipboard.LineAddress
+        };
+
+        DiagramImageDefinition? selectedImage = GetSelectedDiagramImageDefinition();
+        if (selectedImage != null)
+        {
+            Size imageSize = new(defaultShapeWidth, 130);
+            if (CreateImageSource(selectedImage.ImageDataBase64) is BitmapSource imageSource)
+            {
+                imageSize = GetPastedImageDisplaySize(imageSource);
+            }
+
+            return new DiagramObjectSnapshot
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                ObjectType = DiagramObjectType.Image,
+                Metadata = metadata,
+                ImageDefinitionId = selectedImage.Id,
+                ImageName = selectedImage.Name,
+                ImageDataBase64 = selectedImage.ImageDataBase64,
+                LabelText = clipboard.ReferenceText,
+                Left = pastePoint.X - (imageSize.Width / 2),
+                Top = pastePoint.Y - (imageSize.Height / 2),
+                Width = imageSize.Width,
+                Height = imageSize.Height
+            };
+        }
+
+        if (IsDiagramLabelToolSelected())
+        {
+            double labelWidth = Math.Clamp((clipboard.ReferenceText.Length * 7.5) + 28, defaultLabelWidth, 420);
+            return new DiagramObjectSnapshot
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                ObjectType = DiagramObjectType.Label,
+                Metadata = metadata,
+                LabelText = clipboard.ReferenceText,
+                OutlineColorText = _diagramOutlineColor,
+                BackColorText = _diagramBackColor,
+                IsTethered = true,
+                LabelAnchorX = pastePoint.X,
+                LabelAnchorY = pastePoint.Y,
+                LabelBoxLeft = pastePoint.X + 28,
+                LabelBoxTop = pastePoint.Y - (defaultLabelHeight / 2),
+                LabelBoxWidth = labelWidth,
+                LabelBoxHeight = defaultLabelHeight
+            };
+        }
+
+        DiagramShapeKind shapeKind = GetSelectedDiagramShapeKind() ?? DiagramShapeKind.Rectangle;
+        return new DiagramObjectSnapshot
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            ObjectType = DiagramObjectType.Shape,
+            Metadata = metadata,
+            ShapeKind = shapeKind,
+            LabelText = clipboard.ReferenceText,
+            OutlineColorText = _diagramOutlineColor,
+            BackColorText = _diagramBackColor,
+            Left = pastePoint.X - (defaultShapeWidth / 2),
+            Top = pastePoint.Y - (defaultShapeHeight / 2),
+            Width = defaultShapeWidth,
+            Height = defaultShapeHeight
+        };
+    }
+
+    private static string FormatReferenceDiagramObjectType(DiagramObjectSnapshot snapshot)
+    {
+        return snapshot.ObjectType switch
+        {
+            DiagramObjectType.Image => "an image",
+            DiagramObjectType.Label => "a label",
+            DiagramObjectType.Shape when snapshot.ShapeKind == DiagramShapeKind.Ellipse => "a circle",
+            DiagramObjectType.Shape => "a rectangle",
+            _ => "a diagram object"
+        };
     }
 
     private static BitmapSource? TryGetClipboardImage()
@@ -10916,6 +11135,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return new Point(
             (DiagramScrollViewer.HorizontalOffset + (viewportWidth / 2)) / _diagramCanvasZoom,
             (DiagramScrollViewer.VerticalOffset + (viewportHeight / 2)) / _diagramCanvasZoom);
+    }
+
+    private Point GetDiagramPasteTargetPoint()
+    {
+        if (DiagramCanvas.IsMouseOver)
+        {
+            Point mousePoint = Mouse.GetPosition(DiagramCanvas);
+            if (IsFiniteCanvasPoint(mousePoint) &&
+                mousePoint.X >= 0 &&
+                mousePoint.Y >= 0 &&
+                mousePoint.X <= DiagramCanvas.ActualWidth &&
+                mousePoint.Y <= DiagramCanvas.ActualHeight)
+            {
+                return mousePoint;
+            }
+        }
+
+        return GetDiagramPasteCenterPoint();
+    }
+
+    private static bool IsFiniteCanvasPoint(Point point)
+    {
+        return !double.IsNaN(point.X) &&
+               !double.IsNaN(point.Y) &&
+               !double.IsInfinity(point.X) &&
+               !double.IsInfinity(point.Y);
     }
 
     private static string SavePastedDiagramImage(BitmapSource imageSource)

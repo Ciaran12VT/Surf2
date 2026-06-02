@@ -99,6 +99,10 @@ public sealed class FileSystemNode
 
     public bool HasUnresolvedQueries { get; set; }
 
+    public string ContentSearchPattern { get; set; } = string.Empty;
+
+    public bool ContentSearchUseRegex { get; set; }
+
     public Dictionary<int, string> SpreadsheetSearchFilters { get; } = [];
 
     public FileSystemNodeIconKind IconKind { get; }

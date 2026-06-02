@@ -1,5 +1,6 @@
 using System.IO;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -193,6 +194,46 @@ public partial class FloatingCodeWindow : UserControl
         return TryGetReferenceTokenAtOffset(caretOffset, out token, out _);
     }
 
+    public bool TryCreateCurrentReferenceDiagramObjectInfo(out CodeReferenceDiagramObjectInfo info)
+    {
+        info = new CodeReferenceDiagramObjectInfo(string.Empty, string.Empty, null, string.Empty, 0, 0, 0);
+
+        if (Editor.Document == null || Editor.Document.TextLength == 0)
+        {
+            return false;
+        }
+
+        int caretOffset = Math.Clamp(Editor.TextArea.Caret.Offset, 0, Editor.Document.TextLength - 1);
+        if (!TryGetReferenceTokenAtOffset(
+                caretOffset,
+                out string token,
+                out int? argumentCount,
+                out int tokenStartOffset,
+                out int tokenEndOffset))
+        {
+            return false;
+        }
+
+        ICSharpCode.AvalonEdit.Document.TextLocation startLocation = Editor.Document.GetLocation(tokenStartOffset);
+        ICSharpCode.AvalonEdit.Document.TextLocation endLocation = Editor.Document.GetLocation(Math.Min(Editor.Document.TextLength, tokenEndOffset + 1));
+        string referenceText = Editor.Document.GetText(tokenStartOffset, tokenEndOffset - tokenStartOffset + 1).Trim();
+        if (string.IsNullOrWhiteSpace(referenceText))
+        {
+            referenceText = token;
+        }
+
+        string lineAddress = $"{State.FilePath}:{startLocation.Line.ToString(CultureInfo.InvariantCulture)}";
+        info = new CodeReferenceDiagramObjectInfo(
+            token,
+            referenceText,
+            argumentCount,
+            lineAddress,
+            startLocation.Line,
+            startLocation.Column,
+            endLocation.Column);
+        return true;
+    }
+
     public void ApplyCodeBackcolor(Brush backcolor)
     {
         EditorHost.Background = backcolor;
@@ -222,6 +263,45 @@ public partial class FloatingCodeWindow : UserControl
         _referenceHighlightColorizer = new ReferenceHighlightColorizer(highlightStyles);
         Editor.TextArea.TextView.LineTransformers.Add(_referenceHighlightColorizer);
         Editor.TextArea.TextView.Redraw();
+    }
+
+    public bool TryShowSearchAndScrollToFirstMatch(
+        string searchPattern,
+        bool useRegex,
+        out int lineNumber,
+        out int columnNumber,
+        bool suppressCursorPositionChanged = false)
+    {
+        lineNumber = 1;
+        columnNumber = 1;
+
+        if (Editor.Document == null ||
+            string.IsNullOrWhiteSpace(searchPattern) ||
+            !TryFindFirstMatch(Editor.Document.Text, searchPattern, useRegex, out int matchOffset, out int matchLength))
+        {
+            return false;
+        }
+
+        ICSharpCode.AvalonEdit.Document.TextLocation location = Editor.Document.GetLocation(matchOffset);
+        int matchLineNumber = location.Line;
+        int matchColumnNumber = location.Column;
+        lineNumber = matchLineNumber;
+        columnNumber = matchColumnNumber;
+
+        if (!IsLoaded)
+        {
+            RoutedEventHandler? loadedHandler = null;
+            loadedHandler = (_, _) =>
+            {
+                Loaded -= loadedHandler;
+                ShowSearchAndScrollToMatch(searchPattern, useRegex, matchOffset, matchLength, matchLineNumber, matchColumnNumber, suppressCursorPositionChanged);
+            };
+            Loaded += loadedHandler;
+            return true;
+        }
+
+        ShowSearchAndScrollToMatch(searchPattern, useRegex, matchOffset, matchLength, matchLineNumber, matchColumnNumber, suppressCursorPositionChanged);
+        return true;
     }
 
     public void ScrollToLine(int lineNumber)
@@ -288,6 +368,54 @@ public partial class FloatingCodeWindow : UserControl
             _ = Dispatcher.BeginInvoke(
                 new Action(() => ScrollEditorToOffsets(horizontalOffset, verticalOffset)),
                 DispatcherPriority.ApplicationIdle);
+        }), DispatcherPriority.ContextIdle);
+    }
+
+    private void ShowSearchAndScrollToMatch(
+        string searchPattern,
+        bool useRegex,
+        int matchOffset,
+        int matchLength,
+        int lineNumber,
+        int columnNumber,
+        bool suppressCursorPositionChanged)
+    {
+        ShowSearchPanel(searchPattern, useRegex);
+        ScrollToSearchMatch(matchOffset, matchLength, lineNumber, columnNumber, suppressCursorPositionChanged);
+    }
+
+    private void ShowSearchPanel(string searchPattern, bool useRegex)
+    {
+        _searchPanel.MatchCase = false;
+        _searchPanel.WholeWords = false;
+        _searchPanel.UseRegex = useRegex;
+        _searchPanel.SearchPattern = searchPattern;
+        _searchPanel.Open();
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(_searchPanel.Reactivate));
+    }
+
+    private void ScrollToSearchMatch(
+        int matchOffset,
+        int matchLength,
+        int lineNumber,
+        int columnNumber,
+        bool suppressCursorPositionChanged)
+    {
+        if (suppressCursorPositionChanged)
+        {
+            _suppressCursorPositionChanged = true;
+        }
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ApplyScrollToSearchMatch(matchOffset, matchLength, lineNumber, columnNumber);
+            _ = Dispatcher.BeginInvoke(new Action(() =>
+            {
+                ApplyScrollToSearchMatch(matchOffset, matchLength, lineNumber, columnNumber);
+                _suppressCursorPositionChanged = false;
+            }), DispatcherPriority.ApplicationIdle);
         }), DispatcherPriority.ContextIdle);
     }
 
@@ -853,7 +981,9 @@ public partial class FloatingCodeWindow : UserControl
         }
 
         _searchPanel.Open();
-        _searchPanel.Reactivate();
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(_searchPanel.Reactivate));
         e.Handled = true;
     }
 
@@ -991,6 +1121,77 @@ public partial class FloatingCodeWindow : UserControl
         Editor.ScrollTo(targetLine, targetColumn, VisualYPosition.LineTop, 8, 0);
         Editor.Select(targetOffset, 0);
         Editor.Focus();
+    }
+
+    private void ApplyScrollToSearchMatch(
+        int matchOffset,
+        int matchLength,
+        int lineNumber,
+        int columnNumber)
+    {
+        if (Editor.Document == null)
+        {
+            return;
+        }
+
+        int targetLine = Math.Clamp(lineNumber, 1, Math.Max(1, Editor.Document.LineCount));
+        ICSharpCode.AvalonEdit.Document.DocumentLine line = Editor.Document.GetLineByNumber(targetLine);
+        int targetColumn = Math.Clamp(columnNumber, 1, line.Length + 1);
+        int targetOffset = Math.Clamp(matchOffset, 0, Editor.Document.TextLength);
+        int selectionLength = Math.Clamp(matchLength, 0, Editor.Document.TextLength - targetOffset);
+
+        UpdateLayout();
+        Editor.UpdateLayout();
+        Editor.TextArea.Caret.Offset = targetOffset;
+        Editor.TextArea.TextView.EnsureVisualLines();
+        Editor.ScrollTo(targetLine, targetColumn, VisualYPosition.LineTop, 8, 0);
+        Editor.Select(targetOffset, selectionLength);
+    }
+
+    private static bool TryFindFirstMatch(
+        string text,
+        string searchPattern,
+        bool useRegex,
+        out int matchOffset,
+        out int matchLength)
+    {
+        matchOffset = 0;
+        matchLength = 0;
+
+        if (string.IsNullOrWhiteSpace(searchPattern))
+        {
+            return false;
+        }
+
+        if (!useRegex)
+        {
+            int index = text.IndexOf(searchPattern, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+            {
+                return false;
+            }
+
+            matchOffset = index;
+            matchLength = searchPattern.Length;
+            return true;
+        }
+
+        try
+        {
+            Match match = Regex.Match(text, searchPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!match.Success)
+            {
+                return false;
+            }
+
+            matchOffset = match.Index;
+            matchLength = match.Length;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     private bool TryGetReferenceTokenAtOffset(int offset, out string token, out int? argumentCount)
@@ -1379,6 +1580,30 @@ public partial class FloatingCodeWindow : UserControl
 public sealed class CodeWindowContextMenuOpeningEventArgs(ContextMenu contextMenu) : EventArgs
 {
     public ContextMenu ContextMenu { get; } = contextMenu;
+}
+
+public sealed class CodeReferenceDiagramObjectInfo(
+    string token,
+    string referenceText,
+    int? argumentCount,
+    string lineAddress,
+    int lineNumber,
+    int tokenStartColumnNumber,
+    int tokenEndColumnNumber)
+{
+    public string Token { get; } = token;
+
+    public string ReferenceText { get; } = referenceText;
+
+    public int? ArgumentCount { get; } = argumentCount;
+
+    public string LineAddress { get; } = lineAddress;
+
+    public int LineNumber { get; } = lineNumber;
+
+    public int TokenStartColumnNumber { get; } = tokenStartColumnNumber;
+
+    public int TokenEndColumnNumber { get; } = tokenEndColumnNumber;
 }
 
 public sealed class LineAddressCopiedEventArgs(
