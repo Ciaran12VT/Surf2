@@ -11,6 +11,10 @@ public partial class ResourceCollectionDiffWindow : Window
     private readonly IReadOnlyList<ResourceCollectionDiffRow> _allRows;
     private readonly ObservableCollection<ResourceCollectionDiffRow> _visibleRows = [];
     private readonly Action<ResourceCollectionDiffRow> _openRow;
+    private readonly ComparisonResource _leftCollection;
+    private readonly ComparisonResource _rightCollection;
+    private readonly IReadOnlyList<ResourceComparisonDocument> _leftDocuments;
+    private readonly IReadOnlyList<ResourceComparisonDocument> _rightDocuments;
     private bool _ignoreWhitespace;
     private string _searchText = string.Empty;
 
@@ -19,6 +23,24 @@ public partial class ResourceCollectionDiffWindow : Window
         InitializeComponent();
         _openRow = openRow;
         _allRows = result.Rows.ToList();
+        _leftCollection = result.Left;
+        _rightCollection = result.Right;
+        _leftDocuments = _allRows
+            .Select(row => row.LeftDocument)
+            .OfType<ResourceComparisonDocument>()
+            .Where(document => !document.IsCollection)
+            .GroupBy(document => document.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(document => document.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _rightDocuments = _allRows
+            .Select(row => row.RightDocument)
+            .OfType<ResourceComparisonDocument>()
+            .Where(document => !document.IsCollection)
+            .GroupBy(document => document.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(document => document.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
         Title = $"Compare {result.Left.DisplayName} and {result.Right.DisplayName}";
         LeftHeaderText.Text = $"{result.Left.TypeDisplay}: {result.Left.DisplayName}";
         RightHeaderText.Text = $"{result.Right.TypeDisplay}: {result.Right.DisplayName}";
@@ -65,6 +87,69 @@ public partial class ResourceCollectionDiffWindow : Window
                 candidate.IsExcluded = true;
             }
         }
+    }
+
+    private void CompareWithMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_leftDocuments.Count == 0 && _rightDocuments.Count == 0)
+        {
+            StatusTextBlock.Text = "There are no comparable resources in either collection.";
+            return;
+        }
+
+        ResourceCollectionDiffRow? row = RowsListView.SelectedItem as ResourceCollectionDiffRow;
+        ResourceComparisonDocument? defaultLeft = row?.LeftDocument?.IsCollection == false
+            ? row.LeftDocument
+            : _leftDocuments.FirstOrDefault();
+        ResourceComparisonDocument? defaultRight = row?.RightDocument?.IsCollection == false
+            ? row.RightDocument
+            : FindCorrespondingRightDocument(defaultLeft) ?? _rightDocuments.FirstOrDefault();
+
+        var dialog = new ResourceCompareWithWindow(
+            _leftCollection.DisplayName,
+            _rightCollection.DisplayName,
+            _leftDocuments,
+            _rightDocuments,
+            defaultLeft,
+            defaultRight)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true ||
+            dialog.SelectedDocument1 == null ||
+            dialog.SelectedDocument2 == null)
+        {
+            return;
+        }
+
+        OpenSelectedDocumentPair(dialog.SelectedDocument1, dialog.SelectedDocument2);
+    }
+
+    private ResourceComparisonDocument? FindCorrespondingRightDocument(ResourceComparisonDocument? leftDocument)
+    {
+        if (leftDocument == null)
+        {
+            return null;
+        }
+
+        return _rightDocuments.FirstOrDefault(document =>
+            string.Equals(document.RelativePath, leftDocument.RelativePath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void OpenSelectedDocumentPair(
+        ResourceComparisonDocument document1,
+        ResourceComparisonDocument document2)
+    {
+        var row = new ResourceCollectionDiffRow(
+            0,
+            $"{document1.RelativePath} <-> {document2.RelativePath}",
+            document1.DisplayName,
+            document2.DisplayName,
+            ResourceComparisonStatus.Different,
+            document1,
+            document2);
+        _openRow(row);
     }
 
     private void IgnoreWhitespaceCheckBox_CheckedChanged(object sender, RoutedEventArgs e)

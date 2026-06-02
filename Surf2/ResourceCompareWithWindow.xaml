@@ -1,0 +1,129 @@
+<Window x:Class="Surf2.ResourceCompareWithWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Compare With"
+        Width="660"
+        Height="300"
+        MinWidth="560"
+        MinHeight="260"
+        WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="CompareWithActionButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="10,3" />
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.9" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="110" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock VerticalAlignment="Center"
+                   FontWeight="SemiBold"
+                   Text="Collection 1" />
+        <ComboBox x:Name="Collection1ComboBox"
+                  Grid.Column="1"
+                  Height="28"
+                  DisplayMemberPath="Name"
+                  SelectionChanged="CollectionComboBox_SelectionChanged" />
+
+        <TextBlock Grid.Row="1"
+                   Margin="0,8,0,0"
+                   VerticalAlignment="Center"
+                   FontWeight="SemiBold"
+                   Text="Compare 1" />
+        <ComboBox x:Name="Compare1ComboBox"
+                  Grid.Row="1"
+                  Grid.Column="1"
+                  Height="28"
+                  Margin="0,8,0,0"
+                  DisplayMemberPath="DisplayName" />
+
+        <TextBlock Grid.Row="2"
+                   Margin="0,16,0,0"
+                   VerticalAlignment="Top"
+                   FontWeight="SemiBold"
+                   Text="Collection 2" />
+        <StackPanel Grid.Row="2"
+                    Grid.Column="1"
+                    Margin="0,16,0,0">
+            <ComboBox x:Name="Collection2ComboBox"
+                      Height="28"
+                      DisplayMemberPath="Name"
+                      SelectionChanged="CollectionComboBox_SelectionChanged" />
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Width="110"
+                           VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Text="Compare 2" />
+                <ComboBox x:Name="Compare2ComboBox"
+                          Grid.Column="1"
+                          Height="28"
+                          DisplayMemberPath="DisplayName" />
+            </Grid>
+        </StackPanel>
+
+        <DockPanel Grid.Row="3"
+                   Grid.ColumnSpan="2"
+                   Margin="0,16,0,0">
+            <TextBlock x:Name="StatusTextBlock"
+                       VerticalAlignment="Center"
+                       Foreground="#64748B" />
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Width="92"
+                        Margin="0,0,8,0"
+                        Background="#1E3A8A"
+                        Click="CompareButton_Click"
+                        Content="Compare"
+                        Style="{StaticResource CompareWithActionButtonStyle}" />
+                <Button Width="84"
+                        Background="#111827"
+                        Click="CancelButton_Click"
+                        Content="Cancel"
+                        Style="{StaticResource CompareWithActionButtonStyle}" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>

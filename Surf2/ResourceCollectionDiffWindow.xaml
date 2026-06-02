@@ -103,6 +103,9 @@
                   MouseDoubleClick="RowsListView_MouseDoubleClick">
             <ListView.ContextMenu>
                 <ContextMenu>
+                    <MenuItem Click="CompareWithMenuItem_Click"
+                              Header="Compare with..." />
+                    <Separator />
                     <MenuItem Click="ExcludeMenuItem_Click"
                               Header="Exclude" />
                 </ContextMenu>
