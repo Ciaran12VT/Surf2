@@ -12,6 +12,7 @@ public partial class ResourceCollectionDiffWindow : Window
     private readonly ObservableCollection<ResourceCollectionDiffRow> _visibleRows = [];
     private readonly Action<ResourceCollectionDiffRow> _openRow;
     private bool _ignoreWhitespace;
+    private string _searchText = string.Empty;
 
     public ResourceCollectionDiffWindow(ResourceCollectionDiffResult result, Action<ResourceCollectionDiffRow> openRow)
     {
@@ -23,7 +24,7 @@ public partial class ResourceCollectionDiffWindow : Window
         RightHeaderText.Text = $"{result.Right.TypeDisplay}: {result.Right.DisplayName}";
         RowsListView.ItemsSource = _visibleRows;
         RefreshVisibleRows();
-        StatusTextBlock.Text = $"{_allRows.Count} item(s). Double-click a changed file, database object, table, or table data row to inspect details.";
+        UpdateStatusText();
     }
 
     private void RowsListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -72,6 +73,12 @@ public partial class ResourceCollectionDiffWindow : Window
         RecalculateStatuses();
     }
 
+    private void SearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        _searchText = SearchTextBox.Text.Trim();
+        RefreshVisibleRows();
+    }
+
     private void ToggleRowButton_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as FrameworkElement)?.DataContext is not ResourceCollectionDiffRow row || !row.IsFolder)
@@ -93,10 +100,17 @@ public partial class ResourceCollectionDiffWindow : Window
                 _visibleRows.Add(row);
             }
         }
+
+        UpdateStatusText();
     }
 
     private bool IsRowVisible(ResourceCollectionDiffRow row)
     {
+        if (!string.IsNullOrWhiteSpace(_searchText))
+        {
+            return IsSearchMatch(row);
+        }
+
         foreach (ResourceCollectionDiffRow candidate in _allRows)
         {
             if (ReferenceEquals(candidate, row))
@@ -119,6 +133,20 @@ public partial class ResourceCollectionDiffWindow : Window
         }
 
         return true;
+    }
+
+    private bool IsSearchMatch(ResourceCollectionDiffRow row)
+    {
+        return row.LeftName.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
+               row.RightName.Contains(_searchText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void UpdateStatusText()
+    {
+        string filterText = string.IsNullOrWhiteSpace(_searchText)
+            ? string.Empty
+            : $" Showing {_visibleRows.Count} of {_allRows.Count} item(s).";
+        StatusTextBlock.Text = $"{_allRows.Count} item(s).{filterText} Double-click a changed file, database object, table, or table data row to inspect details.";
     }
 
     private void RecalculateStatuses()
