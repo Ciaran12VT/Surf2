@@ -1045,21 +1045,54 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await OpenFileAsync(node.FullPath);
-
-        if (!_databaseDocumentService.TryGetTableDataDocumentPathForTableDocument(
-                node.FullPath,
-                _databaseSnapshots,
-                out string tableDataDocumentPath))
+        string? tableDataDocumentPath = await OpenFileWithRelatedTableDataAsync(node.FullPath);
+        if (tableDataDocumentPath == null)
         {
             ApplyObjectExplorerContentSearchNavigation(node);
             return;
         }
 
-        _openWindows.TryGetValue(node.FullPath, out FloatingCodeWindow? sourceWindow);
-        await OpenFileAsync(tableDataDocumentPath, sourceWindow: sourceWindow, suppressHistory: true);
         ApplyObjectExplorerSpreadsheetFilters(tableDataDocumentPath, node);
         ApplyObjectExplorerContentSearchNavigation(node);
+    }
+
+    private async Task<string?> OpenFileWithRelatedTableDataAsync(
+        string filePath,
+        int? targetLineNumber = null,
+        int? targetColumnNumber = null,
+        ReferenceEntity? targetReference = null,
+        FloatingCodeWindow? sourceWindow = null,
+        bool suppressHistory = false)
+    {
+        await OpenFileAsync(
+            filePath,
+            targetLineNumber: targetLineNumber,
+            targetColumnNumber: targetColumnNumber,
+            targetReference: targetReference,
+            sourceWindow: sourceWindow,
+            suppressHistory: suppressHistory);
+
+        return await OpenRelatedTableDataForTableDocumentAsync(filePath, sourceWindow);
+    }
+
+    private async Task<string?> OpenRelatedTableDataForTableDocumentAsync(
+        string tableDocumentPath,
+        FloatingCodeWindow? fallbackSourceWindow = null)
+    {
+        if (!_databaseDocumentService.TryGetTableDataDocumentPathForTableDocument(
+                tableDocumentPath,
+                _databaseSnapshots,
+                out string tableDataDocumentPath))
+        {
+            return null;
+        }
+
+        _openWindows.TryGetValue(tableDocumentPath, out FloatingCodeWindow? tableWindow);
+        await OpenFileAsync(
+            tableDataDocumentPath,
+            sourceWindow: tableWindow ?? fallbackSourceWindow,
+            suppressHistory: true);
+        return tableDataDocumentPath;
     }
 
     private void ApplyObjectExplorerSpreadsheetFilters(string documentPath, FileSystemNode node)
@@ -4795,10 +4828,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (File.Exists(filePath) || DatabaseDocumentService.IsDatabaseDocumentPath(filePath))
             {
                 EnsureCodeViewVisible();
-                await OpenFileAsync(filePath, targetLineNumber: target.LineNumber);
-                StatusText = target.LineNumber.HasValue
-                    ? $"Opened metadata link: {filePath} line {target.LineNumber.Value}"
-                    : $"Opened metadata link: {filePath}";
+                string? tableDataDocumentPath = await OpenFileWithRelatedTableDataAsync(filePath, targetLineNumber: target.LineNumber);
+                if (tableDataDocumentPath != null)
+                {
+                    StatusText = $"Opened metadata link and full table data: {filePath}";
+                }
+                else
+                {
+                    StatusText = target.LineNumber.HasValue
+                        ? $"Opened metadata link: {filePath} line {target.LineNumber.Value}"
+                        : $"Opened metadata link: {filePath}";
+                }
+
                 return true;
             }
 
@@ -8505,13 +8546,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             BringToFront(sourceWindow);
             ScrollWindowToPositionAndReveal(sourceWindow, reference.LineNumber, reference.ColumnNumber, selectLine: true);
-            StatusText = $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in the current file.";
+            string? sameFileTableDataDocumentPath = reference.Kind == ReferenceEntityKind.Table
+                ? await OpenRelatedTableDataForTableDocumentAsync(reference.FilePath, sourceWindow)
+                : null;
+            StatusText = sameFileTableDataDocumentPath != null
+                ? $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in the current file and opened full table data."
+                : $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in the current file.";
             return;
         }
 
-        await OpenFileAsync(reference.FilePath, targetReference: reference, sourceWindow: sourceWindow);
+        string? tableDataDocumentPath = reference.Kind == ReferenceEntityKind.Table
+            ? await OpenFileWithRelatedTableDataAsync(reference.FilePath, targetReference: reference, sourceWindow: sourceWindow)
+            : null;
+        if (reference.Kind != ReferenceEntityKind.Table)
+        {
+            await OpenFileAsync(reference.FilePath, targetReference: reference, sourceWindow: sourceWindow);
+        }
+
         AddReferenceConnectionLineFromNavigation(sourceWindow, e, reference);
-        StatusText = $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in {GetDisplayNameFromPath(reference.FilePath)}.";
+        StatusText = tableDataDocumentPath != null
+            ? $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in {GetDisplayNameFromPath(reference.FilePath)} and opened full table data."
+            : $"Navigated to {reference.Kind} '{GetReferenceDisplayName(reference)}' in {GetDisplayNameFromPath(reference.FilePath)}.";
     }
 
     private async void FloatingWindow_ReferencePreviewRequested(object? sender, ReferenceNavigationRequestedEventArgs e)
