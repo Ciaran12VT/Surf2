@@ -10,6 +10,8 @@ public sealed class AppSettings
 
     public KeyboardShortcutSettings KeyboardShortcuts { get; set; } = new();
 
+    public ResourceComparisonSettings ResourceComparison { get; set; } = new();
+
     public DiagnosticsSettings Diagnostics { get; set; } = new();
 
     public bool LoadMostRecentWorkbenchOnStartup { get; set; }
@@ -19,6 +21,12 @@ public sealed class AppSettings
         bool changed = false;
         CodeWindows ??= new CodeWindowSettings();
         ReferenceHighlights ??= new ReferenceHighlightSettings();
+        if (ResourceComparison == null)
+        {
+            ResourceComparison = new ResourceComparisonSettings();
+            changed = true;
+        }
+
         if (KeyboardShortcuts == null)
         {
             KeyboardShortcuts = new KeyboardShortcutSettings();
@@ -58,6 +66,7 @@ public sealed class AppSettings
         ReferenceHighlights ??= new ReferenceHighlightSettings();
         DiagramImages ??= new DiagramImageSettings();
         KeyboardShortcuts ??= new KeyboardShortcutSettings();
+        ResourceComparison ??= new ResourceComparisonSettings();
         Diagnostics ??= new DiagnosticsSettings();
         CodeWindows.BackcolorsByExtension ??= [];
         ReferenceHighlights.Styles ??= [];
@@ -86,7 +95,24 @@ public sealed class AppSettings
             },
             DiagramImages = DiagramImages.Clone(),
             KeyboardShortcuts = KeyboardShortcuts.Clone(),
+            ResourceComparison = ResourceComparison.Clone(),
             Diagnostics = Diagnostics.Clone()
+        };
+    }
+}
+
+public sealed class ResourceComparisonSettings
+{
+    public bool IgnoreWhitespaceByDefault { get; set; }
+
+    public bool IgnoreCaseByDefault { get; set; }
+
+    public ResourceComparisonSettings Clone()
+    {
+        return new ResourceComparisonSettings
+        {
+            IgnoreWhitespaceByDefault = IgnoreWhitespaceByDefault,
+            IgnoreCaseByDefault = IgnoreCaseByDefault
         };
     }
 }

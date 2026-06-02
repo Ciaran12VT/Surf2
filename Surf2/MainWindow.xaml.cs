@@ -1369,7 +1369,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Mouse.OverrideCursor = null;
         }
 
-        var window = new ResourceCollectionDiffWindow(result, OpenCollectionDiffRow)
+        _appSettings.ResourceComparison ??= new ResourceComparisonSettings();
+        var window = new ResourceCollectionDiffWindow(
+            result,
+            OpenCollectionDiffRow,
+            _appSettings.ResourceComparison.IgnoreWhitespaceByDefault,
+            _appSettings.ResourceComparison.IgnoreCaseByDefault)
         {
             Owner = this
         };
@@ -1398,7 +1403,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         string leftContent = leftDocument?.Content ?? string.Empty;
         string rightContent = rightDocument?.Content ?? string.Empty;
-        var window = new ResourceFileDiffWindow(left, right, leftContent, rightContent)
+        _appSettings.ResourceComparison ??= new ResourceComparisonSettings();
+        var window = new ResourceFileDiffWindow(
+            left,
+            right,
+            leftContent,
+            rightContent,
+            _appSettings.ResourceComparison.IgnoreWhitespaceByDefault,
+            _appSettings.ResourceComparison.IgnoreCaseByDefault)
         {
             Owner = this
         };
@@ -1429,7 +1441,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var window = new ResourceFileDiffWindow(left, right, leftContent, rightContent)
+        _appSettings.ResourceComparison ??= new ResourceComparisonSettings();
+        var window = new ResourceFileDiffWindow(
+            left,
+            right,
+            leftContent,
+            rightContent,
+            _appSettings.ResourceComparison.IgnoreWhitespaceByDefault,
+            _appSettings.ResourceComparison.IgnoreCaseByDefault)
         {
             Owner = this
         };

@@ -16,9 +16,15 @@ public partial class ResourceCollectionDiffWindow : Window
     private readonly IReadOnlyList<ResourceComparisonDocument> _leftDocuments;
     private readonly IReadOnlyList<ResourceComparisonDocument> _rightDocuments;
     private bool _ignoreWhitespace;
+    private bool _ignoreCase;
+    private bool _loadingDiffOptions;
     private string _searchText = string.Empty;
 
-    public ResourceCollectionDiffWindow(ResourceCollectionDiffResult result, Action<ResourceCollectionDiffRow> openRow)
+    public ResourceCollectionDiffWindow(
+        ResourceCollectionDiffResult result,
+        Action<ResourceCollectionDiffRow> openRow,
+        bool ignoreWhitespaceByDefault,
+        bool ignoreCaseByDefault)
     {
         InitializeComponent();
         _openRow = openRow;
@@ -45,6 +51,13 @@ public partial class ResourceCollectionDiffWindow : Window
         LeftHeaderText.Text = $"{result.Left.TypeDisplay}: {result.Left.DisplayName}";
         RightHeaderText.Text = $"{result.Right.TypeDisplay}: {result.Right.DisplayName}";
         RowsListView.ItemsSource = _visibleRows;
+        _ignoreWhitespace = ignoreWhitespaceByDefault;
+        _ignoreCase = ignoreCaseByDefault;
+        _loadingDiffOptions = true;
+        IgnoreWhitespaceCheckBox.IsChecked = _ignoreWhitespace;
+        IgnoreCaseCheckBox.IsChecked = _ignoreCase;
+        _loadingDiffOptions = false;
+        RecalculateStatuses();
         RefreshVisibleRows();
         UpdateStatusText();
     }
@@ -152,10 +165,17 @@ public partial class ResourceCollectionDiffWindow : Window
         _openRow(row);
     }
 
-    private void IgnoreWhitespaceCheckBox_CheckedChanged(object sender, RoutedEventArgs e)
+    private void DiffOptionCheckBox_CheckedChanged(object sender, RoutedEventArgs e)
     {
+        if (_loadingDiffOptions)
+        {
+            return;
+        }
+
         _ignoreWhitespace = IgnoreWhitespaceCheckBox.IsChecked == true;
+        _ignoreCase = IgnoreCaseCheckBox.IsChecked == true;
         RecalculateStatuses();
+        RefreshVisibleRows();
     }
 
     private void SearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -193,7 +213,7 @@ public partial class ResourceCollectionDiffWindow : Window
     {
         if (!string.IsNullOrWhiteSpace(_searchText))
         {
-            return IsSearchMatch(row);
+            return IsSearchMatch(row) || HasMatchingDescendant(row);
         }
 
         foreach (ResourceCollectionDiffRow candidate in _allRows)
@@ -224,6 +244,20 @@ public partial class ResourceCollectionDiffWindow : Window
     {
         return row.LeftName.Contains(_searchText, StringComparison.OrdinalIgnoreCase) ||
                row.RightName.Contains(_searchText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool HasMatchingDescendant(ResourceCollectionDiffRow row)
+    {
+        if (!row.IsFolder)
+        {
+            return false;
+        }
+
+        string prefix = row.RelativePath + "/";
+        return _allRows.Any(candidate =>
+            candidate.Depth > row.Depth &&
+            candidate.RelativePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+            IsSearchMatch(candidate));
     }
 
     private void UpdateStatusText()
@@ -285,7 +319,10 @@ public partial class ResourceCollectionDiffWindow : Window
             ? RemoveWhitespace(row.RightDocument.Content)
             : row.RightDocument.Content;
 
-        return string.Equals(leftContent, rightContent, StringComparison.Ordinal)
+        return string.Equals(
+                leftContent,
+                rightContent,
+                _ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
             ? ResourceComparisonStatus.Identical
             : ResourceComparisonStatus.Different;
     }

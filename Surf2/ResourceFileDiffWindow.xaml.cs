@@ -13,7 +13,9 @@ public partial class ResourceFileDiffWindow : Window
         ComparisonResource left,
         ComparisonResource right,
         string leftContent,
-        string rightContent)
+        string rightContent,
+        bool ignoreWhitespaceByDefault,
+        bool ignoreCaseByDefault)
     {
         InitializeComponent();
         _leftContent = leftContent;
@@ -22,6 +24,8 @@ public partial class ResourceFileDiffWindow : Window
         HeaderText.Text = $"{left.TypeDisplay}: {left.DisplayName}  <->  {right.DisplayName}";
         DiffViewer.OldTextHeader = left.DisplayName;
         DiffViewer.NewTextHeader = right.DisplayName;
+        IgnoreWhitespaceCheckBox.IsChecked = ignoreWhitespaceByDefault;
+        IgnoreCaseCheckBox.IsChecked = ignoreCaseByDefault;
         ApplyDiffText();
     }
 

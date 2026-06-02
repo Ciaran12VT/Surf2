@@ -67,6 +67,7 @@ public partial class SettingsWindow : Window
         DiagramImageList.ItemsSource = _diagramImages;
         LoadConnectionSettings();
         LoadKeyboardShortcutSettings();
+        LoadResourceComparisonSettings();
         LoadDiagnosticsSettings();
         LoadMostRecentWorkbenchCheckBox.IsChecked = Settings.LoadMostRecentWorkbenchOnStartup;
 
@@ -112,6 +113,7 @@ public partial class SettingsWindow : Window
             ReferenceHighlightSettingsPanel == null ||
             DiagramImageSettingsPanel == null ||
             KeyboardShortcutSettingsPanel == null ||
+            ResourceComparisonSettingsPanel == null ||
             WorkbenchSettingsPanel == null ||
             PersistenceSettingsPanel == null ||
             DiagnosticsSettingsPanel == null)
@@ -123,9 +125,10 @@ public partial class SettingsWindow : Window
         ReferenceHighlightSettingsPanel.Visibility = SectionList.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         DiagramImageSettingsPanel.Visibility = SectionList.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
         KeyboardShortcutSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
-        WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
-        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
-        DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 6 ? Visibility.Visible : Visibility.Collapsed;
+        ResourceComparisonSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
+        WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
+        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 6 ? Visibility.Visible : Visibility.Collapsed;
+        DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 7 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -811,6 +814,22 @@ public partial class SettingsWindow : Window
         Close();
     }
 
+    private void SaveResourceComparisonSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveBackcolorSettings() ||
+            !SaveReferenceHighlightSettings(validateActive: false) ||
+            !SaveDiagramImageSettings(validateActive: false))
+        {
+            return;
+        }
+
+        SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
+        SaveDiagnosticsSettings();
+        DialogResult = true;
+        Close();
+    }
+
     private void SaveWorkbenchSettingsButton_Click(object sender, RoutedEventArgs e)
     {
         if (!SaveBackcolorSettings() ||
@@ -880,11 +899,26 @@ public partial class SettingsWindow : Window
         Settings.KeyboardShortcuts.EnableDiagramCtrlWWorkflowSidebar = DiagramWorkflowSidebarCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableDiagramShiftMousePanning = DiagramShiftMousePanningCheckBox.IsChecked == true;
         Settings.KeyboardShortcuts.EnableDiagramCtrlShiftMouseZooming = DiagramCtrlShiftMouseZoomingCheckBox.IsChecked == true;
+        SaveResourceComparisonSettings();
     }
 
     private void SaveWorkbenchSettings()
     {
         Settings.LoadMostRecentWorkbenchOnStartup = LoadMostRecentWorkbenchCheckBox.IsChecked == true;
+    }
+
+    private void LoadResourceComparisonSettings()
+    {
+        Settings.ResourceComparison ??= new ResourceComparisonSettings();
+        IgnoreWhitespaceDefaultCheckBox.IsChecked = Settings.ResourceComparison.IgnoreWhitespaceByDefault;
+        IgnoreCaseDefaultCheckBox.IsChecked = Settings.ResourceComparison.IgnoreCaseByDefault;
+    }
+
+    private void SaveResourceComparisonSettings()
+    {
+        Settings.ResourceComparison ??= new ResourceComparisonSettings();
+        Settings.ResourceComparison.IgnoreWhitespaceByDefault = IgnoreWhitespaceDefaultCheckBox.IsChecked == true;
+        Settings.ResourceComparison.IgnoreCaseByDefault = IgnoreCaseDefaultCheckBox.IsChecked == true;
     }
 
     private void LoadDiagnosticsSettings()

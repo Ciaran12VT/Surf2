@@ -80,12 +80,22 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="260" />
                 </Grid.ColumnDefinitions>
-                <CheckBox x:Name="IgnoreWhitespaceCheckBox"
-                          VerticalAlignment="Center"
-                          Checked="IgnoreWhitespaceCheckBox_CheckedChanged"
-                          Content="Ignore whitespace"
-                          Foreground="#1F2937"
-                          Unchecked="IgnoreWhitespaceCheckBox_CheckedChanged" />
+                <StackPanel VerticalAlignment="Center"
+                            Orientation="Horizontal">
+                    <CheckBox x:Name="IgnoreWhitespaceCheckBox"
+                              VerticalAlignment="Center"
+                              Checked="DiffOptionCheckBox_CheckedChanged"
+                              Content="Ignore whitespace"
+                              Foreground="#1F2937"
+                              Unchecked="DiffOptionCheckBox_CheckedChanged" />
+                    <CheckBox x:Name="IgnoreCaseCheckBox"
+                              Margin="12,0,0,0"
+                              VerticalAlignment="Center"
+                              Checked="DiffOptionCheckBox_CheckedChanged"
+                              Content="Ignore case"
+                              Foreground="#1F2937"
+                              Unchecked="DiffOptionCheckBox_CheckedChanged" />
+                </StackPanel>
                 <TextBlock Grid.Column="2"
                            Margin="12,0,6,0"
                            VerticalAlignment="Center"
