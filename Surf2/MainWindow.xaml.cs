@@ -188,6 +188,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const string DiagramObjectClipboardDataFormat = "Surf2.DiagramObject";
     private const string SearchTokenClipboardDataFormat = "Surf2.SearchToken";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
+    private const string ExplorerDetailOpenWindowsTabKey = "OpenWindows";
+    private const string ExplorerDetailPreviewTabKey = "Preview";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
     [
         ReferenceEntityKind.StoredProcedure,
@@ -8966,6 +8968,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private string GetPinnedExplorerDetailTabKey()
+    {
+        if (ReferenceEquals(_pinnedExplorerDetailTab, OpenWindowsTabItem))
+        {
+            return ExplorerDetailOpenWindowsTabKey;
+        }
+
+        if (ReferenceEquals(_pinnedExplorerDetailTab, PreviewTabItem))
+        {
+            return ExplorerDetailPreviewTabKey;
+        }
+
+        return string.Empty;
+    }
+
+    private void RestorePinnedExplorerDetailTab(string? tabKey)
+    {
+        SetPinnedExplorerDetailTab(NormalizeExplorerDetailTabKey(tabKey) switch
+        {
+            ExplorerDetailOpenWindowsTabKey => OpenWindowsTabItem,
+            ExplorerDetailPreviewTabKey => PreviewTabItem,
+            _ => null
+        });
+    }
+
+    private static string NormalizeExplorerDetailTabKey(string? tabKey)
+    {
+        if (string.Equals(tabKey, ExplorerDetailOpenWindowsTabKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return ExplorerDetailOpenWindowsTabKey;
+        }
+
+        if (string.Equals(tabKey, ExplorerDetailPreviewTabKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return ExplorerDetailPreviewTabKey;
+        }
+
+        return string.Empty;
+    }
+
     private void SelectExplorerDetailTabAutomatically(TabItem targetTab)
     {
         ExplorerDetailTabs.SelectedItem = _pinnedExplorerDetailTab ?? targetTab;
@@ -13190,6 +13232,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ActiveWorkspaceView = _activeWorkspaceView.ToString(),
             WorkspaceSplitOrientation = _workspaceSplitOrientation.ToString(),
             CodeViewMode = _codeViewMode.ToString(),
+            PinnedExplorerDetailTab = GetPinnedExplorerDetailTabKey(),
             ReferenceConnectionLinesEnabled = _referenceConnectionLinesEnabled,
             CodeCanvasZoom = _canvasZoom,
             CodeViewportHorizontalOffset = WorkspaceScrollViewer.HorizontalOffset,
@@ -13385,6 +13428,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 workbench.ActiveWorkspaceView,
                 workbench.WorkspaceSplitOrientation,
                 workbench.CodeViewMode,
+                PinnedExplorerDetailTab = NormalizeExplorerDetailTabKey(workbench.PinnedExplorerDetailTab),
                 workbench.ReferenceConnectionLinesEnabled,
                 CodeCanvasZoom = NormalizeComparisonDouble(workbench.CodeCanvasZoom),
                 CodeViewportHorizontalOffset = NormalizeComparisonDouble(workbench.CodeViewportHorizontalOffset),
@@ -13598,6 +13642,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             _canvasZoom = NormalizeCanvasZoom(workbench.CodeCanvasZoom);
             ApplyCanvasZoom();
 
+            RestorePinnedExplorerDetailTab(workbench.PinnedExplorerDetailTab);
             _workspaceSplitOrientation = ParseWorkspaceSplitOrientation(workbench.WorkspaceSplitOrientation);
             SetCodeViewMode(ParseCodeViewMode(workbench.CodeViewMode));
             SetReferenceConnectionLinesEnabled(workbench.ReferenceConnectionLinesEnabled, clearWhenDisabled: false);

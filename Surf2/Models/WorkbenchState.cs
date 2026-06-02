@@ -28,6 +28,8 @@ public sealed class WorkbenchState
 
     public string CodeViewMode { get; set; } = "Canvas";
 
+    public string PinnedExplorerDetailTab { get; set; } = string.Empty;
+
     public bool ReferenceConnectionLinesEnabled { get; set; }
 
     public double CodeCanvasZoom { get; set; } = 1;
