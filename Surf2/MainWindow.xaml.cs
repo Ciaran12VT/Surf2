@@ -2119,7 +2119,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton == null ||
             DiagramLineToolButton == null ||
             DiagramLabelToolButton == null ||
-            DiagramPortalToolButton == null)
+            DiagramPortalToolButton == null ||
+            DiagramInfoPointToolButton == null)
         {
             return;
         }
@@ -2142,6 +2143,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
             DiagramPortalToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
             _pendingPortalName = null;
             _pendingPortalPairPlacement = null;
@@ -2154,6 +2156,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
             DiagramPortalToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
             _pendingPortalName = null;
             _pendingPortalPairPlacement = null;
@@ -2166,6 +2169,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
             DiagramPortalToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _pendingPortalName = null;
             _pendingPortalPairPlacement = null;
         }
@@ -2177,6 +2181,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
             DiagramPortalToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
             _pendingPortalName = null;
             _pendingPortalPairPlacement = null;
@@ -2189,6 +2194,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
             DiagramPortalToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
             _pendingPortalName = null;
             _pendingPortalPairPlacement = null;
@@ -2201,7 +2207,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton.IsChecked = false;
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
+        }
+        else if (ReferenceEquals(sender, DiagramInfoPointToolButton))
+        {
+            DiagramSelectionToolButton.IsChecked = false;
+            DiagramRectangleToolButton.IsChecked = false;
+            DiagramEllipseToolButton.IsChecked = false;
+            DiagramImageToolButton.IsChecked = false;
+            DiagramLineToolButton.IsChecked = false;
+            DiagramLabelToolButton.IsChecked = false;
+            DiagramPortalToolButton.IsChecked = false;
+            _selectedDiagramImageId = null;
+            _pendingPortalName = null;
+            _pendingPortalPairPlacement = null;
         }
         else if (ReferenceEquals(sender, DiagramSelectionToolButton))
         {
@@ -2211,6 +2231,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineToolButton.IsChecked = false;
             DiagramLabelToolButton.IsChecked = false;
             DiagramPortalToolButton.IsChecked = false;
+            DiagramInfoPointToolButton.IsChecked = false;
             _selectedDiagramImageId = null;
             _pendingPortalName = null;
             _pendingPortalPairPlacement = null;
@@ -2334,6 +2355,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramLineToolButton.IsChecked = false;
         DiagramLabelToolButton.IsChecked = false;
         DiagramPortalToolButton.IsChecked = false;
+        DiagramInfoPointToolButton.IsChecked = false;
         _isUpdatingDiagramToolToggles = false;
         DiagramImageToolButton.ToolTip = $"Image: {image.Name}";
         StatusText = $"Image tool: {image.Name}.";
@@ -2898,7 +2920,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         Rect bounds = snapshot.ObjectType switch
         {
-            DiagramObjectType.Shape or DiagramObjectType.Image or DiagramObjectType.WorkflowMarker => new Rect(
+            DiagramObjectType.Shape or DiagramObjectType.Image or DiagramObjectType.WorkflowMarker or DiagramObjectType.InfoPoint => new Rect(
                 snapshot.Left,
                 snapshot.Top,
                 Math.Max(1, snapshot.Width),
@@ -4107,6 +4129,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageControl image => image.Metadata.Clone(),
             DiagramLineControl line => line.Metadata.Clone(),
             DiagramLabelControl label => label.Metadata.Clone(),
+            DiagramInfoPointControl infoPoint => infoPoint.Metadata.Clone(),
             _ => null
         };
     }
@@ -4130,6 +4153,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             case DiagramLabelControl label:
                 label.ApplyMetadata(metadata);
                 break;
+
+            case DiagramInfoPointControl infoPoint:
+                infoPoint.ApplyMetadata(metadata);
+                break;
         }
     }
 
@@ -4142,10 +4169,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         SetDiagramObjectMetadataQueryIndicator(
             _metadataEditorTarget,
-            DiagramQueryState.HasUnresolvedQueries(_metadataEditorQueries));
+            DiagramQueryState.HasUnresolvedQueries(_metadataEditorQueries),
+            _metadataEditorQueries.Count > 0);
     }
 
-    private static void SetDiagramObjectMetadataQueryIndicator(FrameworkElement diagramObject, bool hasUnresolvedQueries)
+    private static void SetDiagramObjectMetadataQueryIndicator(
+        FrameworkElement diagramObject,
+        bool hasUnresolvedQueries,
+        bool hasQueries)
     {
         switch (diagramObject)
         {
@@ -4163,6 +4194,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             case DiagramLabelControl label:
                 label.SetHasUnresolvedQueries(hasUnresolvedQueries);
+                break;
+
+            case DiagramInfoPointControl infoPoint:
+                infoPoint.SetHasUnresolvedQueries(hasUnresolvedQueries);
+                infoPoint.SetHasQueries(hasQueries);
                 break;
         }
     }
@@ -4264,6 +4300,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineControl => "Line",
             DiagramLabelControl label when !string.IsNullOrWhiteSpace(label.LabelText) => label.LabelText,
             DiagramLabelControl => "Label",
+            DiagramInfoPointControl => "Info Point",
             _ => "Diagram Object"
         };
     }
@@ -4345,6 +4382,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramObjectType.Label => "Label",
             DiagramObjectType.Portal when !string.IsNullOrWhiteSpace(snapshot.PortalName) => snapshot.PortalName,
             DiagramObjectType.Portal => "Portal",
+            DiagramObjectType.InfoPoint => "Info Point",
             _ => "Diagram Object"
         };
 
@@ -5087,7 +5125,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton == null ||
             DiagramLineToolButton == null ||
             DiagramLabelToolButton == null ||
-            DiagramPortalToolButton == null)
+            DiagramPortalToolButton == null ||
+            DiagramInfoPointToolButton == null)
         {
             return;
         }
@@ -5100,6 +5139,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramLineToolButton.IsChecked = false;
         DiagramLabelToolButton.IsChecked = false;
         DiagramPortalToolButton.IsChecked = false;
+        DiagramInfoPointToolButton.IsChecked = false;
         _selectedDiagramImageId = null;
         _pendingPortalName = null;
         _pendingPortalPairPlacement = null;
@@ -5148,6 +5188,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (DiagramLineToolButton != null) DiagramLineToolButton.IsEnabled = editingEnabled;
         if (DiagramLabelToolButton != null) DiagramLabelToolButton.IsEnabled = editingEnabled;
         if (DiagramPortalToolButton != null) DiagramPortalToolButton.IsEnabled = editingEnabled;
+        if (DiagramInfoPointToolButton != null) DiagramInfoPointToolButton.IsEnabled = editingEnabled;
         if (DiagramOutlineColorButton != null) DiagramOutlineColorButton.IsEnabled = editingEnabled;
         if (DiagramBackColorButton != null) DiagramBackColorButton.IsEnabled = editingEnabled;
         if (WorkflowAddItemsToggleButton != null) WorkflowAddItemsToggleButton.IsEnabled = editingEnabled;
@@ -5192,6 +5233,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             case DiagramPortalControl portal:
                 portal.IsLocked = _isDiagramLocked;
+                break;
+
+            case DiagramInfoPointControl infoPoint:
+                infoPoint.IsLocked = _isDiagramLocked;
                 break;
         }
     }
@@ -9419,6 +9464,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (TryPlaceDiagramInfoPoint(e.GetPosition(DiagramCanvas)))
+        {
+            e.Handled = true;
+            return;
+        }
+
         DiagramImageDefinition? selectedImage = GetSelectedDiagramImageDefinition();
         if (selectedImage != null)
         {
@@ -10010,7 +10061,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton?.IsChecked == true ||
             DiagramLineToolButton?.IsChecked == true ||
             DiagramLabelToolButton?.IsChecked == true ||
-            DiagramPortalToolButton?.IsChecked == true;
+            DiagramPortalToolButton?.IsChecked == true ||
+            DiagramInfoPointToolButton?.IsChecked == true;
     }
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -10333,6 +10385,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return DiagramLabelToolButton?.IsChecked == true;
     }
 
+    private bool IsDiagramInfoPointToolSelected()
+    {
+        return DiagramInfoPointToolButton?.IsChecked == true;
+    }
+
+    private bool TryPlaceDiagramInfoPoint(Point canvasPoint)
+    {
+        if (!IsDiagramInfoPointToolSelected())
+        {
+            return false;
+        }
+
+        if (TryBlockDiagramObjectEditWhenLocked("place info points"))
+        {
+            return true;
+        }
+
+        var infoPoint = new DiagramInfoPointControl();
+        AttachDiagramInfoPointHandlers(infoPoint);
+        infoPoint.SetCanvasBounds(
+            canvasPoint.X - (DiagramInfoPointControl.InfoPointSize / 2),
+            canvasPoint.Y - (DiagramInfoPointControl.InfoPointSize / 2),
+            DiagramInfoPointControl.InfoPointSize,
+            DiagramInfoPointControl.InfoPointSize);
+
+        ApplyDefaultDiagramZIndex(infoPoint);
+        ApplyDiagramLockToObject(infoPoint);
+        DiagramCanvas.Children.Add(infoPoint);
+        SelectDiagramObject(infoPoint);
+        PushDiagramUndo(DiagramUndoActionKind.Added, before: null, after: CreateDiagramObjectSnapshot(infoPoint));
+        StatusText = "Added info point.";
+        return true;
+    }
+
     private bool TryPlaceDiagramPortal(Point canvasPoint)
     {
         if (TryBlockDiagramObjectEditWhenLocked("place portals"))
@@ -10408,7 +10494,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramImageToolButton == null ||
             DiagramLineToolButton == null ||
             DiagramLabelToolButton == null ||
-            DiagramPortalToolButton == null)
+            DiagramPortalToolButton == null ||
+            DiagramInfoPointToolButton == null)
         {
             return;
         }
@@ -10424,6 +10511,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramLineToolButton.IsChecked = false;
         DiagramLabelToolButton.IsChecked = false;
         DiagramPortalToolButton.IsChecked = true;
+        DiagramInfoPointToolButton.IsChecked = false;
         _isUpdatingDiagramToolToggles = false;
         SetWorkflowAddItemsMode(false);
     }
@@ -11756,6 +11844,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         portal.LayerChangeRequested += DiagramObject_LayerChangeRequested;
     }
 
+    private void AttachDiagramInfoPointHandlers(DiagramInfoPointControl infoPoint)
+    {
+        ApplyDiagramLockToObject(infoPoint);
+        infoPoint.PreviewMouseLeftButtonDown += DiagramObject_PreviewMouseLeftButtonDown;
+        infoPoint.Selected += DiagramObject_Selected;
+        infoPoint.InteractionStarted += DiagramObject_InteractionStarted;
+        infoPoint.InteractionCompleted += DiagramObject_InteractionCompleted;
+        infoPoint.MetadataRequested += DiagramInfoPoint_MetadataRequested;
+        infoPoint.DeleteRequested += DiagramInfoPoint_DeleteRequested;
+        infoPoint.LayerChangeRequested += DiagramObject_LayerChangeRequested;
+    }
+
     private void DetachDiagramShapeHandlers(DiagramShapeControl shape)
     {
         shape.PreviewMouseLeftButtonDown -= DiagramObject_PreviewMouseLeftButtonDown;
@@ -11825,6 +11925,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         portal.OpenRequested -= DiagramPortal_OpenRequested;
         portal.DeleteRequested -= DiagramPortal_DeleteRequested;
         portal.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
+    }
+
+    private void DetachDiagramInfoPointHandlers(DiagramInfoPointControl infoPoint)
+    {
+        infoPoint.PreviewMouseLeftButtonDown -= DiagramObject_PreviewMouseLeftButtonDown;
+        infoPoint.Selected -= DiagramObject_Selected;
+        infoPoint.InteractionStarted -= DiagramObject_InteractionStarted;
+        infoPoint.InteractionCompleted -= DiagramObject_InteractionCompleted;
+        infoPoint.MetadataRequested -= DiagramInfoPoint_MetadataRequested;
+        infoPoint.DeleteRequested -= DiagramInfoPoint_DeleteRequested;
+        infoPoint.LayerChangeRequested -= DiagramObject_LayerChangeRequested;
     }
 
     private async void DiagramObject_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -12067,6 +12178,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             case DiagramPortalControl portal:
                 portal.IsSelected = isSelected;
                 break;
+
+            case DiagramInfoPointControl infoPoint:
+                infoPoint.IsSelected = isSelected;
+                break;
         }
     }
 
@@ -12169,6 +12284,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Width = portal.ActualWidth > 0 ? portal.ActualWidth : portal.Width,
                 Height = portal.ActualHeight > 0 ? portal.ActualHeight : portal.Height
             },
+            DiagramInfoPointControl infoPoint => new DiagramObjectSnapshot
+            {
+                Id = infoPoint.DiagramObjectId,
+                ObjectType = DiagramObjectType.InfoPoint,
+                Metadata = infoPoint.Metadata.Clone(),
+                ZIndex = Panel.GetZIndex(infoPoint),
+                Left = GetCanvasLeft(infoPoint),
+                Top = GetCanvasTop(infoPoint),
+                Width = infoPoint.ActualWidth > 0 ? infoPoint.ActualWidth : infoPoint.Width,
+                Height = infoPoint.ActualHeight > 0 ? infoPoint.ActualHeight : infoPoint.Height
+            },
             _ => null
         };
     }
@@ -12183,6 +12309,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramObjectType.Label => CreateDiagramLabelFromSnapshot(snapshot),
             DiagramObjectType.WorkflowMarker => CreateDiagramWorkflowMarkerFromSnapshot(snapshot),
             DiagramObjectType.Portal => CreateDiagramPortalFromSnapshot(snapshot),
+            DiagramObjectType.InfoPoint => CreateDiagramInfoPointFromSnapshot(snapshot),
             _ => null
         };
 
@@ -12287,6 +12414,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return portal;
     }
 
+    private DiagramInfoPointControl CreateDiagramInfoPointFromSnapshot(DiagramObjectSnapshot snapshot)
+    {
+        var infoPoint = new DiagramInfoPointControl(snapshot.Id);
+        AttachDiagramInfoPointHandlers(infoPoint);
+        return infoPoint;
+    }
+
     private void ApplyDiagramObjectSnapshot(FrameworkElement diagramObject, DiagramObjectSnapshot snapshot)
     {
         Panel.SetZIndex(diagramObject, snapshot.ZIndex);
@@ -12339,6 +12473,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     snapshot.PairedPortalObjectId,
                     ResolvePortalAddress(snapshot.PairedPortalDiagramId, snapshot.PairedPortalObjectId));
                 break;
+
+            case DiagramInfoPointControl infoPoint:
+                infoPoint.SetCanvasBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height);
+                infoPoint.ApplyMetadata(snapshot.Metadata);
+                break;
         }
     }
 
@@ -12386,6 +12525,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 return portal;
             }
+
+            if (child is DiagramInfoPointControl infoPoint &&
+                string.Equals(infoPoint.DiagramObjectId, diagramObjectId, StringComparison.OrdinalIgnoreCase))
+            {
+                return infoPoint;
+            }
         }
 
         return null;
@@ -12410,7 +12555,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramLineControl or
             DiagramLabelControl or
             DiagramWorkflowMarkerControl or
-            DiagramPortalControl;
+            DiagramPortalControl or
+            DiagramInfoPointControl;
     }
 
     private static bool IsSelectableDiagramObject(FrameworkElement element)
@@ -12576,6 +12722,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             case DiagramPortalControl portal:
                 DetachDiagramPortalHandlers(portal);
+                break;
+
+            case DiagramInfoPointControl infoPoint:
+                DetachDiagramInfoPointHandlers(infoPoint);
                 break;
         }
 
@@ -12947,6 +13097,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await ClearPairedPortalReferenceAsync(portal);
         RemoveDiagramObject(portal, pushUndo: true);
         StatusText = "Deleted diagram portal.";
+    }
+
+    private void DiagramInfoPoint_MetadataRequested(object? sender, EventArgs e)
+    {
+        if (sender is not DiagramInfoPointControl infoPoint)
+        {
+            return;
+        }
+
+        OpenDiagramObjectMetadataSidebar(infoPoint);
+    }
+
+    private void DiagramInfoPoint_DeleteRequested(object? sender, EventArgs e)
+    {
+        if (TryBlockDiagramObjectEditWhenLocked("delete info points"))
+        {
+            return;
+        }
+
+        if (sender is not DiagramInfoPointControl infoPoint)
+        {
+            return;
+        }
+
+        RemoveDiagramObject(infoPoint, pushUndo: true);
+        StatusText = "Deleted info point.";
     }
 
     private void RemoveWorkflowItemAndMarker(string workflowId, string workflowItemId)

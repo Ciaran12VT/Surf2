@@ -3,48 +3,44 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using Surf2.Models;
 
 namespace Surf2.Controls;
 
-public sealed class DiagramPortalControl : UserControl
+public sealed class DiagramInfoPointControl : UserControl
 {
-    private const double MaximumPortalSize = 30;
-    private const double MinimumPortalSize = 14;
+    public const double InfoPointSize = 28;
+
+    private const double MinimumInfoPointSize = 14;
     private const double ResizeHitThickness = 5;
 
     private readonly Ellipse _outerCircle;
-    private readonly Ellipse _innerCircle;
-    private readonly Border _selectionRing;
+    private readonly TextBlock _iconTextBlock;
+    private readonly Ellipse _selectionRing;
+    private readonly Border _queryWarningBadge;
 
     private bool _isDragging;
     private bool _isResizing;
     private bool _isLocked;
+    private bool _hasQueries;
     private ResizeHandle _activeResizeHandle;
     private Point _dragStartPoint;
     private double _startLeft;
     private double _startTop;
     private double _startSize;
 
-    public DiagramPortalControl(
-        string portalName,
-        string pairedPortalDiagramId = "",
-        string pairedPortalObjectId = "",
-        string pairedAddress = "",
-        string? diagramObjectId = null)
+    public DiagramInfoPointControl(string? diagramObjectId = null)
     {
         DiagramObjectId = string.IsNullOrWhiteSpace(diagramObjectId)
             ? Guid.NewGuid().ToString("N")
             : diagramObjectId;
-        PortalName = portalName ?? string.Empty;
-        PairedPortalDiagramId = pairedPortalDiagramId ?? string.Empty;
-        PairedPortalObjectId = pairedPortalObjectId ?? string.Empty;
 
-        Width = MaximumPortalSize;
-        Height = MaximumPortalSize;
-        MinWidth = MinimumPortalSize;
-        MinHeight = MinimumPortalSize;
-        MaxWidth = MaximumPortalSize;
-        MaxHeight = MaximumPortalSize;
+        Width = InfoPointSize;
+        Height = InfoPointSize;
+        MinWidth = MinimumInfoPointSize;
+        MinHeight = MinimumInfoPointSize;
+        MaxWidth = InfoPointSize;
+        MaxHeight = InfoPointSize;
         Focusable = true;
         Background = Brushes.Transparent;
         Cursor = Cursors.SizeAll;
@@ -53,32 +49,38 @@ public sealed class DiagramPortalControl : UserControl
         {
             StrokeThickness = 2
         };
-        _innerCircle = new Ellipse
+
+        _iconTextBlock = new TextBlock
         {
-            Width = 10,
-            Height = 10,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            IsHitTestVisible = false
+            Margin = new Thickness(0, -1, 0, 0),
+            FontFamily = new FontFamily("Segoe UI"),
+            FontSize = 18,
+            FontWeight = FontWeights.Bold,
+            IsHitTestVisible = false,
+            Text = "i"
         };
-        _selectionRing = new Border
+
+        _selectionRing = new Ellipse
         {
-            BorderBrush = Brushes.DodgerBlue,
-            BorderThickness = new Thickness(2),
-            CornerRadius = new CornerRadius((MaximumPortalSize / 2) + 4),
+            Stroke = Brushes.DodgerBlue,
+            StrokeThickness = 3,
             Margin = new Thickness(-4),
             IsHitTestVisible = false,
             Visibility = Visibility.Collapsed
         };
+        _queryWarningBadge = CreateQueryWarningBadge();
 
         var layout = new Grid { Background = Brushes.Transparent };
         layout.Children.Add(_outerCircle);
-        layout.Children.Add(_innerCircle);
+        layout.Children.Add(_iconTextBlock);
         layout.Children.Add(_selectionRing);
+        layout.Children.Add(_queryWarningBadge);
         Content = layout;
 
         ContextMenu = CreateContextMenu();
-        ApplyPairing(PairedPortalDiagramId, PairedPortalObjectId, pairedAddress);
+        ApplyVisualState();
     }
 
     private enum ResizeHandle
@@ -94,6 +96,8 @@ public sealed class DiagramPortalControl : UserControl
         BottomRight
     }
 
+    public event EventHandler? MetadataRequested;
+
     public event EventHandler? DeleteRequested;
 
     public event EventHandler<DiagramLayerChangeRequestedEventArgs>? LayerChangeRequested;
@@ -104,19 +108,9 @@ public sealed class DiagramPortalControl : UserControl
 
     public event EventHandler? InteractionCompleted;
 
-    public event EventHandler? OpenRequested;
-
     public string DiagramObjectId { get; }
 
-    public string PortalName { get; private set; }
-
-    public string PairedPortalDiagramId { get; private set; }
-
-    public string PairedPortalObjectId { get; private set; }
-
-    public bool IsPaired =>
-        !string.IsNullOrWhiteSpace(PairedPortalDiagramId) &&
-        !string.IsNullOrWhiteSpace(PairedPortalObjectId);
+    public DiagramObjectMetadata Metadata { get; private set; } = new();
 
     public bool IsSelected
     {
@@ -155,38 +149,30 @@ public sealed class DiagramPortalControl : UserControl
         double size = NormalizeRequestedSize(width, height);
         Width = size;
         Height = size;
-        _innerCircle.Width = Math.Max(4, size / 3);
-        _innerCircle.Height = Math.Max(4, size / 3);
-        _selectionRing.CornerRadius = new CornerRadius((size / 2) + 4);
+        _iconTextBlock.FontSize = Math.Max(9, size * 0.64);
     }
 
-    public void ApplyDetails(string portalName)
+    public void ApplyMetadata(DiagramObjectMetadata metadata)
     {
-        PortalName = portalName ?? string.Empty;
+        Metadata = metadata.Clone();
+        _hasQueries = Metadata.Queries.Count > 0;
+        SetHasUnresolvedQueries(DiagramQueryState.HasUnresolvedMetadataQueries(Metadata));
+        ApplyVisualState();
     }
 
-    public void ApplyPairing(string pairedPortalDiagramId, string pairedPortalObjectId, string pairedAddress)
+    public void SetHasUnresolvedQueries(bool hasUnresolvedQueries)
     {
-        PairedPortalDiagramId = pairedPortalDiagramId ?? string.Empty;
-        PairedPortalObjectId = pairedPortalObjectId ?? string.Empty;
-        ApplyVisualState(pairedAddress);
+        _queryWarningBadge.Visibility = hasUnresolvedQueries ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    public void ClearPairing()
+    public void SetHasQueries(bool hasQueries)
     {
-        ApplyPairing(string.Empty, string.Empty, string.Empty);
+        _hasQueries = hasQueries;
+        ApplyVisualState();
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
-        if (e.ClickCount >= 2)
-        {
-            Selected?.Invoke(this, EventArgs.Empty);
-            OpenRequested?.Invoke(this, EventArgs.Empty);
-            e.Handled = true;
-            return;
-        }
-
         if (Parent is not Canvas parentCanvas)
         {
             base.OnMouseLeftButtonDown(e);
@@ -292,8 +278,8 @@ public sealed class DiagramPortalControl : UserControl
 
     private ContextMenu CreateContextMenu()
     {
-        var openItem = new MenuItem { Header = "Open Portal" };
-        openItem.Click += (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty);
+        var metadataItem = new MenuItem { Header = "Open Metadata" };
+        metadataItem.Click += (_, _) => MetadataRequested?.Invoke(this, EventArgs.Empty);
 
         var bringForwardItem = new MenuItem { Header = "Bring Forward" };
         bringForwardItem.Click += (_, _) => LayerChangeRequested?.Invoke(this, new DiagramLayerChangeRequestedEventArgs(DiagramLayerChangeAction.BringForward));
@@ -308,7 +294,7 @@ public sealed class DiagramPortalControl : UserControl
         deleteItem.Click += (_, _) => DeleteRequested?.Invoke(this, EventArgs.Empty);
 
         var contextMenu = new ContextMenu();
-        contextMenu.Items.Add(openItem);
+        contextMenu.Items.Add(metadataItem);
         contextMenu.Items.Add(new Separator());
         contextMenu.Items.Add(bringForwardItem);
         contextMenu.Items.Add(sendBackwardItem);
@@ -318,21 +304,38 @@ public sealed class DiagramPortalControl : UserControl
         return contextMenu;
     }
 
-    private void ApplyVisualState(string pairedAddress)
+    private void ApplyVisualState()
     {
-        if (IsPaired)
+        Brush iconBrush = HasQueries()
+            ? CreateFrozenBrush(Color.FromRgb(0xDC, 0x26, 0x26))
+            : CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27));
+
+        if (HasLinkOrDocumentation())
         {
-            _outerCircle.Fill = CreateFrozenBrush(Color.FromRgb(0xDB, 0xEA, 0xFE));
-            _outerCircle.Stroke = CreateFrozenBrush(Color.FromRgb(0x25, 0x63, 0xEB));
-            _innerCircle.Fill = CreateFrozenBrush(Color.FromRgb(0x1D, 0x4E, 0xD8));
-            ToolTip = $"To: {pairedAddress}";
+            _outerCircle.Fill = Brushes.White;
+            _outerCircle.Stroke = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27));
+            _iconTextBlock.Foreground = iconBrush;
+            ToolTip = "Info point";
             return;
         }
 
-        _outerCircle.Fill = CreateFrozenBrush(Color.FromRgb(0xE5, 0xE7, 0xEB));
+        _outerCircle.Fill = CreateFrozenBrush(Color.FromRgb(0xF3, 0xF4, 0xF6));
         _outerCircle.Stroke = CreateFrozenBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
-        _innerCircle.Fill = CreateFrozenBrush(Color.FromRgb(0x6B, 0x72, 0x80));
-        ToolTip = "Unpaired portal";
+        _iconTextBlock.Foreground = HasQueries()
+            ? iconBrush
+            : CreateFrozenBrush(Color.FromRgb(0x9C, 0xA3, 0xAF));
+        ToolTip = "Info point with no link or documentation";
+    }
+
+    private bool HasLinkOrDocumentation()
+    {
+        return !string.IsNullOrWhiteSpace(Metadata.Link) ||
+            !string.IsNullOrWhiteSpace(Metadata.DocumentationXaml);
+    }
+
+    private bool HasQueries()
+    {
+        return _hasQueries;
     }
 
     private void UpdateResize(MouseEventArgs e)
@@ -443,7 +446,7 @@ public sealed class DiagramPortalControl : UserControl
     private double GetCurrentSize()
     {
         double width = ActualWidth > 0 ? ActualWidth : Width;
-        return double.IsNaN(width) || width <= 0 ? MaximumPortalSize : width;
+        return double.IsNaN(width) || width <= 0 ? InfoPointSize : width;
     }
 
     private static double NormalizeRequestedSize(double width, double height)
@@ -451,12 +454,12 @@ public sealed class DiagramPortalControl : UserControl
         double requestedSize = width > 0 && height > 0
             ? Math.Min(width, height)
             : Math.Max(width, height);
-        return ClampSize(requestedSize > 0 ? requestedSize : MaximumPortalSize);
+        return ClampSize(requestedSize > 0 ? requestedSize : InfoPointSize);
     }
 
     private static double ClampSize(double size)
     {
-        return Math.Clamp(size, MinimumPortalSize, MaximumPortalSize);
+        return Math.Clamp(size, MinimumInfoPointSize, InfoPointSize);
     }
 
     private static bool ResizesLeft(ResizeHandle handle)
@@ -484,6 +487,33 @@ public sealed class DiagramPortalControl : UserControl
     private static bool AreClose(double first, double second)
     {
         return Math.Abs(first - second) < 0.1;
+    }
+
+    private static Border CreateQueryWarningBadge()
+    {
+        return new Border
+        {
+            Width = 16,
+            Height = 16,
+            Margin = new Thickness(0, -6, -6, 0),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Background = Brushes.Firebrick,
+            BorderBrush = Brushes.White,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+            Child = new TextBlock
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                Text = "!"
+            }
+        };
     }
 
     private static SolidColorBrush CreateFrozenBrush(Color color)

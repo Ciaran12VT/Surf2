@@ -7,7 +7,8 @@ public enum DiagramObjectType
     Line,
     Label,
     WorkflowMarker,
-    Portal
+    Portal,
+    InfoPoint
 }
 
 public sealed class DiagramObjectSnapshot
