@@ -13389,41 +13389,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void SaveWorkbenchButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            WorkbenchState workbench = CaptureWorkbenchState();
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            string defaultName = GetDefaultWorkbenchName(workbench);
-            WorkbenchState? existingDefault = _workbenchLibrary.Workbenches.FirstOrDefault(candidate =>
-                candidate.IsDefaultForScope &&
-                string.Equals(candidate.ScopeId, workbench.ScopeId, StringComparison.OrdinalIgnoreCase));
-
-            if (existingDefault != null)
-            {
-                workbench.WorkbenchId = existingDefault.WorkbenchId;
-                workbench.CreatedAtUtc = existingDefault.CreatedAtUtc == default
-                    ? now
-                    : existingDefault.CreatedAtUtc;
-                _workbenchLibrary.Workbenches.Remove(existingDefault);
-            }
-            else
-            {
-                workbench.CreatedAtUtc = now;
-            }
-
-            workbench.Name = defaultName;
-            workbench.IsDefaultForScope = true;
-            workbench.UpdatedAtUtc = now;
-            workbench.SavedAtUtc = now;
-            _workbenchLibrary.Workbenches.Add(workbench);
-            await _workbenchStore.SaveAsync(_workbenchLibrary);
-            RefreshSavedWorkbenches(workbench.WorkbenchId);
-            StatusText = $"Saved default Workbench '{workbench.Name}'.";
-        }
-        catch (Exception ex)
-        {
-            StatusText = $"Could not save Workbench: {ex.Message}";
-        }
+        await SaveDefaultWorkbenchForCurrentScopeAsync();
     }
 
     private async void SaveWorkbenchAsButton_Click(object sender, RoutedEventArgs e)
@@ -13632,13 +13598,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private WorkbenchState? ResolveCurrentWorkbenchSaveTarget()
     {
-        if (WorkbenchSelector?.SelectedItem is WorkbenchState selectedWorkbench)
-        {
-            return _workbenchLibrary.Workbenches.FirstOrDefault(candidate =>
-                string.Equals(candidate.WorkbenchId, selectedWorkbench.WorkbenchId, StringComparison.OrdinalIgnoreCase));
-        }
-
         string scopeId = _activeScope?.ScopeId ?? string.Empty;
+        return FindDefaultWorkbenchForScope(scopeId);
+    }
+
+    private WorkbenchState? FindDefaultWorkbenchForScope(string scopeId)
+    {
         return _workbenchLibrary.Workbenches.FirstOrDefault(candidate =>
             candidate.IsDefaultForScope &&
             string.Equals(candidate.ScopeId, scopeId, StringComparison.OrdinalIgnoreCase));
@@ -13661,17 +13626,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task<bool> SaveCurrentWorkbenchForExitAsync()
     {
+        return await SaveDefaultWorkbenchForCurrentScopeAsync();
+    }
+
+    private async Task<bool> SaveDefaultWorkbenchForCurrentScopeAsync()
+    {
         try
         {
             WorkbenchState workbench = CaptureWorkbenchState();
             DateTimeOffset now = DateTimeOffset.UtcNow;
-            WorkbenchState? existingWorkbench = ResolveCurrentWorkbenchSaveTarget();
+            WorkbenchState? existingWorkbench = FindDefaultWorkbenchForScope(workbench.ScopeId);
 
             if (existingWorkbench != null)
             {
                 workbench.WorkbenchId = existingWorkbench.WorkbenchId;
-                workbench.Name = existingWorkbench.Name;
-                workbench.IsDefaultForScope = existingWorkbench.IsDefaultForScope;
                 workbench.CreatedAtUtc = existingWorkbench.CreatedAtUtc == default
                     ? now
                     : existingWorkbench.CreatedAtUtc;
@@ -13679,17 +13647,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
             else
             {
-                workbench.Name = GetDefaultWorkbenchName(workbench);
-                workbench.IsDefaultForScope = true;
                 workbench.CreatedAtUtc = now;
             }
 
+            workbench.Name = GetDefaultWorkbenchName(workbench);
+            workbench.IsDefaultForScope = true;
             workbench.UpdatedAtUtc = now;
             workbench.SavedAtUtc = now;
             _workbenchLibrary.Workbenches.Add(workbench);
             await _workbenchStore.SaveAsync(_workbenchLibrary);
             RefreshSavedWorkbenches(workbench.WorkbenchId);
-            StatusText = $"Saved Workbench '{workbench.Name}'.";
+            StatusText = $"Saved default Workbench '{workbench.Name}'.";
             return true;
         }
         catch (Exception ex)
