@@ -244,6 +244,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly IDiagramStore _diagramStore = new SqlServerDiagramStore();
     private readonly IWorkbenchStore _workbenchStore = new SqlServerWorkbenchStore();
     private readonly DatabaseDocumentService _databaseDocumentService = new();
+    private readonly DatabaseExportService _databaseExportService;
     private readonly DatabaseMetadataImportService _databaseMetadataImportService = new();
     private readonly Dictionary<string, FloatingCodeWindow> _openWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FloatingSpreadsheetWindow> _openSpreadsheetWindows = new(StringComparer.OrdinalIgnoreCase);
@@ -378,6 +379,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public MainWindow()
     {
+        _databaseExportService = new DatabaseExportService(_databaseDocumentService);
         InitializeComponent();
         DataContext = this;
         ObjectExplorer.ContextMenu = new ContextMenu();
@@ -1179,6 +1181,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         bool canOpenContainingFolder = CanOpenContainingFolder(node);
         bool canCreateVirtualFolder = _activeScope != null;
         bool canToggleResourceLoad = CanToggleScopeResourceLoad(node);
+        bool canExportDatabaseData = TryGetDatabaseSnapshotForNode(node, out _);
         ComparisonResource? comparisonResource = _activeScope == null
             ? null
             : _resourceComparisonService.CreateResourceFromNode(node, _databaseSnapshots);
@@ -1190,6 +1193,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             !canCreateVirtualFolder &&
             !node.IsVirtualFolder &&
             !canToggleResourceLoad &&
+            !canExportDatabaseData &&
             !canCompare &&
             !canCompareTableData)
         {
@@ -1227,6 +1231,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 compareItem.Click += async (_, _) => await CompareObjectExplorerNodeAsync(node, tableData: false);
                 contextMenu.Items.Add(compareItem);
             }
+        }
+
+        if (canExportDatabaseData)
+        {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
+            var exportDatabaseDataItem = new MenuItem
+            {
+                Header = "Export DB Data"
+            };
+            exportDatabaseDataItem.Click += async (_, _) => await ExportDatabaseDataAsync(node);
+            contextMenu.Items.Add(exportDatabaseDataItem);
         }
 
         if (canToggleResourceLoad)
@@ -1316,6 +1335,101 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return contextMenu;
+    }
+
+    private bool TryGetDatabaseSnapshotForNode(FileSystemNode node, out DatabaseMetadataSnapshot snapshot)
+    {
+        snapshot = null!;
+        if (_activeScope == null ||
+            !node.IsScopeResourceRoot ||
+            string.IsNullOrWhiteSpace(node.ScopeResourceId))
+        {
+            return false;
+        }
+
+        ScopedResource? resource = _activeScope.Resources.FirstOrDefault(candidate =>
+            string.Equals(candidate.ResourceId, node.ScopeResourceId, StringComparison.OrdinalIgnoreCase));
+        if (resource?.Kind != ResourceKind.DatabaseSnapshot)
+        {
+            return false;
+        }
+
+        DatabaseMetadataSnapshot? candidateSnapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+            string.Equals(candidate.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase));
+        if (candidateSnapshot == null)
+        {
+            return false;
+        }
+
+        snapshot = candidateSnapshot;
+        return true;
+    }
+
+    private async Task ExportDatabaseDataAsync(FileSystemNode node)
+    {
+        if (!TryGetDatabaseSnapshotForNode(node, out DatabaseMetadataSnapshot snapshot))
+        {
+            StatusText = "This Object Explorer item cannot be exported.";
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            AddExtension = true,
+            DefaultExt = ".zip",
+            FileName = CreateDatabaseExportFileName(snapshot),
+            Filter = "Zip archive (*.zip)|*.zip",
+            OverwritePrompt = true,
+            Title = "Export DB Data"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            DatabaseExportResult result = await Task.Run(() => _databaseExportService.Export(snapshot, dialog.FileName));
+            StatusText = $"Exported {result.TotalFileCount} file(s) from {snapshot.DisplayName} to {result.ZipFilePath}.";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not export DB data: {ex.Message}";
+            MessageBox.Show(
+                this,
+                $"Unable to export DB data.\n\n{ex.Message}",
+                "Export DB Data",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+    }
+
+    private static string CreateDatabaseExportFileName(DatabaseMetadataSnapshot snapshot)
+    {
+        string fileName = string.IsNullOrWhiteSpace(snapshot.DisplayName)
+            ? "Database Export"
+            : snapshot.DisplayName.Trim();
+
+        foreach (char invalidChar in Path.GetInvalidFileNameChars())
+        {
+            fileName = fileName.Replace(invalidChar, '_');
+        }
+
+        fileName = fileName.Trim('.', ' ');
+        if (fileName.Length == 0)
+        {
+            fileName = "Database Export";
+        }
+
+        return fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+            ? fileName
+            : $"{fileName}.zip";
     }
 
     private async Task CompareObjectExplorerNodeAsync(FileSystemNode node, bool tableData)
