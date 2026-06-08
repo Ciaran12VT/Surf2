@@ -35,7 +35,7 @@
                   MouseLeftButtonUp="HeaderBar_MouseLeftButtonUp"
                   MouseMove="HeaderBar_MouseMove">
                 <TextBlock x:Name="TitleText"
-                           Margin="10,0,38,0"
+                           Margin="10,0,240,0"
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Center"
                            FontSize="13"
@@ -43,6 +43,23 @@
                            Foreground="#FFFFFF"
                            IsHitTestVisible="False"
                            TextTrimming="CharacterEllipsis" />
+                <StackPanel Panel.ZIndex="2"
+                            Margin="0,4,34,4"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal">
+                    <Button MinWidth="78"
+                            Margin="0,0,6,0"
+                            Click="CopyTextButton_Click"
+                            Content="Copy Text"
+                            Style="{StaticResource SurfCompactPrimaryButtonStyle}"
+                            ToolTip="Copy the window text to the clipboard" />
+                    <Button MinWidth="92"
+                            Click="CopyAsTextFileButton_Click"
+                            Content="Copy as .txt"
+                            Style="{StaticResource SurfCompactPrimaryButtonStyle}"
+                            ToolTip="Create a .txt file from this text and copy the file to the clipboard" />
+                </StackPanel>
                 <Button x:Name="CloseButton"
                         Panel.ZIndex="2"
                         Width="24"

@@ -50,6 +50,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -86,13 +87,12 @@
         </Border>
 
         <Border Grid.Row="1"
-                VerticalAlignment="Top"
                 Panel.ZIndex="2"
                 BorderBrush="#D7DCE2"
                 BorderThickness="0,0,0,1"
                 Background="#F8FAFC"
                 Padding="12,6">
-            <StackPanel Orientation="Horizontal">
+            <WrapPanel Orientation="Horizontal">
                 <Button x:Name="SwitchModeButton"
                         MinWidth="104"
                         Click="SwitchModeButton_Click"
@@ -123,6 +123,28 @@
                         Content="Go"
                         Style="{StaticResource DiffMenuButtonStyle}"
                         ToolTip="Go to line number" />
+                <Button MinWidth="78"
+                        Margin="12,2,2,2"
+                        Click="CopyLeftButton_Click"
+                        Content="Copy left"
+                        Style="{StaticResource DiffMenuButtonStyle}"
+                        ToolTip="Copy the left file text to the clipboard" />
+                <Button MinWidth="92"
+                        Click="CopyLeftAsTextFileButton_Click"
+                        Content="Left .txt"
+                        Style="{StaticResource DiffMenuButtonStyle}"
+                        ToolTip="Create a .txt file from the left text and copy the file to the clipboard" />
+                <Button MinWidth="82"
+                        Margin="8,2,2,2"
+                        Click="CopyRightButton_Click"
+                        Content="Copy right"
+                        Style="{StaticResource DiffMenuButtonStyle}"
+                        ToolTip="Copy the right file text to the clipboard" />
+                <Button MinWidth="96"
+                        Click="CopyRightAsTextFileButton_Click"
+                        Content="Right .txt"
+                        Style="{StaticResource DiffMenuButtonStyle}"
+                        ToolTip="Create a .txt file from the right text and copy the file to the clipboard" />
                 <TextBlock Margin="16,0,6,0"
                            VerticalAlignment="Center"
                            Text="Anchor" />
@@ -160,12 +182,11 @@
                            VerticalAlignment="Center"
                            Foreground="#64748B"
                            Text="No anchors" />
-            </StackPanel>
+            </WrapPanel>
         </Border>
 
         <diff:DiffViewer x:Name="DiffViewer"
-                         Grid.Row="1"
-                         Margin="0,42,0,0"
+                         Grid.Row="2"
                          PreviewMouseLeftButtonDown="DiffViewer_PreviewMouseLeftButtonDown"
                          HeaderBackground="#253245"
                          HeaderForeground="White"

@@ -12,6 +12,7 @@ using ICSharpCode.AvalonEdit.Highlighting;
 using ICSharpCode.AvalonEdit.Rendering;
 using ICSharpCode.AvalonEdit.Search;
 using Surf2.Models;
+using Surf2.Services;
 
 namespace Surf2.Controls;
 
@@ -100,6 +101,8 @@ public partial class FloatingCodeWindow : UserControl
     public event EventHandler<CodeWindowContextMenuOpeningEventArgs>? ContextMenuOpeningRequested;
 
     public event EventHandler<LineAddressCopiedEventArgs>? LineAddressCopied;
+
+    public event EventHandler<CodeWindowClipboardCopyEventArgs>? ClipboardCopyCompleted;
 
     public event EventHandler? ScopeFindRequested;
 
@@ -1468,6 +1471,40 @@ public partial class FloatingCodeWindow : UserControl
         CloseRequested?.Invoke(this, EventArgs.Empty);
     }
 
+    private void CopyTextButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            TextClipboardService.CopyText(Editor.Text);
+            ClipboardCopyCompleted?.Invoke(
+                this,
+                new CodeWindowClipboardCopyEventArgs(copied: true, copiedAsFile: false, string.Empty, string.Empty));
+        }
+        catch (Exception ex)
+        {
+            ClipboardCopyCompleted?.Invoke(
+                this,
+                new CodeWindowClipboardCopyEventArgs(copied: false, copiedAsFile: false, string.Empty, ex.Message));
+        }
+    }
+
+    private void CopyAsTextFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string filePath = TextClipboardService.CopyAsTxtFile(Editor.Text, GetClipboardTextFileNameSeed());
+            ClipboardCopyCompleted?.Invoke(
+                this,
+                new CodeWindowClipboardCopyEventArgs(copied: true, copiedAsFile: true, filePath, string.Empty));
+        }
+        catch (Exception ex)
+        {
+            ClipboardCopyCompleted?.Invoke(
+                this,
+                new CodeWindowClipboardCopyEventArgs(copied: false, copiedAsFile: true, string.Empty, ex.Message));
+        }
+    }
+
     private void CopyLineAddressContextMenuItem_Click(object sender, RoutedEventArgs e)
     {
         if (!TryCreateCurrentLineAddress(out string lineAddress, out int lineNumber))
@@ -1487,6 +1524,19 @@ public partial class FloatingCodeWindow : UserControl
         {
             LineAddressCopied?.Invoke(this, new LineAddressCopiedEventArgs(lineAddress, lineNumber, copied: false, ex.Message));
         }
+    }
+
+    private string GetClipboardTextFileNameSeed()
+    {
+        if (!string.IsNullOrWhiteSpace(State.DisplayName))
+        {
+            return State.DisplayName;
+        }
+
+        string fileName = Path.GetFileNameWithoutExtension(State.FilePath);
+        return string.IsNullOrWhiteSpace(fileName)
+            ? "code"
+            : fileName;
     }
 
     private bool TryCreateCurrentLineAddress(out string lineAddress, out int lineNumber)
@@ -1617,6 +1667,21 @@ public sealed class LineAddressCopiedEventArgs(
     public int LineNumber { get; } = lineNumber;
 
     public bool Copied { get; } = copied;
+
+    public string ErrorMessage { get; } = errorMessage;
+}
+
+public sealed class CodeWindowClipboardCopyEventArgs(
+    bool copied,
+    bool copiedAsFile,
+    string filePath,
+    string errorMessage) : EventArgs
+{
+    public bool Copied { get; } = copied;
+
+    public bool CopiedAsFile { get; } = copiedAsFile;
+
+    public string FilePath { get; } = filePath;
 
     public string ErrorMessage { get; } = errorMessage;
 }

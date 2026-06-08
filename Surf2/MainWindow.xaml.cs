@@ -6511,6 +6511,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ContextMenuOpeningRequested += FloatingWindow_ContextMenuOpeningRequested;
         window.ScopeFindRequested += FloatingWindow_ScopeFindRequested;
         window.LineAddressCopied += FloatingWindow_LineAddressCopied;
+        window.ClipboardCopyCompleted += FloatingWindow_ClipboardCopyCompleted;
         window.EditorViewportChanged += FloatingWindow_EditorViewportChanged;
 
         if (targetReference != null && existingState == null)
@@ -6669,6 +6670,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         window.LineAddressCopied -= FloatingWindow_LineAddressCopied;
+        window.ClipboardCopyCompleted -= FloatingWindow_ClipboardCopyCompleted;
         window.EditorViewportChanged -= FloatingWindow_EditorViewportChanged;
         RemoveReferenceConnectionLinesForFile(window.State.FilePath);
         RemoveWindowFromCodeView(window);
@@ -6973,6 +6975,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = e.Copied
             ? $"Copied line address: {e.LineAddress}"
             : $"Could not copy line address: {e.ErrorMessage}";
+    }
+
+    private void FloatingWindow_ClipboardCopyCompleted(object? sender, CodeWindowClipboardCopyEventArgs e)
+    {
+        StatusText = e.Copied
+            ? e.CopiedAsFile
+                ? $"Copied .txt file to clipboard: {Path.GetFileName(e.FilePath)}"
+                : "Copied text to clipboard."
+            : $"Could not copy {(e.CopiedAsFile ? ".txt file" : "text")}: {e.ErrorMessage}";
     }
 
     private void CopyReferenceDiagramObject(CodeReferenceDiagramObjectInfo info)

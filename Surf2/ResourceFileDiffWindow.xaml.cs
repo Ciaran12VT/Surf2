@@ -1,8 +1,10 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using DiffPlex.DiffBuilder.Model;
 using Surf2.Models;
+using Surf2.Services;
 
 namespace Surf2;
 
@@ -12,6 +14,8 @@ public partial class ResourceFileDiffWindow : Window
 
     private readonly string _leftContent;
     private readonly string _rightContent;
+    private readonly string _leftFileNameSeed;
+    private readonly string _rightFileNameSeed;
     private readonly List<DiffAnchor> _anchors = [];
 
     public ResourceFileDiffWindow(
@@ -25,6 +29,8 @@ public partial class ResourceFileDiffWindow : Window
         InitializeComponent();
         _leftContent = leftContent;
         _rightContent = rightContent;
+        _leftFileNameSeed = left.DisplayName;
+        _rightFileNameSeed = right.DisplayName;
         Title = $"Compare {left.DisplayName} and {right.DisplayName}";
         HeaderText.Text = $"{left.TypeDisplay}: {left.DisplayName}  <->  {right.DisplayName}";
         DiffViewer.OldTextHeader = left.DisplayName;
@@ -62,6 +68,26 @@ public partial class ResourceFileDiffWindow : Window
         GoToLine();
     }
 
+    private void CopyLeftButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextToClipboard(_leftContent, "left");
+    }
+
+    private void CopyLeftAsTextFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextFileToClipboard(_leftContent, _leftFileNameSeed, "left");
+    }
+
+    private void CopyRightButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextToClipboard(_rightContent, "right");
+    }
+
+    private void CopyRightAsTextFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyTextFileToClipboard(_rightContent, _rightFileNameSeed, "right");
+    }
+
     private void GoToLineTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Enter)
@@ -81,6 +107,42 @@ public partial class ResourceFileDiffWindow : Window
         }
 
         DiffViewer.GoTo(lineNumber - 1, isLeftLine: true);
+    }
+
+    private void CopyTextToClipboard(string content, string sideName)
+    {
+        try
+        {
+            TextClipboardService.CopyText(content);
+            AnchorStatusTextBlock.Text = $"Copied {sideName} text to clipboard.";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Unable to copy {sideName} text to the clipboard.\n\n{ex.Message}",
+                "Copy failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+    }
+
+    private void CopyTextFileToClipboard(string content, string fileNameSeed, string sideName)
+    {
+        try
+        {
+            string filePath = TextClipboardService.CopyAsTxtFile(content, fileNameSeed);
+            AnchorStatusTextBlock.Text = $"Copied {sideName} .txt file to clipboard: {Path.GetFileName(filePath)}.";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Unable to copy {sideName} .txt file to the clipboard.\n\n{ex.Message}",
+                "Copy failed",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private void DiffViewer_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
