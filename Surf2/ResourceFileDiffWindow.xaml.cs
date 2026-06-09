@@ -24,7 +24,8 @@ public partial class ResourceFileDiffWindow : Window
         string leftContent,
         string rightContent,
         bool ignoreWhitespaceByDefault,
-        bool ignoreCaseByDefault)
+        bool ignoreCaseByDefault,
+        bool startInUnifiedMode = false)
     {
         InitializeComponent();
         _leftContent = leftContent;
@@ -38,6 +39,7 @@ public partial class ResourceFileDiffWindow : Window
         IgnoreWhitespaceCheckBox.IsChecked = ignoreWhitespaceByDefault;
         IgnoreCaseCheckBox.IsChecked = ignoreCaseByDefault;
         ApplyDiffText();
+        SetDiffViewMode(!startInUnifiedMode);
         UpdateAnchorStatusText();
     }
 
@@ -49,8 +51,13 @@ public partial class ResourceFileDiffWindow : Window
 
     private void SwitchModeButton_Click(object sender, RoutedEventArgs e)
     {
-        DiffViewer.IsSideBySide = !DiffViewer.IsSideBySide;
-        SwitchModeButton.Content = DiffViewer.IsSideBySide ? "Unified" : "Split";
+        SetDiffViewMode(!DiffViewer.IsSideBySide);
+    }
+
+    private void SetDiffViewMode(bool isSideBySide)
+    {
+        DiffViewer.IsSideBySide = isSideBySide;
+        SwitchModeButton.Content = isSideBySide ? "Unified" : "Split";
     }
 
     private void PreviousDiffButton_Click(object sender, RoutedEventArgs e)

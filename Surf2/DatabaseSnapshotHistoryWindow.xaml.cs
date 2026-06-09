@@ -57,7 +57,10 @@ public partial class DatabaseSnapshotHistoryWindow : Window
         {
             DatabaseHistoryVersionSummary summary = _historyService.CreateVersionSummary(_library, _history, version);
             var versionRow = new DatabaseHistoryVersionRow(summary);
-            versionRow.Children.AddRange(summary.Changes.Select(change => new DatabaseHistoryFileRow(change)));
+            versionRow.Children.AddRange(summary.Changes
+                .OrderBy(change => DatabaseHistoryDisplay.GetResourceTypeSortOrder(change.Kind))
+                .ThenBy(change => DatabaseHistoryDisplay.GetFileNameDisplay(change.DisplayName, change.RelativePath), StringComparer.OrdinalIgnoreCase)
+                .Select(change => new DatabaseHistoryFileRow(change)));
             _versionRows.Add(versionRow);
         }
 
@@ -66,22 +69,45 @@ public partial class DatabaseSnapshotHistoryWindow : Window
 
     private void RefreshVisibleRows()
     {
+        string filter = HistoryFilterTextBox.Text.Trim();
+        bool hasFilter = !string.IsNullOrWhiteSpace(filter);
+        int visibleFileCount = 0;
+        int visibleVersionCount = 0;
+
         _visibleRows.Clear();
         foreach (DatabaseHistoryVersionRow versionRow in _versionRows)
         {
-            _visibleRows.Add(versionRow);
-            if (!versionRow.IsExpanded)
+            List<DatabaseHistoryFileRow> matchingChildren = hasFilter
+                ? versionRow.Children.Where(child => child.Matches(filter)).ToList()
+                : versionRow.Children;
+            bool versionMatches = hasFilter && versionRow.Matches(filter);
+            if (hasFilter && !versionMatches && matchingChildren.Count == 0)
             {
                 continue;
             }
 
-            foreach (DatabaseHistoryFileRow child in versionRow.Children)
+            _visibleRows.Add(versionRow);
+            visibleVersionCount++;
+            if (!versionRow.IsExpanded && !hasFilter)
+            {
+                continue;
+            }
+
+            foreach (DatabaseHistoryFileRow child in matchingChildren)
             {
                 _visibleRows.Add(child);
+                visibleFileCount++;
             }
         }
 
-        StatusTextBlock.Text = $"{_history.Versions.Count} version(s).";
+        StatusTextBlock.Text = hasFilter
+            ? $"{visibleFileCount} matching file(s) in {visibleVersionCount} version(s)."
+            : $"{_history.Versions.Count} version(s).";
+    }
+
+    private void HistoryFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        RefreshVisibleRows();
     }
 
     private void RowsListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -198,11 +224,15 @@ public partial class DatabaseSnapshotHistoryWindow : Window
 
         public abstract bool IsVersion { get; }
 
-        public abstract string FirstColumn { get; }
+        public abstract string VersionColumn { get; }
 
-        public abstract string SecondColumn { get; }
+        public abstract string ResourceTypeColumn { get; }
 
-        public abstract string ThirdColumn { get; }
+        public abstract string NameColumn { get; }
+
+        public abstract string AddedColumn { get; }
+
+        public abstract string RemovedColumn { get; }
 
         public virtual Thickness IndentMargin => new(0);
 
@@ -211,6 +241,15 @@ public partial class DatabaseSnapshotHistoryWindow : Window
         public virtual string ToggleGlyph => string.Empty;
 
         public virtual string ToggleToolTip => string.Empty;
+
+        public virtual bool Matches(string filter)
+        {
+            return DatabaseHistoryDisplay.ContainsText(VersionColumn, filter) ||
+                   DatabaseHistoryDisplay.ContainsText(ResourceTypeColumn, filter) ||
+                   DatabaseHistoryDisplay.ContainsText(NameColumn, filter) ||
+                   DatabaseHistoryDisplay.ContainsText(AddedColumn, filter) ||
+                   DatabaseHistoryDisplay.ContainsText(RemovedColumn, filter);
+        }
 
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         {
@@ -228,11 +267,15 @@ public partial class DatabaseSnapshotHistoryWindow : Window
 
         public override bool IsVersion => true;
 
-        public override string FirstColumn => $"Version {Summary.Version.VersionName}";
+        public override string VersionColumn => $"Version {Summary.Version.VersionName}";
 
-        public override string SecondColumn => Summary.Version.CreatedAtUtc.LocalDateTime.ToString("g", CultureInfo.CurrentCulture);
+        public override string ResourceTypeColumn => string.Empty;
 
-        public override string ThirdColumn => $"{Summary.Changes.Count} file(s)";
+        public override string NameColumn => string.Empty;
+
+        public override string AddedColumn => Summary.Version.CreatedAtUtc.LocalDateTime.ToString("g", CultureInfo.CurrentCulture);
+
+        public override string RemovedColumn => $"{Summary.Changes.Count} file(s)";
 
         public override Visibility ToggleVisibility => Children.Count > 0 ? Visibility.Visible : Visibility.Hidden;
 
@@ -264,13 +307,24 @@ public partial class DatabaseSnapshotHistoryWindow : Window
 
         public override bool IsVersion => false;
 
-        public override string FirstColumn => Change.RelativePath;
+        public override string VersionColumn => string.Empty;
 
-        public override string SecondColumn => $"+{Change.AddedLines}";
+        public override string ResourceTypeColumn => DatabaseHistoryDisplay.GetResourceTypeDisplay(Change.Kind);
 
-        public override string ThirdColumn => $"-{Change.RemovedLines}";
+        public override string NameColumn => DatabaseHistoryDisplay.GetFileNameDisplay(Change.DisplayName, Change.RelativePath);
+
+        public override string AddedColumn => $"+{Change.AddedLines}";
+
+        public override string RemovedColumn => $"-{Change.RemovedLines}";
 
         public override Thickness IndentMargin => new(28, 0, 0, 0);
+
+        public override bool Matches(string filter)
+        {
+            return base.Matches(filter) ||
+                   DatabaseHistoryDisplay.ContainsText(Change.DisplayName, filter) ||
+                   DatabaseHistoryDisplay.ContainsText(Change.RelativePath, filter);
+        }
     }
 }
 

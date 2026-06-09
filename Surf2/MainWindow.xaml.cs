@@ -1582,10 +1582,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             content,
             content,
             ignoreWhitespaceByDefault: false,
-            ignoreCaseByDefault: false)
+            ignoreCaseByDefault: false,
+            startInUnifiedMode: true)
         {
             Owner = this,
-            Title = $"{change.RelativePath} - {change.Version.VersionName}"
+            Title = $"{DatabaseHistoryDisplay.GetFileNameDisplay(change.DisplayName, change.RelativePath)} - {change.Version.VersionName}"
         };
         window.Show();
     }
@@ -1599,8 +1600,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        IReadOnlyList<DatabaseHistoryFilePickerItem> candidates = CreateDatabaseHistoryFilePickerItems();
-        var picker = new DatabaseHistoryFilePickerWindow(candidates)
+        IReadOnlyList<DatabaseHistoryDatabasePickerItem> candidates = CreateDatabaseHistoryFilePickerDatabases();
+        if (candidates.Count == 0)
+        {
+            StatusText = "No database versions are available to compare.";
+            return;
+        }
+
+        var picker = new DatabaseHistoryFilePickerWindow(candidates, snapshotId, change.Kind, change.ResourceKey)
         {
             Owner = this,
             Title = "Compare With"
@@ -1611,8 +1618,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         OpenHistoryFileDiff(
-            $"{change.RelativePath} ({change.Version.VersionName})",
-            picker.SelectedItem.RelativePath,
+            $"{DatabaseHistoryDisplay.GetFileNameDisplay(change.DisplayName, change.RelativePath)} ({change.Version.VersionName})",
+            picker.SelectedItem.ComparisonLabel,
             sourceContent,
             picker.SelectedItem.Content);
     }
@@ -1803,45 +1810,88 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return options;
     }
 
-    private IReadOnlyList<DatabaseHistoryFilePickerItem> CreateDatabaseHistoryFilePickerItems()
+    private IReadOnlyList<DatabaseHistoryDatabasePickerItem> CreateDatabaseHistoryFilePickerDatabases()
     {
-        var items = new List<DatabaseHistoryFilePickerItem>();
-        foreach (DatabaseVersionSnapshotOption option in CreateDatabaseVersionSnapshotOptions())
+        if (_activeScope == null)
         {
-            DatabaseSnapshotVersion resolvedVersion;
-            if (TryGetVersionFromOptionPath(option.Path, option.Snapshot.SnapshotId, out DatabaseSnapshotVersion? version) &&
-                version != null)
-            {
-                resolvedVersion = version;
-            }
-            else
-            {
-                resolvedVersion = new DatabaseSnapshotVersion
-                {
-                    VersionName = "Current",
-                    VersionNumber = int.MaxValue,
-                    CreatedAtUtc = DateTimeOffset.UtcNow
-                };
-            }
-
-            foreach (DatabaseSnapshotResourceFile file in _databaseSnapshotHistoryService.CreateResourceFiles(option.Snapshot))
-            {
-                items.Add(new DatabaseHistoryFilePickerItem(
-                    option.DisplayName,
-                    option.Snapshot.SnapshotId,
-                    resolvedVersion,
-                    file.Kind,
-                    file.ResourceKey,
-                    file.RelativePath,
-                    file.Content,
-                    file.Payload));
-            }
+            return [];
         }
 
-        return items
-            .OrderBy(item => item.DatabaseName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
+        var databases = new List<DatabaseHistoryDatabasePickerItem>();
+        foreach (ScopedResource resource in _activeScope.Resources.Where(resource => resource.Kind == ResourceKind.DatabaseSnapshot))
+        {
+            DatabaseMetadataSnapshot? snapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+                string.Equals(candidate.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase));
+            if (snapshot == null)
+            {
+                continue;
+            }
+
+            string databaseName = !string.IsNullOrWhiteSpace(resource.DisplayNameOverride)
+                ? resource.DisplayNameOverride
+                : snapshot.DisplayName;
+            DatabaseSnapshotHistory history = _databaseSnapshotHistoryService.GetOrCreateHistory(_databaseSnapshots, snapshot);
+            List<DatabaseSnapshotVersion> orderedVersions = history.Versions
+                .OrderByDescending(version => version.VersionNumber)
+                .ToList();
+            if (orderedVersions.Count == 0)
+            {
+                continue;
+            }
+
+            var versions = new List<DatabaseHistoryVersionPickerItem>
+            {
+                CreateDatabaseHistoryVersionPickerItem(
+                    databaseName,
+                    snapshot.SnapshotId,
+                    $"{orderedVersions[0].VersionName} (Current)",
+                    orderedVersions[0],
+                    snapshot.Clone())
+            };
+
+            foreach (DatabaseSnapshotVersion version in orderedVersions.Skip(1))
+            {
+                DatabaseMetadataSnapshot versionSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshot.SnapshotId, version.VersionId);
+                versions.Add(CreateDatabaseHistoryVersionPickerItem(
+                    databaseName,
+                    snapshot.SnapshotId,
+                    version.VersionName,
+                    version,
+                    versionSnapshot));
+            }
+
+            databases.Add(new DatabaseHistoryDatabasePickerItem(databaseName, snapshot.SnapshotId, versions));
+        }
+
+        return databases
+            .OrderBy(database => database.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private DatabaseHistoryVersionPickerItem CreateDatabaseHistoryVersionPickerItem(
+        string databaseName,
+        string snapshotId,
+        string versionDisplayName,
+        DatabaseSnapshotVersion version,
+        DatabaseMetadataSnapshot snapshot)
+    {
+        IReadOnlyList<DatabaseHistoryFilePickerItem> files = _databaseSnapshotHistoryService.CreateResourceFiles(snapshot)
+            .Select(file => new DatabaseHistoryFilePickerItem(
+                databaseName,
+                snapshotId,
+                versionDisplayName,
+                version,
+                file.Kind,
+                file.ResourceKey,
+                file.DisplayName,
+                file.RelativePath,
+                file.Content,
+                file.Payload))
+            .OrderBy(file => DatabaseHistoryDisplay.GetResourceTypeSortOrder(file.Kind))
+            .ThenBy(file => file.FileNameDisplay, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new DatabaseHistoryVersionPickerItem(versionDisplayName, snapshotId, version, files);
     }
 
     private bool TryGetVersionFromOptionPath(string optionPath, string fallbackSnapshotId, out DatabaseSnapshotVersion? version)
