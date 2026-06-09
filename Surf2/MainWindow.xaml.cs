@@ -245,6 +245,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly IWorkbenchStore _workbenchStore = new SqlServerWorkbenchStore();
     private readonly DatabaseDocumentService _databaseDocumentService = new();
     private readonly DatabaseExportService _databaseExportService;
+    private readonly DatabaseSnapshotHistoryService _databaseSnapshotHistoryService;
     private readonly DatabaseMetadataImportService _databaseMetadataImportService = new();
     private readonly Dictionary<string, FloatingCodeWindow> _openWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, FloatingSpreadsheetWindow> _openSpreadsheetWindows = new(StringComparer.OrdinalIgnoreCase);
@@ -380,6 +381,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public MainWindow()
     {
         _databaseExportService = new DatabaseExportService(_databaseDocumentService);
+        _databaseSnapshotHistoryService = new DatabaseSnapshotHistoryService(_databaseDocumentService);
         InitializeComponent();
         DataContext = this;
         ObjectExplorer.ContextMenu = new ContextMenu();
@@ -513,7 +515,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void ScopesButton_Click(object sender, RoutedEventArgs e)
     {
-        var scopeManagerWindow = new ScopeManagerWindow(_scopeLibrary, _databaseSnapshots)
+        var scopeManagerWindow = new ScopeManagerWindow(_scopeLibrary, _databaseSnapshots, _databaseSnapshotHistoryService)
         {
             Owner = this
         };
@@ -1240,6 +1242,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 contextMenu.Items.Add(new Separator());
             }
 
+            var historyItem = new MenuItem
+            {
+                Header = "History"
+            };
+            historyItem.Click += (_, _) => OpenDatabaseHistory(node);
+            contextMenu.Items.Add(historyItem);
+
             var exportDatabaseDataItem = new MenuItem
             {
                 Header = "Export DB Data"
@@ -1431,6 +1440,550 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ? fileName
             : $"{fileName}.zip";
     }
+
+    private void OpenDatabaseHistory(FileSystemNode node)
+    {
+        if (!TryGetDatabaseSnapshotForNode(node, out DatabaseMetadataSnapshot snapshot))
+        {
+            StatusText = "This Object Explorer item does not have database history.";
+            return;
+        }
+
+        DatabaseSnapshotHistory history = _databaseSnapshotHistoryService.GetOrCreateHistory(_databaseSnapshots, snapshot);
+        var window = new DatabaseSnapshotHistoryWindow(snapshot, _databaseSnapshots, history, _databaseSnapshotHistoryService)
+        {
+            Owner = this
+        };
+
+        window.VersionCompareRequested += async (_, e) => await CompareDatabaseVersionAsync(snapshot.SnapshotId, e.Version);
+        window.VersionRestoreRequested += async (_, e) =>
+        {
+            if (await RestoreDatabaseVersionAsync(snapshot.SnapshotId, e.Version))
+            {
+                window.ReloadRows();
+            }
+        };
+        window.VersionRestoreToRequested += async (_, e) => await RestoreDatabaseVersionToNewSnapshotAsync(snapshot.SnapshotId, e.Version);
+        window.FileViewRequested += (_, e) => ViewDatabaseHistoryFile(snapshot.SnapshotId, e.Change);
+        window.FileCompareRequested += async (_, e) => await CompareDatabaseHistoryFileAsync(snapshot.SnapshotId, e.Change);
+        window.FileRestoreRequested += async (_, e) =>
+        {
+            if (await RestoreDatabaseHistoryFileAsync(snapshot.SnapshotId, e.Change))
+            {
+                window.ReloadRows();
+            }
+        };
+        window.FileRestoreToRequested += async (_, e) => await RestoreDatabaseHistoryFileToAsync(snapshot.SnapshotId, e.Change);
+        window.Show();
+    }
+
+    private async Task CompareDatabaseVersionAsync(string snapshotId, DatabaseSnapshotVersion version)
+    {
+        DatabaseMetadataSnapshot sourceSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, version.VersionId);
+        IReadOnlyList<DatabaseVersionSnapshotOption> options = CreateDatabaseVersionSnapshotOptions();
+        if (options.Count == 0)
+        {
+            StatusText = "No database versions are available to compare.";
+            return;
+        }
+
+        Dictionary<string, DatabaseVersionSnapshotOption> optionMap = options.ToDictionary(option => option.Path, StringComparer.OrdinalIgnoreCase);
+        var picker = new ComparisonResourcePickerWindow(options.Select(option => CreateDatabaseVersionPickerResource(option)))
+        {
+            Owner = this,
+            Title = "Select Database or Version to Compare"
+        };
+
+        if (picker.ShowDialog() != true || picker.SelectedResource == null)
+        {
+            return;
+        }
+
+        DatabaseVersionSnapshotOption selected = optionMap[picker.SelectedResource.Path];
+        await OpenDatabaseSnapshotDiffAsync(
+            sourceSnapshot,
+            selected.Snapshot,
+            $"{sourceSnapshot.DisplayName} {version.VersionName}",
+            selected.DisplayName);
+    }
+
+    private async Task<bool> RestoreDatabaseVersionAsync(string snapshotId, DatabaseSnapshotVersion version)
+    {
+        DatabaseMetadataSnapshot currentSnapshot = GetDatabaseSnapshot(snapshotId);
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            $"Restore {currentSnapshot.DisplayName} to {version.VersionName}? This will create a new version.",
+            "Restore Database Version",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes)
+        {
+            return false;
+        }
+
+        DatabaseMetadataSnapshot restoredSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, version.VersionId);
+        restoredSnapshot.SnapshotId = currentSnapshot.SnapshotId;
+        restoredSnapshot.DisplayName = currentSnapshot.DisplayName;
+        return await SaveDatabaseSnapshotReplacementAsync(currentSnapshot, restoredSnapshot, $"Restored {currentSnapshot.DisplayName} to {version.VersionName}.");
+    }
+
+    private async Task RestoreDatabaseVersionToNewSnapshotAsync(string snapshotId, DatabaseSnapshotVersion version)
+    {
+        if (_activeScope == null)
+        {
+            StatusText = "Open a scope before restoring a database version.";
+            return;
+        }
+
+        DatabaseMetadataSnapshot sourceSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, version.VersionId);
+        var renameWindow = new RenameResourceWindow($"{sourceSnapshot.DisplayName} {version.VersionName}")
+        {
+            Owner = this,
+            Title = "Restore Database Version To"
+        };
+        if (renameWindow.ShowDialog() != true)
+        {
+            return;
+        }
+
+        DatabaseMetadataSnapshot newSnapshot = sourceSnapshot.Clone();
+        newSnapshot.SnapshotId = Guid.NewGuid().ToString("N");
+        newSnapshot.DisplayName = renameWindow.ResourceName;
+        newSnapshot.ImportedAtUtc = DateTimeOffset.UtcNow;
+        _databaseSnapshots.Snapshots.Add(newSnapshot);
+        _databaseSnapshotHistoryService.EnsureInitialVersion(_databaseSnapshots, newSnapshot);
+        _activeScope.Resources.Add(new ScopedResource
+        {
+            Kind = ResourceKind.DatabaseSnapshot,
+            Path = newSnapshot.SnapshotId,
+            DisplayNameOverride = newSnapshot.DisplayName,
+            DetailsOverride = newSnapshot.DatabaseName,
+            IncludeChildren = true,
+            AddedAtUtc = DateTimeOffset.UtcNow
+        });
+
+        await _scopeStore.SaveAsync(_scopeLibrary);
+        await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
+        await LoadScopeAsync(_activeScope);
+        StatusText = $"Restored {sourceSnapshot.DisplayName} {version.VersionName} as '{newSnapshot.DisplayName}'.";
+    }
+
+    private void ViewDatabaseHistoryFile(string snapshotId, DatabaseHistoryFileChangeSummary change)
+    {
+        DatabaseMetadataSnapshot versionSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, change.Version.VersionId);
+        if (!_databaseSnapshotHistoryService.TryGetResourceContent(versionSnapshot, change.Kind, change.ResourceKey, out string content, out _))
+        {
+            content = $"{change.RelativePath} does not exist in {change.Version.VersionName}.";
+        }
+
+        var window = new ResourceFileDiffWindow(
+            CreateTextComparisonResource($"{change.RelativePath} ({change.Version.VersionName})"),
+            CreateTextComparisonResource($"{change.RelativePath} ({change.Version.VersionName})"),
+            content,
+            content,
+            ignoreWhitespaceByDefault: false,
+            ignoreCaseByDefault: false)
+        {
+            Owner = this,
+            Title = $"{change.RelativePath} - {change.Version.VersionName}"
+        };
+        window.Show();
+    }
+
+    private async Task CompareDatabaseHistoryFileAsync(string snapshotId, DatabaseHistoryFileChangeSummary change)
+    {
+        DatabaseMetadataSnapshot sourceSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, change.Version.VersionId);
+        if (!_databaseSnapshotHistoryService.TryGetResourceContent(sourceSnapshot, change.Kind, change.ResourceKey, out string sourceContent, out _))
+        {
+            StatusText = $"{change.RelativePath} does not exist in {change.Version.VersionName}.";
+            return;
+        }
+
+        IReadOnlyList<DatabaseHistoryFilePickerItem> candidates = CreateDatabaseHistoryFilePickerItems();
+        var picker = new DatabaseHistoryFilePickerWindow(candidates)
+        {
+            Owner = this,
+            Title = "Compare With"
+        };
+        if (picker.ShowDialog() != true || picker.SelectedItem == null)
+        {
+            return;
+        }
+
+        OpenHistoryFileDiff(
+            $"{change.RelativePath} ({change.Version.VersionName})",
+            picker.SelectedItem.RelativePath,
+            sourceContent,
+            picker.SelectedItem.Content);
+    }
+
+    private async Task<bool> RestoreDatabaseHistoryFileAsync(string snapshotId, DatabaseHistoryFileChangeSummary change)
+    {
+        DatabaseMetadataSnapshot currentSnapshot = GetDatabaseSnapshot(snapshotId);
+        DatabaseMetadataSnapshot sourceSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, change.Version.VersionId);
+        DatabaseMetadataSnapshot restoredSnapshot = _databaseSnapshotHistoryService.RestoreResource(currentSnapshot, sourceSnapshot, change.Kind, change.ResourceKey);
+        return await SaveDatabaseSnapshotReplacementAsync(currentSnapshot, restoredSnapshot, $"Restored {change.RelativePath} from {change.Version.VersionName}.");
+    }
+
+    private async Task RestoreDatabaseHistoryFileToAsync(string snapshotId, DatabaseHistoryFileChangeSummary change)
+    {
+        DatabaseMetadataSnapshot sourceSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshotId, change.Version.VersionId);
+        if (!_databaseSnapshotHistoryService.TryGetResourceContent(sourceSnapshot, change.Kind, change.ResourceKey, out string sourceContent, out DatabaseSnapshotResourcePayload? payload) ||
+            payload == null)
+        {
+            StatusText = $"{change.RelativePath} does not exist in {change.Version.VersionName}.";
+            return;
+        }
+
+        IReadOnlyList<DatabaseRestoreTargetOption> targets = CreateDatabaseRestoreTargetOptions();
+        if (targets.Count == 0)
+        {
+            StatusText = "No target databases are available.";
+            return;
+        }
+
+        DatabaseRestoreTargetOption? defaultTarget = targets.FirstOrDefault(target =>
+            string.Equals(target.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
+        string defaultName = CreateRestoredResourceName(change.DisplayName);
+        var restoreWindow = new DatabaseHistoryRestoreToWindow(
+            targets,
+            defaultTarget,
+            defaultName,
+            sourceContent,
+            IsEditableSqlResource(change.Kind))
+        {
+            Owner = this,
+            Title = "Restore File To"
+        };
+
+        if (restoreWindow.ShowDialog() != true || restoreWindow.SelectedTarget == null)
+        {
+            return;
+        }
+
+        (string schemaName, string objectName) = SplitDatabaseObjectName(restoreWindow.ResourceName);
+        DatabaseMetadataSnapshot targetSnapshot = GetDatabaseSnapshot(restoreWindow.SelectedTarget.SnapshotId);
+        DatabaseMetadataSnapshot restoredSnapshot = _databaseSnapshotHistoryService.RestoreResourceAsCopy(
+            targetSnapshot,
+            payload,
+            schemaName,
+            objectName,
+            IsEditableSqlResource(change.Kind) ? restoreWindow.EditedContent : null);
+        await SaveDatabaseSnapshotReplacementAsync(targetSnapshot, restoredSnapshot, $"Restored {change.RelativePath} to {targetSnapshot.DisplayName} as {schemaName}.{objectName}.");
+    }
+
+    private async Task OpenDatabaseSnapshotDiffAsync(
+        DatabaseMetadataSnapshot leftSnapshot,
+        DatabaseMetadataSnapshot rightSnapshot,
+        string leftDisplayName,
+        string rightDisplayName)
+    {
+        DatabaseMetadataSnapshot left = leftSnapshot.Clone();
+        DatabaseMetadataSnapshot right = rightSnapshot.Clone();
+        left.SnapshotId = Guid.NewGuid().ToString("N");
+        right.SnapshotId = Guid.NewGuid().ToString("N");
+        left.DisplayName = leftDisplayName;
+        right.DisplayName = rightDisplayName;
+
+        var comparisonLibrary = new DatabaseSnapshotLibrary
+        {
+            Snapshots = [left, right]
+        };
+        ComparisonResource leftResource = CreateDatabaseSnapshotComparisonResource(left);
+        ComparisonResource rightResource = CreateDatabaseSnapshotComparisonResource(right);
+        ResourceCollectionDiffResult result = await Task.Run(() => _resourceComparisonService.BuildCollectionDiff(leftResource, rightResource, comparisonLibrary));
+
+        _appSettings.ResourceComparison ??= new ResourceComparisonSettings();
+        var window = new ResourceCollectionDiffWindow(
+            result,
+            OpenHistoryCollectionDiffRow,
+            _appSettings.ResourceComparison.IgnoreWhitespaceByDefault,
+            _appSettings.ResourceComparison.IgnoreCaseByDefault)
+        {
+            Owner = this
+        };
+        window.Show();
+        StatusText = $"Compared {leftDisplayName} and {rightDisplayName}.";
+    }
+
+    private void OpenHistoryCollectionDiffRow(ResourceCollectionDiffRow row)
+    {
+        ResourceComparisonDocument? leftDocument = row.LeftDocument;
+        ResourceComparisonDocument? rightDocument = row.RightDocument;
+        if (leftDocument == null && rightDocument == null)
+        {
+            return;
+        }
+
+        ComparisonResource left = leftDocument?.Resource ?? CreateMissingComparisonResource(rightDocument!.Resource, "(missing left)");
+        ComparisonResource right = rightDocument?.Resource ?? CreateMissingComparisonResource(leftDocument!.Resource, "(missing right)");
+        string leftContent = leftDocument?.Content ?? string.Empty;
+        string rightContent = rightDocument?.Content ?? string.Empty;
+        _appSettings.ResourceComparison ??= new ResourceComparisonSettings();
+        var window = new ResourceFileDiffWindow(
+            left,
+            right,
+            leftContent,
+            rightContent,
+            _appSettings.ResourceComparison.IgnoreWhitespaceByDefault,
+            _appSettings.ResourceComparison.IgnoreCaseByDefault)
+        {
+            Owner = this
+        };
+        window.Show();
+    }
+
+    private async Task<bool> SaveDatabaseSnapshotReplacementAsync(
+        DatabaseMetadataSnapshot currentSnapshot,
+        DatabaseMetadataSnapshot replacementSnapshot,
+        string successMessage)
+    {
+        replacementSnapshot.SnapshotId = currentSnapshot.SnapshotId;
+        _databaseSnapshotHistoryService.RecordSnapshotReplacement(_databaseSnapshots, currentSnapshot, replacementSnapshot);
+        int index = _databaseSnapshots.Snapshots.IndexOf(currentSnapshot);
+        if (index < 0)
+        {
+            StatusText = "Could not find the current database snapshot.";
+            return false;
+        }
+
+        _databaseSnapshots.Snapshots[index] = replacementSnapshot;
+        ScopedResource? resource = _activeScope?.Resources.FirstOrDefault(candidate =>
+            candidate.Kind == ResourceKind.DatabaseSnapshot &&
+            string.Equals(candidate.Path, replacementSnapshot.SnapshotId, StringComparison.OrdinalIgnoreCase));
+        if (resource != null)
+        {
+            resource.DisplayNameOverride = replacementSnapshot.DisplayName;
+            resource.DetailsOverride = replacementSnapshot.DatabaseName;
+        }
+
+        await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
+        await _scopeStore.SaveAsync(_scopeLibrary);
+        await LoadScopeAsync(_activeScope);
+        StatusText = successMessage;
+        return true;
+    }
+
+    private IReadOnlyList<DatabaseVersionSnapshotOption> CreateDatabaseVersionSnapshotOptions()
+    {
+        if (_activeScope == null)
+        {
+            return [];
+        }
+
+        var options = new List<DatabaseVersionSnapshotOption>();
+        foreach (ScopedResource resource in _activeScope.Resources.Where(resource => resource.Kind == ResourceKind.DatabaseSnapshot))
+        {
+            DatabaseMetadataSnapshot? snapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+                string.Equals(candidate.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase));
+            if (snapshot == null)
+            {
+                continue;
+            }
+
+            string databaseName = !string.IsNullOrWhiteSpace(resource.DisplayNameOverride)
+                ? resource.DisplayNameOverride
+                : snapshot.DisplayName;
+            options.Add(new DatabaseVersionSnapshotOption(
+                $"{databaseName} (Current)",
+                $"current://{snapshot.SnapshotId}",
+                snapshot.Clone()));
+
+            DatabaseSnapshotHistory history = _databaseSnapshotHistoryService.GetOrCreateHistory(_databaseSnapshots, snapshot);
+            foreach (DatabaseSnapshotVersion version in history.Versions.OrderByDescending(version => version.VersionNumber))
+            {
+                DatabaseMetadataSnapshot versionSnapshot = _databaseSnapshotHistoryService.ReconstructSnapshot(_databaseSnapshots, snapshot.SnapshotId, version.VersionId);
+                options.Add(new DatabaseVersionSnapshotOption(
+                    $"{databaseName} {version.VersionName}",
+                    $"version://{snapshot.SnapshotId}/{version.VersionId}",
+                    versionSnapshot));
+            }
+        }
+
+        return options;
+    }
+
+    private IReadOnlyList<DatabaseHistoryFilePickerItem> CreateDatabaseHistoryFilePickerItems()
+    {
+        var items = new List<DatabaseHistoryFilePickerItem>();
+        foreach (DatabaseVersionSnapshotOption option in CreateDatabaseVersionSnapshotOptions())
+        {
+            DatabaseSnapshotVersion resolvedVersion;
+            if (TryGetVersionFromOptionPath(option.Path, option.Snapshot.SnapshotId, out DatabaseSnapshotVersion? version) &&
+                version != null)
+            {
+                resolvedVersion = version;
+            }
+            else
+            {
+                resolvedVersion = new DatabaseSnapshotVersion
+                {
+                    VersionName = "Current",
+                    VersionNumber = int.MaxValue,
+                    CreatedAtUtc = DateTimeOffset.UtcNow
+                };
+            }
+
+            foreach (DatabaseSnapshotResourceFile file in _databaseSnapshotHistoryService.CreateResourceFiles(option.Snapshot))
+            {
+                items.Add(new DatabaseHistoryFilePickerItem(
+                    option.DisplayName,
+                    option.Snapshot.SnapshotId,
+                    resolvedVersion,
+                    file.Kind,
+                    file.ResourceKey,
+                    file.RelativePath,
+                    file.Content,
+                    file.Payload));
+            }
+        }
+
+        return items
+            .OrderBy(item => item.DatabaseName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private bool TryGetVersionFromOptionPath(string optionPath, string fallbackSnapshotId, out DatabaseSnapshotVersion? version)
+    {
+        version = null;
+        if (!optionPath.StartsWith("version://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string[] parts = optionPath["version://".Length..].Split('/', 2);
+        if (parts.Length != 2)
+        {
+            return false;
+        }
+
+        DatabaseSnapshotHistory? history = _databaseSnapshots.Histories.FirstOrDefault(candidate =>
+            string.Equals(candidate.SnapshotId, parts[0], StringComparison.OrdinalIgnoreCase)) ??
+            _databaseSnapshots.Histories.FirstOrDefault(candidate =>
+                string.Equals(candidate.SnapshotId, fallbackSnapshotId, StringComparison.OrdinalIgnoreCase));
+        version = history?.Versions.FirstOrDefault(candidate =>
+            string.Equals(candidate.VersionId, parts[1], StringComparison.OrdinalIgnoreCase));
+        return version != null;
+    }
+
+    private IReadOnlyList<DatabaseRestoreTargetOption> CreateDatabaseRestoreTargetOptions()
+    {
+        if (_activeScope == null)
+        {
+            return [];
+        }
+
+        return _activeScope.Resources
+            .Where(resource => resource.Kind == ResourceKind.DatabaseSnapshot)
+            .Select(resource => _databaseSnapshots.Snapshots.FirstOrDefault(snapshot =>
+                string.Equals(snapshot.SnapshotId, resource.Path, StringComparison.OrdinalIgnoreCase)))
+            .OfType<DatabaseMetadataSnapshot>()
+            .Select(snapshot => new DatabaseRestoreTargetOption(snapshot.DisplayName, snapshot.SnapshotId))
+            .OrderBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private DatabaseMetadataSnapshot GetDatabaseSnapshot(string snapshotId)
+    {
+        return _databaseSnapshots.Snapshots.First(snapshot =>
+            string.Equals(snapshot.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static ComparisonResource CreateDatabaseVersionPickerResource(DatabaseVersionSnapshotOption option)
+    {
+        return new ComparisonResource(
+            option.DisplayName,
+            "Database Version",
+            option.Path,
+            ComparisonResourceKind.DatabaseSnapshot,
+            "DatabaseSnapshot",
+            IsCollection: true,
+            IsText: false,
+            IsTableData: false,
+            IdentityKey: option.Path,
+            SnapshotId: option.Snapshot.SnapshotId);
+    }
+
+    private static ComparisonResource CreateDatabaseSnapshotComparisonResource(DatabaseMetadataSnapshot snapshot)
+    {
+        return new ComparisonResource(
+            snapshot.DisplayName,
+            "Database Snapshot",
+            snapshot.SnapshotId,
+            ComparisonResourceKind.DatabaseSnapshot,
+            "DatabaseSnapshot",
+            IsCollection: true,
+            IsText: false,
+            IsTableData: false,
+            IdentityKey: $"database:{snapshot.SnapshotId}",
+            SnapshotId: snapshot.SnapshotId);
+    }
+
+    private static ComparisonResource CreateTextComparisonResource(string displayName)
+    {
+        return new ComparisonResource(
+            displayName,
+            "Database Resource",
+            displayName,
+            ComparisonResourceKind.StoredProcedure,
+            "DatabaseResource",
+            IsCollection: false,
+            IsText: true,
+            IsTableData: false,
+            IdentityKey: displayName);
+    }
+
+    private void OpenHistoryFileDiff(string leftName, string rightName, string leftContent, string rightContent)
+    {
+        _appSettings.ResourceComparison ??= new ResourceComparisonSettings();
+        var window = new ResourceFileDiffWindow(
+            CreateTextComparisonResource(leftName),
+            CreateTextComparisonResource(rightName),
+            leftContent,
+            rightContent,
+            _appSettings.ResourceComparison.IgnoreWhitespaceByDefault,
+            _appSettings.ResourceComparison.IgnoreCaseByDefault)
+        {
+            Owner = this
+        };
+        window.Show();
+    }
+
+    private static bool IsEditableSqlResource(DatabaseVersionedResourceKind kind)
+    {
+        return kind is DatabaseVersionedResourceKind.StoredProcedure
+            or DatabaseVersionedResourceKind.View
+            or DatabaseVersionedResourceKind.Function
+            or DatabaseVersionedResourceKind.Trigger;
+    }
+
+    private static string CreateRestoredResourceName(string displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            return "dbo.RestoredResource";
+        }
+
+        string[] parts = displayName.Split('.', 2);
+        return parts.Length == 2
+            ? $"{parts[0]}.{parts[1]}_Restored"
+            : $"{displayName}_Restored";
+    }
+
+    private static (string SchemaName, string ObjectName) SplitDatabaseObjectName(string name)
+    {
+        string trimmed = name.Trim();
+        string[] parts = trimmed.Split('.', 2, StringSplitOptions.TrimEntries);
+        return parts.Length == 2 && !string.IsNullOrWhiteSpace(parts[0]) && !string.IsNullOrWhiteSpace(parts[1])
+            ? (parts[0], parts[1])
+            : ("dbo", trimmed);
+    }
+
+    private sealed record DatabaseVersionSnapshotOption(
+        string DisplayName,
+        string Path,
+        DatabaseMetadataSnapshot Snapshot);
 
     private async Task CompareObjectExplorerNodeAsync(FileSystemNode node, bool tableData)
     {
@@ -14163,6 +14716,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             changed |= _databaseMetadataImportService.NormalizeSnapshot(snapshot);
         }
 
+        changed |= _databaseSnapshotHistoryService.Normalize(_databaseSnapshots);
         return changed;
     }
 

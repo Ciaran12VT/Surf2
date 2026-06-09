@@ -1,0 +1,55 @@
+<Window x:Class="Surf2.DatabaseHistoryFilePickerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select File"
+        Width="760"
+        Height="520"
+        MinWidth="580"
+        MinHeight="380"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+        <TextBox x:Name="FilterTextBox"
+                 DockPanel.Dock="Top"
+                 Margin="0,0,0,8"
+                 Height="28"
+                 VerticalContentAlignment="Center"
+                 TextChanged="FilterTextBox_TextChanged" />
+        <DockPanel DockPanel.Dock="Bottom"
+                   Margin="0,10,0,0">
+            <TextBlock x:Name="StatusTextBlock"
+                       VerticalAlignment="Center"
+                       Foreground="#4B5563" />
+            <StackPanel DockPanel.Dock="Right"
+                        Orientation="Horizontal">
+                <Button x:Name="PickButton"
+                        Width="86"
+                        Margin="0,0,8,0"
+                        Click="PickButton_Click"
+                        Content="Select"
+                        IsEnabled="False"
+                        Style="{StaticResource SurfSaveButtonStyle}" />
+                <Button Width="86"
+                        Click="CancelButton_Click"
+                        Content="Cancel"
+                        Style="{StaticResource SurfCloseButtonStyle}" />
+            </StackPanel>
+        </DockPanel>
+        <ListView x:Name="FilesListView"
+                  MouseDoubleClick="FilesListView_MouseDoubleClick"
+                  SelectionChanged="FilesListView_SelectionChanged">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Database"
+                                    Width="190"
+                                    DisplayMemberBinding="{Binding DatabaseName}" />
+                    <GridViewColumn Header="Version"
+                                    Width="100"
+                                    DisplayMemberBinding="{Binding VersionName}" />
+                    <GridViewColumn Header="File"
+                                    Width="390"
+                                    DisplayMemberBinding="{Binding RelativePath}" />
+                </GridView>
+            </ListView.View>
+        </ListView>
+    </DockPanel>
+</Window>

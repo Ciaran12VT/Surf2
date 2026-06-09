@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using Microsoft.Win32;
 using Surf2.Models;
+using Surf2.Services;
 
 namespace Surf2;
 
@@ -9,14 +10,19 @@ public partial class ScopeManagerWindow : Window
 {
     private readonly ScopeLibrary _scopeLibrary;
     private readonly DatabaseSnapshotLibrary _databaseSnapshots;
+    private readonly DatabaseSnapshotHistoryService _databaseSnapshotHistoryService;
     private bool _isLoadingScope;
     private Scope? _selectedScope;
 
-    public ScopeManagerWindow(ScopeLibrary scopeLibrary, DatabaseSnapshotLibrary databaseSnapshots)
+    public ScopeManagerWindow(
+        ScopeLibrary scopeLibrary,
+        DatabaseSnapshotLibrary databaseSnapshots,
+        DatabaseSnapshotHistoryService databaseSnapshotHistoryService)
     {
         InitializeComponent();
         _scopeLibrary = scopeLibrary;
         _databaseSnapshots = databaseSnapshots;
+        _databaseSnapshotHistoryService = databaseSnapshotHistoryService;
 
         ScopeList.ItemsSource = _scopeLibrary.Scopes;
         RefreshMergeScopes();
@@ -160,12 +166,14 @@ public partial class ScopeManagerWindow : Window
             string.Equals(candidate.SnapshotId, snapshot.SnapshotId, StringComparison.OrdinalIgnoreCase));
         if (existingSnapshot != null)
         {
+            _databaseSnapshotHistoryService.RecordSnapshotReplacement(_databaseSnapshots, existingSnapshot, snapshot);
             int index = _databaseSnapshots.Snapshots.IndexOf(existingSnapshot);
             _databaseSnapshots.Snapshots[index] = snapshot;
         }
         else
         {
             _databaseSnapshots.Snapshots.Add(snapshot);
+            _databaseSnapshotHistoryService.EnsureInitialVersion(_databaseSnapshots, snapshot);
         }
 
         AddResource(scope, ResourceKind.DatabaseSnapshot, snapshot.SnapshotId, snapshot.DisplayName, snapshot.DatabaseName);
@@ -226,6 +234,7 @@ public partial class ScopeManagerWindow : Window
         int index = _databaseSnapshots.Snapshots.IndexOf(snapshot);
         if (index >= 0)
         {
+            _databaseSnapshotHistoryService.RecordSnapshotReplacement(_databaseSnapshots, snapshot, updatedSnapshot);
             _databaseSnapshots.Snapshots[index] = updatedSnapshot;
         }
 
