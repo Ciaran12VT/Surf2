@@ -75,7 +75,6 @@ public sealed class DiagramLabelControl : UserControl
         };
         _labelTextBlock = new TextBlock
         {
-            Foreground = Brushes.Black,
             IsHitTestVisible = false,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
@@ -151,6 +150,7 @@ public sealed class DiagramLabelControl : UserControl
         contextMenu.Items.Add(_tetheredMenuItem);
         ContextMenu = contextMenu;
 
+        Loaded += (_, _) => RefreshTextContrast();
         ApplyColors();
         SetGeometry(new Point(0, 0), new Rect(28, -DefaultBoxHeight / 2, DefaultBoxWidth, DefaultBoxHeight), isTethered: true);
     }
@@ -282,6 +282,14 @@ public sealed class DiagramLabelControl : UserControl
     public void SetHasUnresolvedQueries(bool hasUnresolvedQueries)
     {
         _queryWarningBadge.Visibility = hasUnresolvedQueries ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public void RefreshTextContrast()
+    {
+        Brush foreground = DiagramTextContrast.GetReadableTextBrush(BackColorText, this);
+        _labelTextBlock.Foreground = foreground;
+        _labelTextBox.Foreground = foreground;
+        _labelTextBox.CaretBrush = foreground;
     }
 
     public void SetTethered(bool isTethered)
@@ -632,6 +640,7 @@ public sealed class DiagramLabelControl : UserControl
         _connectorLine.Stroke = outlineBrush;
         _boxRectangle.Stroke = outlineBrush;
         _boxRectangle.Fill = backBrush;
+        RefreshTextContrast();
     }
 
     private void UpdateDashStyle()

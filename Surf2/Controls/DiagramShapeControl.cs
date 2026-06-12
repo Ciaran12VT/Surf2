@@ -62,7 +62,6 @@ public sealed class DiagramShapeControl : UserControl
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8),
-            Foreground = Brushes.Black,
             IsHitTestVisible = false,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap
@@ -101,6 +100,7 @@ public sealed class DiagramShapeControl : UserControl
         Content = layout;
 
         ContextMenu = CreateContextMenu();
+        Loaded += (_, _) => RefreshTextContrast();
         ApplyColors();
     }
 
@@ -216,6 +216,11 @@ public sealed class DiagramShapeControl : UserControl
     public void SetHasUnresolvedQueries(bool hasUnresolvedQueries)
     {
         _queryWarningBadge.Visibility = hasUnresolvedQueries ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public void RefreshTextContrast()
+    {
+        _labelTextBlock.Foreground = DiagramTextContrast.GetReadableTextBrush(BackColorText, this);
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -532,6 +537,7 @@ public sealed class DiagramShapeControl : UserControl
     {
         _shape.Stroke = CreateBrush(OutlineColorText);
         _shape.Fill = CreateBrush(BackColorText);
+        RefreshTextContrast();
     }
 
     private static Brush CreateBrush(string colorText)

@@ -2,9 +2,9 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Settings"
-        Width="820"
+        Width="1120"
         Height="590"
-        MinWidth="720"
+        MinWidth="1040"
         MinHeight="460"
         Background="{DynamicResource Theme.WindowBackgroundBrush}"
         WindowStartupLocation="CenterOwner">
@@ -569,17 +569,18 @@
                            Margin="0,12,0,0"
                            Foreground="{DynamicResource Theme.ErrorTextBrush}"
                            TextWrapping="Wrap" />
-                <WrapPanel Grid.Row="4"
-                           Margin="0,10,0,0"
-                           HorizontalAlignment="Right">
+                <StackPanel Grid.Row="4"
+                            Margin="0,10,0,0"
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal">
                     <Button x:Name="ExportDiagramImagePackageButton"
-                            Width="112"
+                            Width="128"
                             Margin="0,0,8,0"
                             Style="{StaticResource SettingsPrimaryButtonStyle}"
                             Click="ExportDiagramImagePackageButton_Click"
                             Content="Export Package" />
                     <Button x:Name="ImportDiagramImagePackageButton"
-                            Width="112"
+                            Width="128"
                             Margin="0,0,8,0"
                             Style="{StaticResource SettingsPrimaryButtonStyle}"
                             Click="ImportDiagramImagePackageButton_Click"
@@ -616,7 +617,7 @@
                             Style="{StaticResource SettingsCloseButtonStyle}"
                             Click="CloseButton_Click"
                             Content="Close" />
-                </WrapPanel>
+                </StackPanel>
             </Grid>
 
             <Grid x:Name="PersistenceSettingsPanel"

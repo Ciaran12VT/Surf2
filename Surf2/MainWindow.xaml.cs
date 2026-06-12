@@ -3773,6 +3773,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
         _diagramPopoutWindow.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
         _diagramPopoutWindow.SourceInitialized += (_, _) => AppThemeService.ApplyWindowChrome(_diagramPopoutWindow);
+        _diagramPopoutWindow.PreviewKeyDown += MainWindow_PreviewKeyDown;
         _diagramPopoutWindow.Closing += DiagramPopoutWindow_Closing;
 
         DetachFromCurrentParent(DiagramViewHost);
@@ -3801,6 +3802,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         popoutWindow.Closing -= DiagramPopoutWindow_Closing;
+        popoutWindow.PreviewKeyDown -= MainWindow_PreviewKeyDown;
         if (ReferenceEquals(popoutWindow.Content, DiagramViewHost))
         {
             popoutWindow.Content = null;
@@ -5301,7 +5303,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             MetadataEditorPlaceholder.Visibility = Visibility.Collapsed;
             MetadataEditorPanel.Visibility = Visibility.Visible;
-            MetadataLinkTextBox.Text = NormalizeDatabaseMetadataLink(metadata.Link);
+            MetadataLinkTextBox.Text = GetReadableDatabaseMetadataLink(metadata.Link);
             LoadMetadataDocumentation(metadata.DocumentationXaml);
             _metadataEditorQueries.AddRange(metadata.Queries.Select(query => query.Clone()));
             RebuildMetadataQueriesEditor();
@@ -6060,6 +6062,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return true;
             }
 
+            link = NormalizeDatabaseMetadataLink(link);
             MetadataLinkTarget target = ParseMetadataLinkTarget(link);
             string targetLink = target.Link;
 
@@ -6183,6 +6186,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool TryFocusInternalContainerLink(string link)
     {
         if (_activeScope == null)
+        {
+            return false;
+        }
+
+        if (DatabaseDocumentService.IsDatabaseDocumentPath(link) &&
+            !DatabaseDocumentService.IsSnapshotDocumentPath(link))
         {
             return false;
         }
@@ -10542,13 +10551,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             FontFamily = new FontFamily("Consolas"),
             FontSize = PreviewEditor.FontSize,
+            Foreground = Brushes.Black,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             IsReadOnly = true,
             ShowLineNumbers = true,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
         _previewPopoutEditor.SetResourceReference(Control.BackgroundProperty, AppThemeService.SurfaceBrushKey);
-        _previewPopoutEditor.SetResourceReference(Control.ForegroundProperty, AppThemeService.TextBrushKey);
         Grid.SetRow(_previewPopoutEditor, 1);
         root.Children.Add(_previewPopoutEditor);
 
@@ -11466,6 +11475,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        DependencyObject? originalSource = e.OriginalSource as DependencyObject;
+        bool isTextInput = IsTextInputElement(originalSource);
+
+        if (e.Key == Key.Delete &&
+            Keyboard.Modifiers == ModifierKeys.None &&
+            !isTextInput &&
+            IsDiagramViewCommandTarget() &&
+            await TryDeleteSelectedDiagramObjectsAsync())
+        {
+            e.Handled = true;
+            return;
+        }
+
         if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control)
         {
             return;
@@ -11476,8 +11498,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        DependencyObject? originalSource = e.OriginalSource as DependencyObject;
-        bool isTextInput = IsTextInputElement(originalSource);
         if (e.Key == Key.C &&
             !isTextInput &&
             TryCopySelectedExplorerSearchText(originalSource))
@@ -11726,7 +11746,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         while (source != null)
         {
-            if (source is TextBoxBase or PasswordBox)
+            if (source is TextBoxBase or PasswordBox or TextEditor)
             {
                 return true;
             }
@@ -12527,6 +12547,67 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         TrySetDiagramObjectClipboard(GetDiagramObjectSearchText(_selectedDiagramObject));
         RemoveDiagramObject(_selectedDiagramObject, pushUndo: true);
         StatusText = "Cut diagram object.";
+    }
+
+    private async Task<bool> TryDeleteSelectedDiagramObjectsAsync()
+    {
+        List<FrameworkElement> selectedObjects = _selectedDiagramObjects
+            .Where(IsSelectableDiagramObject)
+            .ToList();
+        if (selectedObjects.Count == 0 &&
+            _selectedDiagramObject != null &&
+            IsSelectableDiagramObject(_selectedDiagramObject))
+        {
+            selectedObjects.Add(_selectedDiagramObject);
+        }
+
+        if (selectedObjects.Count == 0)
+        {
+            return false;
+        }
+
+        if (TryBlockDiagramObjectEditWhenLocked("delete diagram objects"))
+        {
+            return true;
+        }
+
+        int deletedCount = 0;
+        foreach (FrameworkElement diagramObject in selectedObjects)
+        {
+            if (!DiagramCanvas.Children.Contains(diagramObject))
+            {
+                continue;
+            }
+
+            switch (diagramObject)
+            {
+                case DiagramWorkflowMarkerControl marker:
+                    RemoveWorkflowItemAndMarker(marker.WorkflowId, marker.WorkflowItemId);
+                    deletedCount++;
+                    break;
+
+                case DiagramPortalControl portal:
+                    await ClearPairedPortalReferenceAsync(portal);
+                    RemoveDiagramObject(portal, pushUndo: true);
+                    deletedCount++;
+                    break;
+
+                default:
+                    RemoveDiagramObject(diagramObject, pushUndo: true);
+                    deletedCount++;
+                    break;
+            }
+        }
+
+        if (deletedCount == 0)
+        {
+            return false;
+        }
+
+        StatusText = deletedCount == 1
+            ? "Deleted selected diagram object."
+            : $"Deleted {deletedCount} selected diagram objects.";
+        return true;
     }
 
     private void PasteDiagramClipboardContent()
@@ -14698,9 +14779,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         ObjectExplorer?.Items.Refresh();
         OpenTabsList?.Items.Refresh();
+        RefreshDiagramObjectTextContrast();
         _diagramPopoutWindow?.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
         _previewPopoutWindow?.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
         AppThemeService.ApplyWindowChromeToOpenWindows();
+    }
+
+    private void RefreshDiagramObjectTextContrast()
+    {
+        if (DiagramCanvas == null)
+        {
+            return;
+        }
+
+        foreach (FrameworkElement diagramObject in DiagramCanvas.Children.OfType<FrameworkElement>())
+        {
+            switch (diagramObject)
+            {
+                case DiagramShapeControl shape:
+                    shape.RefreshTextContrast();
+                    break;
+                case DiagramImageControl image:
+                    image.RefreshTextContrast();
+                    break;
+                case DiagramLabelControl label:
+                    label.RefreshTextContrast();
+                    break;
+            }
+        }
     }
 
     private async void SaveWorkbenchButton_Click(object sender, RoutedEventArgs e)
@@ -15611,12 +15717,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         MetadataLinkTarget target = ParseMetadataLinkTarget(link);
         string normalizedTarget = target.Link;
-        if (!DatabaseDocumentService.TryCreateCanonicalDocumentPath(target.Link, _databaseSnapshots, out normalizedTarget) &&
-            DatabaseDocumentService.TryGetSnapshotKey(target.Link, out string snapshotKey) &&
-            DatabaseDocumentService.TryResolveSnapshot(_databaseSnapshots, snapshotKey, out DatabaseMetadataSnapshot snapshot))
-        {
-            normalizedTarget = DatabaseDocumentService.CreateSnapshotDocumentPath(snapshot);
-        }
+        DatabaseDocumentService.TryCreateCanonicalDocumentPath(target.Link, _databaseSnapshots, out normalizedTarget);
 
         if (target.LineNumber.HasValue)
         {
@@ -15624,6 +15725,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return normalizedTarget;
+    }
+
+    private string GetReadableDatabaseMetadataLink(string link)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+        {
+            return string.Empty;
+        }
+
+        MetadataLinkTarget target = ParseMetadataLinkTarget(link);
+        string readableTarget = target.Link;
+        DatabaseDocumentService.TryCreateReadableDocumentPath(target.Link, _databaseSnapshots, out readableTarget);
+
+        if (target.LineNumber.HasValue)
+        {
+            readableTarget = $"{readableTarget}:{target.LineNumber.Value.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        return readableTarget;
     }
 
     private static DateTimeOffset GetWorkbenchUpdatedAtUtc(WorkbenchState workbench)
@@ -16681,6 +16801,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             WorkspaceCanvas.Background = ActiveCodeCanvasBrush;
             DiagramCanvas.Background = ActiveDiagramCanvasBrush;
+            RefreshDiagramObjectTextContrast();
             return;
         }
 
@@ -16690,6 +16811,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramCanvas.Background = _activeWorkspaceView == WorkspaceViewKind.Diagram
             ? ActiveDiagramCanvasBrush
             : InactiveCanvasBrush;
+        RefreshDiagramObjectTextContrast();
     }
 
     private void SetSingleWorkspaceAxis()

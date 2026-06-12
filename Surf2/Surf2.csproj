@@ -12,11 +12,7 @@
   <ItemGroup>
     <Resource Include="Assets\surf2_icon.ico" />
     <Resource Include="Assets\surf2_icon.png" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Remove="Assets\splash_screen.png" />
-    <SplashScreen Include="Assets\splash_screen.png" />
+    <Resource Include="Assets\splash_screen.png" />
   </ItemGroup>
 
   <ItemGroup>

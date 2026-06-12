@@ -21,6 +21,7 @@ public partial class App : Application
             new RoutedEventHandler(Window_Loaded));
 
         base.OnStartup(e);
+        ShowMainWindowWithSplash();
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -70,6 +71,46 @@ public partial class App : Application
     private static void CurrentDomain_ProcessExit(object? sender, EventArgs e)
     {
         InternalLogService.Info("Process exit event.");
+    }
+
+    private void ShowMainWindowWithSplash()
+    {
+        StartupSplashWindow? splashWindow = null;
+        try
+        {
+            splashWindow = new StartupSplashWindow();
+            splashWindow.Show();
+            splashWindow.CenterOnPrimaryWorkArea();
+        }
+        catch (Exception ex)
+        {
+            InternalLogService.Error(ex, "Failed to show startup splash window.");
+        }
+
+        var mainWindow = new MainWindow();
+        MainWindow = mainWindow;
+
+        bool splashClosed = false;
+        void CloseSplash()
+        {
+            if (splashClosed)
+            {
+                return;
+            }
+
+            splashClosed = true;
+            try
+            {
+                splashWindow?.Close();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+
+        mainWindow.ContentRendered += (_, _) => CloseSplash();
+        mainWindow.Closed += (_, _) => CloseSplash();
+        mainWindow.Show();
     }
 
     private static void Window_Loaded(object sender, RoutedEventArgs e)

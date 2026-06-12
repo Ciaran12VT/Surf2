@@ -62,7 +62,6 @@ public sealed class DiagramImageControl : UserControl
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(4, 0, 4, 0),
-            Foreground = Brushes.Black,
             IsHitTestVisible = false,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap
@@ -107,6 +106,8 @@ public sealed class DiagramImageControl : UserControl
         Content = layout;
 
         ContextMenu = CreateContextMenu();
+        Loaded += (_, _) => RefreshTextContrast();
+        RefreshTextContrast();
     }
 
     private enum InteractionMode
@@ -220,6 +221,11 @@ public sealed class DiagramImageControl : UserControl
     public void SetHasUnresolvedQueries(bool hasUnresolvedQueries)
     {
         _queryWarningBadge.Visibility = hasUnresolvedQueries ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    public void RefreshTextContrast()
+    {
+        _labelTextBlock.Foreground = DiagramTextContrast.GetCanvasReadableTextBrush(this);
     }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
