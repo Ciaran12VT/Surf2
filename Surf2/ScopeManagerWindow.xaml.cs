@@ -10,18 +10,22 @@ public partial class ScopeManagerWindow : Window
 {
     private readonly ScopeLibrary _scopeLibrary;
     private readonly DatabaseSnapshotLibrary _databaseSnapshots;
+    private readonly DiagramLibrary _diagramLibrary;
     private readonly DatabaseSnapshotHistoryService _databaseSnapshotHistoryService;
+    private readonly ExistingScopeResourceService _existingScopeResourceService = new();
     private bool _isLoadingScope;
     private Scope? _selectedScope;
 
     public ScopeManagerWindow(
         ScopeLibrary scopeLibrary,
         DatabaseSnapshotLibrary databaseSnapshots,
+        DiagramLibrary diagramLibrary,
         DatabaseSnapshotHistoryService databaseSnapshotHistoryService)
     {
         InitializeComponent();
         _scopeLibrary = scopeLibrary;
         _databaseSnapshots = databaseSnapshots;
+        _diagramLibrary = diagramLibrary;
         _databaseSnapshotHistoryService = databaseSnapshotHistoryService;
 
         ScopeList.ItemsSource = _scopeLibrary.Scopes;
@@ -257,6 +261,48 @@ public partial class ScopeManagerWindow : Window
         ResourceList.Items.Refresh();
         WasChanged = true;
         StatusTextBlock.Text = "Removed resource.";
+    }
+
+    private void AddExistingResourceButton_Click(object sender, RoutedEventArgs e)
+    {
+        Scope? targetScope = EnsureSelectedScope();
+        if (targetScope == null)
+        {
+            return;
+        }
+
+        IReadOnlyList<ExistingScopeResourceCandidate> candidates =
+            _existingScopeResourceService.CreateCandidates(targetScope, _scopeLibrary, _databaseSnapshots, _diagramLibrary);
+        if (candidates.Count == 0)
+        {
+            StatusTextBlock.Text = "No existing resources are available to add.";
+            return;
+        }
+
+        var picker = new ExistingScopeResourcePickerWindow(candidates)
+        {
+            Owner = this
+        };
+
+        if (picker.ShowDialog() != true)
+        {
+            return;
+        }
+
+        int added = 0;
+        foreach (ExistingScopeResourceCandidate candidate in picker.SelectedResources)
+        {
+            if (_existingScopeResourceService.TryAddResource(targetScope, candidate))
+            {
+                added++;
+            }
+        }
+
+        ResourceList.Items.Refresh();
+        WasChanged |= added > 0;
+        StatusTextBlock.Text = added == 1
+            ? "Added 1 existing resource."
+            : $"Added {added} existing resources.";
     }
 
     private void AddScopeResourcesButton_Click(object sender, RoutedEventArgs e)

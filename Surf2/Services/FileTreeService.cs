@@ -151,7 +151,8 @@ public sealed class FileTreeService
             parentKey: FileSystemNode.RootParentKey,
             scopeResourceId: resource.ResourceId,
             isScopeResourceRoot: true,
-            isScopeResourceLoaded: isScopeResourceLoaded);
+            isScopeResourceLoaded: isScopeResourceLoaded,
+            toolTip: CreateFolderResourceToolTip(resource.Path, isDirectory && exists));
 
         if (!isScopeResourceLoaded)
         {
@@ -234,7 +235,8 @@ public sealed class FileTreeService
             iconKind: iconKind,
             parentKey: parentKey,
             scopeResourceId: scopeResourceId,
-            isScopeResourceRoot: isScopeResourceRoot)
+            isScopeResourceRoot: isScopeResourceRoot,
+            toolTip: isScopeResourceRoot ? CreateFolderResourceToolTip(directoryPath, exists: true) : null)
         {
             IsLoaded = true,
             IsExpanded = true
@@ -625,6 +627,126 @@ public sealed class FileTreeService
             JsonValueKind.False => "False",
             _ => value.ToString()
         };
+    }
+
+    private static string? CreateFolderResourceToolTip(string folderPath, bool exists)
+    {
+        if (!exists || string.IsNullOrWhiteSpace(folderPath))
+        {
+            return null;
+        }
+
+        return TryGetGitBranch(folderPath, out string branchName, out string repositoryPath)
+            ? string.Equals(NormalizePathForDisplay(folderPath), NormalizePathForDisplay(repositoryPath), StringComparison.OrdinalIgnoreCase)
+                ? $"Git branch: {branchName}"
+                : $"Git branch: {branchName}{Environment.NewLine}Repository: {repositoryPath}"
+            : null;
+    }
+
+    private static bool TryGetGitBranch(string folderPath, out string branchName, out string repositoryPath)
+    {
+        branchName = string.Empty;
+        repositoryPath = string.Empty;
+
+        string? currentPath = NormalizePathForDisplay(folderPath);
+        while (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            string dotGitPath = Path.Combine(currentPath, ".git");
+            string? gitDirectory = ResolveGitDirectory(dotGitPath, currentPath);
+            if (!string.IsNullOrWhiteSpace(gitDirectory))
+            {
+                repositoryPath = currentPath;
+                return TryReadGitHead(gitDirectory, out branchName);
+            }
+
+            DirectoryInfo? parent = Directory.GetParent(currentPath);
+            currentPath = parent?.FullName;
+        }
+
+        return false;
+    }
+
+    private static string? ResolveGitDirectory(string dotGitPath, string repositoryPath)
+    {
+        if (Directory.Exists(dotGitPath))
+        {
+            return dotGitPath;
+        }
+
+        if (!File.Exists(dotGitPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            string gitFileText = File.ReadLines(dotGitPath).FirstOrDefault() ?? string.Empty;
+            const string prefix = "gitdir:";
+            if (!gitFileText.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            string gitDirectory = gitFileText[prefix.Length..].Trim();
+            if (string.IsNullOrWhiteSpace(gitDirectory))
+            {
+                return null;
+            }
+
+            return Path.IsPathRooted(gitDirectory)
+                ? Path.GetFullPath(gitDirectory)
+                : Path.GetFullPath(Path.Combine(repositoryPath, gitDirectory));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TryReadGitHead(string gitDirectory, out string branchName)
+    {
+        branchName = string.Empty;
+
+        try
+        {
+            string headPath = Path.Combine(gitDirectory, "HEAD");
+            if (!File.Exists(headPath))
+            {
+                return false;
+            }
+
+            string head = File.ReadLines(headPath).FirstOrDefault()?.Trim() ?? string.Empty;
+            const string refPrefix = "ref: refs/heads/";
+            if (head.StartsWith(refPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                branchName = head[refPrefix.Length..].Trim();
+                return !string.IsNullOrWhiteSpace(branchName);
+            }
+
+            if (head.Length >= 7 && head.All(Uri.IsHexDigit))
+            {
+                branchName = $"detached HEAD {head[..7]}";
+                return true;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static string NormalizePathForDisplay(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
     }
 
     private static FileSystemNode CreateDatabaseRoot(

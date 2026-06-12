@@ -45,7 +45,8 @@ public sealed class FileSystemNode
         string? virtualFolderId = null,
         string? scopeResourceId = null,
         bool isScopeResourceRoot = false,
-        bool isScopeResourceLoaded = true)
+        bool isScopeResourceLoaded = true,
+        string? toolTip = null)
     {
         FullPath = path;
         IsDirectory = isDirectory;
@@ -55,6 +56,7 @@ public sealed class FileSystemNode
         ScopeResourceId = scopeResourceId ?? string.Empty;
         IsScopeResourceRoot = isScopeResourceRoot;
         IsScopeResourceLoaded = isScopeResourceLoaded;
+        ToolTip = toolTip;
         NodeKey = string.IsNullOrWhiteSpace(nodeKey) ? path : nodeKey;
         ParentKey = string.IsNullOrWhiteSpace(parentKey) ? RootParentKey : parentKey;
         NaturalParentKey = ParentKey;
@@ -90,6 +92,8 @@ public sealed class FileSystemNode
     public bool IsScopeResourceRoot { get; }
 
     public bool IsScopeResourceLoaded { get; }
+
+    public string? ToolTip { get; }
 
     public bool IsLoaded { get; set; }
 

@@ -8,22 +8,27 @@ public sealed class DatabaseDocumentService
 {
     private const string Prefix = "db://";
 
+    public static string CreateSnapshotDocumentPath(DatabaseMetadataSnapshot snapshot)
+    {
+        return $"{Prefix}{CreateSnapshotDocumentSegment(snapshot)}";
+    }
+
     public static string CreateObjectDocumentPath(DatabaseMetadataSnapshot snapshot, SqlDatabaseObject databaseObject)
     {
         string fullName = SqlName.FormatPlainMultipartName(databaseObject.SchemaName, databaseObject.ObjectName);
-        return $"{Prefix}{snapshot.SnapshotId}/object/{databaseObject.Kind}/{Uri.EscapeDataString(fullName)}.sql";
+        return CreateObjectDocumentPath(snapshot, databaseObject.Kind, fullName);
     }
 
     public static string CreateTableDocumentPath(DatabaseMetadataSnapshot snapshot, SqlTable table)
     {
         string fullName = SqlName.FormatPlainMultipartName(table.SchemaName, table.TableName);
-        return $"{Prefix}{snapshot.SnapshotId}/table/{Uri.EscapeDataString(fullName)}.sql";
+        return CreateTableDocumentPath(snapshot, fullName);
     }
 
     public static string CreateTableDataDocumentPath(DatabaseMetadataSnapshot snapshot, SqlTable table)
     {
         string fullName = SqlName.FormatPlainMultipartName(table.SchemaName, table.TableName);
-        return $"{Prefix}{snapshot.SnapshotId}/table-data/{Uri.EscapeDataString(fullName)}.csv";
+        return CreateTableDataDocumentPath(snapshot, fullName);
     }
 
     public static bool IsDatabaseDocumentPath(string path)
@@ -34,7 +39,7 @@ public sealed class DatabaseDocumentService
     public static bool TryParseDocumentPath(string documentPath, out DatabaseDocumentReference reference)
     {
         reference = DatabaseDocumentReference.Empty;
-        if (!TryParsePath(documentPath, out string snapshotId, out string documentType, out string kind, out string fullName))
+        if (!TryParsePath(documentPath, out string snapshotKey, out string documentType, out string kind, out string fullName))
         {
             return false;
         }
@@ -46,8 +51,99 @@ public sealed class DatabaseDocumentService
             objectKind = parsedKind;
         }
 
-        reference = new DatabaseDocumentReference(snapshotId, documentType, objectKind, fullName);
+        reference = new DatabaseDocumentReference(snapshotKey, documentType, objectKind, fullName);
         return true;
+    }
+
+    public static bool TryGetSnapshotKey(string documentPath, out string snapshotKey)
+    {
+        snapshotKey = string.Empty;
+        if (!documentPath.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string rest = documentPath[Prefix.Length..];
+        int slashIndex = rest.IndexOf('/', StringComparison.Ordinal);
+        snapshotKey = slashIndex >= 0 ? rest[..slashIndex] : rest;
+        return !string.IsNullOrWhiteSpace(snapshotKey);
+    }
+
+    public static bool TryResolveSnapshot(
+        DatabaseSnapshotLibrary snapshotLibrary,
+        string snapshotKey,
+        out DatabaseMetadataSnapshot snapshot)
+    {
+        snapshot = null!;
+        if (string.IsNullOrWhiteSpace(snapshotKey))
+        {
+            return false;
+        }
+
+        snapshot = snapshotLibrary.Snapshots.FirstOrDefault(candidate =>
+            string.Equals(candidate.SnapshotId, snapshotKey, StringComparison.OrdinalIgnoreCase))!;
+        if (snapshot != null)
+        {
+            return true;
+        }
+
+        snapshot = snapshotLibrary.Snapshots.FirstOrDefault(candidate =>
+            string.Equals(CreateSnapshotDocumentSegment(candidate), snapshotKey, StringComparison.OrdinalIgnoreCase))!;
+        if (snapshot != null)
+        {
+            return true;
+        }
+
+        string decodedSnapshotKey = UnescapeSegment(snapshotKey);
+        snapshot = snapshotLibrary.Snapshots.FirstOrDefault(candidate =>
+            string.Equals(GetSnapshotDocumentName(candidate), decodedSnapshotKey, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(candidate.DisplayName, decodedSnapshotKey, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(candidate.DatabaseName, decodedSnapshotKey, StringComparison.OrdinalIgnoreCase))!;
+        return snapshot != null;
+    }
+
+    public static bool TryResolveDocumentSnapshot(
+        string documentPath,
+        DatabaseSnapshotLibrary snapshotLibrary,
+        out DatabaseMetadataSnapshot snapshot)
+    {
+        snapshot = null!;
+        return TryGetSnapshotKey(documentPath, out string snapshotKey) &&
+               TryResolveSnapshot(snapshotLibrary, snapshotKey, out snapshot);
+    }
+
+    public static bool TryCreateCanonicalDocumentPath(
+        string documentPath,
+        DatabaseSnapshotLibrary snapshotLibrary,
+        out string canonicalDocumentPath)
+    {
+        canonicalDocumentPath = documentPath;
+        if (!TryParseDocumentPath(documentPath, out DatabaseDocumentReference reference) ||
+            !TryResolveSnapshot(snapshotLibrary, reference.SnapshotId, out DatabaseMetadataSnapshot snapshot))
+        {
+            return false;
+        }
+
+        if (string.Equals(reference.DocumentType, "object", StringComparison.OrdinalIgnoreCase) &&
+            reference.ObjectKind.HasValue)
+        {
+            canonicalDocumentPath = CreateObjectDocumentPath(snapshot, reference.ObjectKind.Value, reference.FullName);
+            return true;
+        }
+
+        if (string.Equals(reference.DocumentType, "table", StringComparison.OrdinalIgnoreCase))
+        {
+            canonicalDocumentPath = CreateTableDocumentPath(snapshot, reference.FullName);
+            return true;
+        }
+
+        if (string.Equals(reference.DocumentType, "table-data", StringComparison.OrdinalIgnoreCase))
+        {
+            canonicalDocumentPath = CreateTableDataDocumentPath(snapshot, reference.FullName);
+            return true;
+        }
+
+        return false;
     }
 
     public bool TryGetTableDataDocumentPathForTableDocument(
@@ -57,15 +153,13 @@ public sealed class DatabaseDocumentService
     {
         tableDataDocumentPath = string.Empty;
 
-        if (!TryParsePath(tableDocumentPath, out string snapshotId, out string documentType, out _, out string fullName) ||
+        if (!TryParsePath(tableDocumentPath, out string snapshotKey, out string documentType, out _, out string fullName) ||
             !string.Equals(documentType, "table", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        DatabaseMetadataSnapshot? snapshot = snapshotLibrary.Snapshots.FirstOrDefault(candidate =>
-            string.Equals(candidate.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
-        if (snapshot == null)
+        if (!TryResolveSnapshot(snapshotLibrary, snapshotKey, out DatabaseMetadataSnapshot snapshot))
         {
             return false;
         }
@@ -92,14 +186,12 @@ public sealed class DatabaseDocumentService
         syntaxPath = "document.sql";
         displayName = string.Empty;
 
-        if (!TryParsePath(documentPath, out string snapshotId, out string documentType, out string kind, out string fullName))
+        if (!TryParsePath(documentPath, out string snapshotKey, out string documentType, out string kind, out string fullName))
         {
             return false;
         }
 
-        DatabaseMetadataSnapshot? snapshot = snapshotLibrary.Snapshots.FirstOrDefault(candidate =>
-            string.Equals(candidate.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
-        if (snapshot == null)
+        if (!TryResolveSnapshot(snapshotLibrary, snapshotKey, out DatabaseMetadataSnapshot snapshot))
         {
             return false;
         }
@@ -148,15 +240,13 @@ public sealed class DatabaseDocumentService
         content = string.Empty;
         displayName = string.Empty;
 
-        if (!TryParsePath(documentPath, out string snapshotId, out string documentType, out _, out string fullName) ||
+        if (!TryParsePath(documentPath, out string snapshotKey, out string documentType, out _, out string fullName) ||
             !string.Equals(documentType, "table-data", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        DatabaseMetadataSnapshot? snapshot = snapshotLibrary.Snapshots.FirstOrDefault(candidate =>
-            string.Equals(candidate.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
-        if (snapshot == null)
+        if (!TryResolveSnapshot(snapshotLibrary, snapshotKey, out DatabaseMetadataSnapshot snapshot))
         {
             return false;
         }
@@ -277,12 +367,12 @@ public sealed class DatabaseDocumentService
 
     private static bool TryParsePath(
         string documentPath,
-        out string snapshotId,
+        out string snapshotKey,
         out string documentType,
         out string kind,
         out string fullName)
     {
-        snapshotId = string.Empty;
+        snapshotKey = string.Empty;
         documentType = string.Empty;
         kind = string.Empty;
         fullName = string.Empty;
@@ -298,7 +388,7 @@ public sealed class DatabaseDocumentService
             return false;
         }
 
-        snapshotId = parts[0];
+        snapshotKey = parts[0];
         documentType = parts[1];
 
         if (string.Equals(documentType, "object", StringComparison.OrdinalIgnoreCase))
@@ -326,6 +416,69 @@ public sealed class DatabaseDocumentService
         }
 
         return false;
+    }
+
+    private static string CreateSnapshotDocumentSegment(DatabaseMetadataSnapshot snapshot)
+    {
+        return EscapeSnapshotDocumentSegment(GetSnapshotDocumentName(snapshot));
+    }
+
+    private static string CreateObjectDocumentPath(
+        DatabaseMetadataSnapshot snapshot,
+        SqlDatabaseObjectKind objectKind,
+        string fullName)
+    {
+        return $"{Prefix}{CreateSnapshotDocumentSegment(snapshot)}/object/{objectKind}/{Uri.EscapeDataString(fullName)}.sql";
+    }
+
+    private static string CreateTableDocumentPath(DatabaseMetadataSnapshot snapshot, string fullName)
+    {
+        return $"{Prefix}{CreateSnapshotDocumentSegment(snapshot)}/table/{Uri.EscapeDataString(fullName)}.sql";
+    }
+
+    private static string CreateTableDataDocumentPath(DatabaseMetadataSnapshot snapshot, string fullName)
+    {
+        return $"{Prefix}{CreateSnapshotDocumentSegment(snapshot)}/table-data/{Uri.EscapeDataString(fullName)}.csv";
+    }
+
+    private static string GetSnapshotDocumentName(DatabaseMetadataSnapshot snapshot)
+    {
+        if (!string.IsNullOrWhiteSpace(snapshot.DisplayName) &&
+            !string.Equals(snapshot.DisplayName, "Database Snapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            return snapshot.DisplayName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.DatabaseName))
+        {
+            return snapshot.DatabaseName.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(snapshot.DisplayName)
+            ? snapshot.SnapshotId
+            : snapshot.DisplayName.Trim();
+    }
+
+    private static string EscapeSnapshotDocumentSegment(string value)
+    {
+        return value
+            .Replace("%", "%25", StringComparison.Ordinal)
+            .Replace("/", "%2F", StringComparison.Ordinal)
+            .Replace("\\", "%5C", StringComparison.Ordinal)
+            .Replace("#", "%23", StringComparison.Ordinal)
+            .Replace("?", "%3F", StringComparison.Ordinal);
+    }
+
+    private static string UnescapeSegment(string value)
+    {
+        try
+        {
+            return Uri.UnescapeDataString(value);
+        }
+        catch (UriFormatException)
+        {
+            return value;
+        }
     }
 
     private static string UnescapeName(string value)

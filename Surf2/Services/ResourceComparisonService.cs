@@ -365,6 +365,13 @@ public sealed class ResourceComparisonService
             return false;
         }
 
+        if (!DatabaseDocumentService.TryResolveSnapshot(databaseSnapshots, reference.SnapshotId, out snapshot))
+        {
+            return false;
+        }
+
+        reference = reference with { SnapshotId = snapshot.SnapshotId };
+
         if (tableData)
         {
             if (!string.Equals(reference.DocumentType, "table", StringComparison.OrdinalIgnoreCase) ||
@@ -1023,9 +1030,7 @@ public sealed class ResourceComparisonService
     {
         snapshot = null!;
         table = null!;
-        snapshot = databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
-            string.Equals(candidate.SnapshotId, reference.SnapshotId, StringComparison.OrdinalIgnoreCase))!;
-        if (snapshot == null)
+        if (!DatabaseDocumentService.TryResolveSnapshot(databaseSnapshots, reference.SnapshotId, out snapshot))
         {
             return false;
         }

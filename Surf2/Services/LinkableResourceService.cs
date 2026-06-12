@@ -110,7 +110,7 @@ public sealed class LinkableResourceService
         AddResource(resources, addedPaths, new LinkableResource(
             displayName,
             "Database",
-            scopedResource.Path,
+            DatabaseDocumentService.CreateSnapshotDocumentPath(snapshot),
             LinkableResourceKind.Database));
 
         foreach (SqlDatabaseObject databaseObject in snapshot.Objects

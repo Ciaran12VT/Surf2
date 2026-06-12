@@ -206,10 +206,16 @@
                             Content="Edit" />
                     <Button Grid.Column="4"
                             Width="92"
-                            Margin="0,0,12,0"
+                            Margin="0,0,6,0"
                             Style="{StaticResource ScopeDangerButtonStyle}"
                             Click="RemoveResourceButton_Click"
                             Content="Remove" />
+                    <Button Grid.Column="5"
+                            Width="116"
+                            Margin="0,0,12,0"
+                            Style="{StaticResource ScopePrimaryButtonStyle}"
+                            Click="AddExistingResourceButton_Click"
+                            Content="Add Existing" />
                     <ComboBox x:Name="MergeScopeComboBox"
                               Grid.Column="7"
                               Width="170"

@@ -237,6 +237,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly SqlTraceService _sqlTraceService = new();
     private readonly LinkableResourceService _linkableResourceService = new();
     private readonly ResourceComparisonService _resourceComparisonService = new();
+    private readonly ExistingScopeResourceService _existingScopeResourceService = new();
     private readonly IWorkspaceStore _workspaceStore = new SqlServerWorkspaceStore();
     private readonly IScopeStore _scopeStore = new SqlServerScopeStore();
     private readonly ISettingsStore _settingsStore = new SqlServerSettingsStore();
@@ -305,6 +306,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private bool _shutdownRequested;
     private bool _shutdownSaveCompleted;
     private bool _referenceConnectionLinesEnabled;
+    private bool _isPersistenceHydrated;
+    private string? _persistenceLoadFailureMessage;
     private Point _canvasPanStartPoint;
     private Point _diagramPanStartPoint;
     private Point _controlCodeCanvasPanPoint;
@@ -464,27 +467,54 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            _workspaceState = await _workspaceStore.LoadAsync();
-            _scopeLibrary = await _scopeStore.LoadAsync();
-            _databaseSnapshots = await _databaseMetadataStore.LoadAsync();
-            _diagramLibrary = await _diagramStore.LoadAsync();
-            _workbenchLibrary = await _workbenchStore.LoadAsync();
+            WorkspaceState workspaceState = await _workspaceStore.LoadAsync();
+            ScopeLibrary scopeLibrary = await _scopeStore.LoadAsync();
+            DatabaseSnapshotLibrary databaseSnapshots = await _databaseMetadataStore.LoadAsync();
+            DiagramLibrary diagramLibrary = await _diagramStore.LoadAsync();
+            WorkbenchLibrary workbenchLibrary = await _workbenchStore.LoadAsync();
+            AppSettings appSettings = await _settingsStore.LoadAsync();
+
+            _workspaceState = workspaceState;
+            _scopeLibrary = scopeLibrary;
+            _databaseSnapshots = databaseSnapshots;
+            _diagramLibrary = diagramLibrary;
+            _workbenchLibrary = workbenchLibrary;
+            _appSettings = appSettings;
+            _isPersistenceHydrated = true;
+            _persistenceLoadFailureMessage = null;
+        }
+        catch (Exception ex)
+        {
+            _isPersistenceHydrated = false;
+            _persistenceLoadFailureMessage = ex.Message;
+            InternalLogService.Error(ex, "Failed to hydrate persistence state during startup.");
+            StatusText = $"Could not restore workspace: {ex.Message}. Saving is disabled until Surf2 restarts successfully.";
+            return;
+        }
+
+        try
+        {
             bool workbenchLibraryChanged = NormalizeWorkbenchLibrary();
-            _appSettings = await _settingsStore.LoadAsync();
             bool databaseSnapshotsChanged = NormalizeDatabaseSnapshots();
+            bool diagramLibraryChanged = NormalizeDiagramDatabaseLinks();
             if (_appSettings.EnsureDefaults())
             {
-                await _settingsStore.SaveAsync(_appSettings);
+                await SaveSettingsAsync();
             }
 
             if (workbenchLibraryChanged)
             {
-                await _workbenchStore.SaveAsync(_workbenchLibrary);
+                await SaveWorkbenchLibraryAsync();
             }
 
             if (databaseSnapshotsChanged)
             {
-                await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
+                await SaveDatabaseSnapshotsAsync();
+            }
+
+            if (diagramLibraryChanged)
+            {
+                await SaveDiagramLibraryAsync();
             }
 
             RefreshDiagramImageToolMenu();
@@ -509,13 +539,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch (Exception ex)
         {
+            InternalLogService.Error(ex, "Failed to restore workspace after persistence state was hydrated.");
             StatusText = $"Could not restore workspace: {ex.Message}";
         }
     }
 
     private async void ScopesButton_Click(object sender, RoutedEventArgs e)
     {
-        var scopeManagerWindow = new ScopeManagerWindow(_scopeLibrary, _databaseSnapshots, _databaseSnapshotHistoryService)
+        if (!EnsurePersistenceReadyForSave("scope changes"))
+        {
+            return;
+        }
+
+        var scopeManagerWindow = new ScopeManagerWindow(_scopeLibrary, _databaseSnapshots, _diagramLibrary, _databaseSnapshotHistoryService)
         {
             Owner = this
         };
@@ -524,8 +560,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (scopeManagerWindow.WasChanged)
         {
-            await _scopeStore.SaveAsync(_scopeLibrary);
-            await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
+            await SaveScopeLibraryAsync();
+            await SaveDatabaseSnapshotsAsync();
         }
 
         if (result != true || string.IsNullOrWhiteSpace(scopeManagerWindow.SelectedScopeId))
@@ -540,12 +576,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         bool scopeChanged = _activeScope?.ScopeId != scopeManagerWindow.SelectedScopeId;
         _scopeLibrary.LastActiveScopeId = scopeManagerWindow.SelectedScopeId;
-        await _scopeStore.SaveAsync(_scopeLibrary);
-        await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
+        await SaveScopeLibraryAsync();
+        await SaveDatabaseSnapshotsAsync();
 
         if (scopeChanged)
         {
             CloseAllOpenWindows();
+            ClearSelectedWorkbench();
             await SaveWorkspaceStateAsync();
         }
 
@@ -886,7 +923,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         _scopeLibrary.Scopes.Add(scope);
         _scopeLibrary.LastActiveScopeId = scope.ScopeId;
-        await _scopeStore.SaveAsync(_scopeLibrary);
+        await SaveScopeLibraryAsync();
     }
 
     private async void ObjectExplorer_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -1070,6 +1107,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FloatingCodeWindow? sourceWindow = null,
         bool suppressHistory = false)
     {
+        filePath = GetCanonicalDatabaseDocumentPath(filePath);
         await OpenFileAsync(
             filePath,
             targetLineNumber: targetLineNumber,
@@ -1085,6 +1123,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string tableDocumentPath,
         FloatingCodeWindow? fallbackSourceWindow = null)
     {
+        tableDocumentPath = GetCanonicalDatabaseDocumentPath(tableDocumentPath);
         if (!_databaseDocumentService.TryGetTableDataDocumentPathForTableDocument(
                 tableDocumentPath,
                 _databaseSnapshots,
@@ -1270,6 +1309,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             };
             loadResourceItem.Click += async (_, _) => await SetScopeResourceLoadedAsync(node.ScopeResourceId, !node.IsScopeResourceLoaded);
             contextMenu.Items.Add(loadResourceItem);
+
+            var removeResourceItem = new MenuItem
+            {
+                Header = "Remove From Scope"
+            };
+            removeResourceItem.Click += async (_, _) => await RemoveScopeResourceAsync(node.ScopeResourceId);
+            contextMenu.Items.Add(removeResourceItem);
         }
 
         if (node.IsVirtualFolder)
@@ -1310,6 +1356,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 newVirtualFolderInsideItem.Click += async (_, _) => await CreateVirtualFolderAsync(node.NodeKey);
                 contextMenu.Items.Add(newVirtualFolderInsideItem);
             }
+        }
+
+        if (_activeScope != null)
+        {
+            if (contextMenu.Items.Count > 0)
+            {
+                contextMenu.Items.Add(new Separator());
+            }
+
+            var addExistingResourceItem = new MenuItem
+            {
+                Header = "Add Existing Resources"
+            };
+            addExistingResourceItem.Click += async (_, _) => await AddExistingResourcesToActiveScopeAsync();
+            contextMenu.Items.Add(addExistingResourceItem);
         }
 
         if (canCreateDiagram)
@@ -1546,6 +1607,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!EnsurePersistenceReadyForSave("database snapshot changes"))
+        {
+            return;
+        }
+
         DatabaseMetadataSnapshot newSnapshot = sourceSnapshot.Clone();
         newSnapshot.SnapshotId = Guid.NewGuid().ToString("N");
         newSnapshot.DisplayName = renameWindow.ResourceName;
@@ -1562,8 +1628,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             AddedAtUtc = DateTimeOffset.UtcNow
         });
 
-        await _scopeStore.SaveAsync(_scopeLibrary);
-        await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
+        await SaveScopeLibraryAsync();
+        await SaveDatabaseSnapshotsAsync();
         await LoadScopeAsync(_activeScope);
         StatusText = $"Restored {sourceSnapshot.DisplayName} {version.VersionName} as '{newSnapshot.DisplayName}'.";
     }
@@ -1745,6 +1811,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DatabaseMetadataSnapshot replacementSnapshot,
         string successMessage)
     {
+        if (!EnsurePersistenceReadyForSave("database snapshot changes"))
+        {
+            return false;
+        }
+
         replacementSnapshot.SnapshotId = currentSnapshot.SnapshotId;
         _databaseSnapshotHistoryService.RecordSnapshotReplacement(_databaseSnapshots, currentSnapshot, replacementSnapshot);
         int index = _databaseSnapshots.Snapshots.IndexOf(currentSnapshot);
@@ -1764,8 +1835,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             resource.DetailsOverride = replacementSnapshot.DatabaseName;
         }
 
-        await _databaseMetadataStore.SaveAsync(_databaseSnapshots);
-        await _scopeStore.SaveAsync(_scopeLibrary);
+        await SaveDatabaseSnapshotsAsync();
+        await SaveScopeLibraryAsync();
         await LoadScopeAsync(_activeScope);
         StatusText = successMessage;
         return true;
@@ -2285,6 +2356,217 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = $"{action} resource '{GetReferenceResourceDisplayName(resource)}'.";
     }
 
+    private async Task RemoveScopeResourceAsync(string resourceId)
+    {
+        if (_activeScope == null)
+        {
+            return;
+        }
+
+        if (!EnsurePersistenceReadyForSave("scope changes"))
+        {
+            return;
+        }
+
+        ScopedResource? resource = _activeScope.Resources.FirstOrDefault(candidate =>
+            string.Equals(candidate.ResourceId, resourceId, StringComparison.OrdinalIgnoreCase));
+        if (resource == null)
+        {
+            StatusText = "Resource no longer exists in the active scope.";
+            return;
+        }
+
+        string resourceName = GetReferenceResourceDisplayName(resource);
+        MessageBoxResult result = MessageBox.Show(
+            this,
+            $"Remove '{resourceName}' from scope '{_activeScope.Name}'?\n\nThis will not delete the underlying resource. Diagram object links pointing to it will be cleared.",
+            "Remove From Scope",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        int clearedLinkCount = ClearDiagramLinksForRemovedScopeResource(resource);
+        _activeScope.Resources.Remove(resource);
+        NormalizeUnloadedResourceIds();
+        _workspaceState.UnloadedResourceIds.RemoveAll(id =>
+            string.Equals(id, resource.ResourceId, StringComparison.OrdinalIgnoreCase));
+        NormalizeUnloadedResourceIds();
+
+        try
+        {
+            if (clearedLinkCount > 0)
+            {
+                await SaveDiagramLibraryAsync();
+            }
+
+            await SaveScopeLibraryAsync();
+            await SaveWorkspaceStateAsync();
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not remove resource from scope: {ex.Message}";
+            return;
+        }
+
+        RebuildReferenceIndexForActiveScope();
+        ApplyReferenceHighlightsToOpenWindows();
+        ApplyReferenceHighlightsToPreview();
+        await RefreshObjectExplorerForVirtualFolderChangeAsync();
+        StatusText = clearedLinkCount == 0
+            ? $"Removed '{resourceName}' from scope."
+            : $"Removed '{resourceName}' from scope and cleared {clearedLinkCount} diagram link(s).";
+    }
+
+    private int ClearDiagramLinksForRemovedScopeResource(ScopedResource removedResource)
+    {
+        if (_activeScope == null)
+        {
+            return 0;
+        }
+
+        HashSet<string> scopedDiagramIds = _activeScope.Resources
+            .Where(resource => resource.Kind == ResourceKind.Diagram)
+            .Select(resource => resource.Path)
+            .Where(path =>
+                removedResource.Kind != ResourceKind.Diagram ||
+                !string.Equals(path, removedResource.Path, StringComparison.OrdinalIgnoreCase))
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (scopedDiagramIds.Count == 0)
+        {
+            return 0;
+        }
+
+        int clearedLinkCount = 0;
+        bool activeDiagramHandled = false;
+        if (!string.IsNullOrWhiteSpace(_activeDiagramId) &&
+            scopedDiagramIds.Contains(_activeDiagramId))
+        {
+            clearedLinkCount += ClearActiveDiagramLinksForRemovedScopeResource(removedResource);
+            if (clearedLinkCount > 0)
+            {
+                _diagramLibrary.Upsert(CreateCurrentDiagramDocument(_activeDiagramId, CurrentDiagramName));
+            }
+
+            activeDiagramHandled = true;
+        }
+
+        foreach (string diagramId in scopedDiagramIds)
+        {
+            if (activeDiagramHandled &&
+                string.Equals(diagramId, _activeDiagramId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            DiagramDocument? diagram = _diagramLibrary.Find(diagramId);
+            if (diagram == null)
+            {
+                continue;
+            }
+
+            int diagramClearedLinkCount = ClearStoredDiagramLinksForRemovedScopeResource(diagram, removedResource);
+            if (diagramClearedLinkCount > 0)
+            {
+                diagram.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                clearedLinkCount += diagramClearedLinkCount;
+            }
+        }
+
+        return clearedLinkCount;
+    }
+
+    private int ClearActiveDiagramLinksForRemovedScopeResource(ScopedResource removedResource)
+    {
+        CommitMetadataEditorChanges();
+        int clearedLinkCount = 0;
+        foreach (FrameworkElement diagramObject in DiagramCanvas.Children
+                     .OfType<FrameworkElement>()
+                     .Where(IsDiagramObject))
+        {
+            DiagramObjectMetadata? metadata = GetDiagramObjectMetadata(diagramObject);
+            if (metadata == null ||
+                !DiagramMetadataLinkTargetsResource(metadata.Link, removedResource))
+            {
+                continue;
+            }
+
+            metadata.Link = string.Empty;
+            ApplyDiagramObjectMetadata(diagramObject, metadata);
+            clearedLinkCount++;
+        }
+
+        if (clearedLinkCount > 0)
+        {
+            LoadMetadataEditorForSelection();
+        }
+
+        return clearedLinkCount;
+    }
+
+    private int ClearStoredDiagramLinksForRemovedScopeResource(
+        DiagramDocument diagram,
+        ScopedResource removedResource)
+    {
+        int clearedLinkCount = 0;
+        foreach (DiagramObjectSnapshot diagramObject in diagram.Objects)
+        {
+            if (!DiagramMetadataLinkTargetsResource(diagramObject.Metadata.Link, removedResource))
+            {
+                continue;
+            }
+
+            diagramObject.Metadata.Link = string.Empty;
+            clearedLinkCount++;
+        }
+
+        return clearedLinkCount;
+    }
+
+    private bool DiagramMetadataLinkTargetsResource(string link, ScopedResource resource)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+        {
+            return false;
+        }
+
+        string targetLink = ParseMetadataLinkTarget(link).Link;
+        if (Uri.TryCreate(targetLink, UriKind.Absolute, out Uri? uri) && uri.IsFile)
+        {
+            targetLink = uri.LocalPath;
+        }
+
+        if (resource.Kind == ResourceKind.DatabaseSnapshot)
+        {
+            return DatabaseLinkTargetsScopedResource(targetLink, resource);
+        }
+
+        if (resource.Kind == ResourceKind.Diagram)
+        {
+            return DiagramDocumentService.IsDiagramDocumentPath(targetLink) &&
+                   string.Equals(
+                       DiagramDocumentService.GetDiagramId(targetLink),
+                       resource.Path,
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (DatabaseDocumentService.IsDatabaseDocumentPath(targetLink) ||
+            DiagramDocumentService.IsDiagramDocumentPath(targetLink))
+        {
+            return false;
+        }
+
+        return resource.Kind switch
+        {
+            ResourceKind.File => IsSameFileSystemPath(resource.Path, targetLink),
+            ResourceKind.Folder => IsPathInDirectory(targetLink, resource.Path),
+            _ => false
+        };
+    }
+
     private HashSet<string> GetUnloadedResourceIds()
     {
         return (_workspaceState.UnloadedResourceIds ?? [])
@@ -2325,6 +2607,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         var contextMenu = new ContextMenu();
+        var addExistingResourceItem = new MenuItem
+        {
+            Header = "Add Existing Resources"
+        };
+        addExistingResourceItem.Click += async (_, _) => await AddExistingResourcesToActiveScopeAsync();
+        contextMenu.Items.Add(addExistingResourceItem);
+        contextMenu.Items.Add(new Separator());
+
         var newVirtualFolderItem = new MenuItem
         {
             Header = "New Virtual Folder"
@@ -2332,6 +2622,71 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         newVirtualFolderItem.Click += async (_, _) => await CreateVirtualFolderAsync(FileSystemNode.RootParentKey);
         contextMenu.Items.Add(newVirtualFolderItem);
         ObjectExplorer.ContextMenu = contextMenu;
+    }
+
+    private async Task AddExistingResourcesToActiveScopeAsync()
+    {
+        if (_activeScope == null)
+        {
+            StatusText = "Open a scope before adding existing resources.";
+            return;
+        }
+
+        if (!EnsurePersistenceReadyForSave("scope changes"))
+        {
+            return;
+        }
+
+        IReadOnlyList<ExistingScopeResourceCandidate> candidates =
+            _existingScopeResourceService.CreateCandidates(_activeScope, _scopeLibrary, _databaseSnapshots, _diagramLibrary);
+        if (candidates.Count == 0)
+        {
+            StatusText = "No existing resources are available to add.";
+            return;
+        }
+
+        var picker = new ExistingScopeResourcePickerWindow(candidates)
+        {
+            Owner = this
+        };
+
+        if (picker.ShowDialog() != true)
+        {
+            return;
+        }
+
+        int added = 0;
+        foreach (ExistingScopeResourceCandidate candidate in picker.SelectedResources)
+        {
+            if (_existingScopeResourceService.TryAddResource(_activeScope, candidate))
+            {
+                added++;
+            }
+        }
+
+        if (added == 0)
+        {
+            StatusText = "No resources were added.";
+            return;
+        }
+
+        try
+        {
+            await SaveScopeLibraryAsync();
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Could not add existing resources: {ex.Message}";
+            return;
+        }
+
+        RebuildReferenceIndexForActiveScope();
+        ApplyReferenceHighlightsToOpenWindows();
+        ApplyReferenceHighlightsToPreview();
+        await RefreshObjectExplorerForVirtualFolderChangeAsync();
+        StatusText = added == 1
+            ? "Added 1 existing resource to the scope."
+            : $"Added {added} existing resources to the scope.";
     }
 
     private async Task CreateVirtualFolderAsync(string parentNodeKey)
@@ -2465,7 +2820,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            await _scopeStore.SaveAsync(_scopeLibrary);
+            await SaveScopeLibraryAsync();
             await RefreshObjectExplorerForVirtualFolderChangeAsync(additionalExpandedNodeKeys);
             StatusText = statusText;
         }
@@ -3296,6 +3651,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!EnsurePersistenceReadyForSave("diagram changes"))
+        {
+            return;
+        }
+
         DiagramDocument? diagram = _diagramLibrary.Find(diagramId);
         if (diagram != null)
         {
@@ -3320,8 +3680,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            await _diagramStore.SaveAsync(_diagramLibrary);
-            await _scopeStore.SaveAsync(_scopeLibrary);
+            await SaveDiagramLibraryAsync();
+            await SaveScopeLibraryAsync();
         }
         catch (Exception ex)
         {
@@ -3340,6 +3700,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task<bool> SaveCurrentDiagramAsync(string diagramId, string diagramName)
     {
+        if (!EnsurePersistenceReadyForSave("diagram changes"))
+        {
+            return false;
+        }
+
         DiagramDocument diagram = CreateCurrentDiagramDocument(diagramId, diagramName);
 
         _diagramLibrary.Upsert(diagram);
@@ -3347,8 +3712,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            await _diagramStore.SaveAsync(_diagramLibrary);
-            await _scopeStore.SaveAsync(_scopeLibrary);
+            await SaveDiagramLibraryAsync();
+            await SaveScopeLibraryAsync();
         }
         catch (Exception ex)
         {
@@ -4792,7 +5157,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             MetadataEditorPlaceholder.Visibility = Visibility.Collapsed;
             MetadataEditorPanel.Visibility = Visibility.Visible;
-            MetadataLinkTextBox.Text = metadata.Link;
+            MetadataLinkTextBox.Text = NormalizeDatabaseMetadataLink(metadata.Link);
             LoadMetadataDocumentation(metadata.DocumentationXaml);
             _metadataEditorQueries.AddRange(metadata.Queries.Select(query => query.Clone()));
             RebuildMetadataQueriesEditor();
@@ -4827,7 +5192,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var metadata = new DiagramObjectMetadata
         {
-            Link = MetadataLinkTextBox.Text.Trim(),
+            Link = NormalizeDatabaseMetadataLink(MetadataLinkTextBox.Text.Trim()),
             DocumentationXaml = SerializeMetadataDocumentation(),
             Queries = _metadataEditorQueries
                 .Select(query => query.Clone())
@@ -5674,7 +6039,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         ScopedResource? databaseResource = _activeScope.Resources.FirstOrDefault(resource =>
             resource.Kind == ResourceKind.DatabaseSnapshot &&
-            string.Equals(resource.Path, link, StringComparison.OrdinalIgnoreCase));
+            DatabaseLinkTargetsScopedResource(link, resource));
         if (databaseResource != null)
         {
             FocusDatabaseResourceInObjectExplorer(databaseResource);
@@ -5688,6 +6053,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         FocusFolderInObjectExplorer(link);
         return true;
+    }
+
+    private bool DatabaseLinkTargetsScopedResource(string link, ScopedResource resource)
+    {
+        if (string.Equals(resource.Path, link, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return TryGetDatabaseSnapshotId(link, out string snapshotId) &&
+               string.Equals(snapshotId, resource.Path, StringComparison.OrdinalIgnoreCase);
     }
 
     private void FocusDatabaseResourceInObjectExplorer(ScopedResource databaseResource)
@@ -7084,6 +7460,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FloatingCodeWindow? sourceWindow = null,
         bool suppressHistory = false)
     {
+        filePath = GetCanonicalDatabaseDocumentPath(filePath);
+        if (existingState != null)
+        {
+            existingState.FilePath = filePath;
+        }
+
         if (_openWindows.TryGetValue(filePath, out FloatingCodeWindow? existingWindow))
         {
             ActivateCodeWindow(existingWindow);
@@ -7189,6 +7571,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             targetReference,
             sourceWindow,
             suppressHistory);
+    }
+
+    private string GetCanonicalDatabaseDocumentPath(string filePath)
+    {
+        return DatabaseDocumentService.TryCreateCanonicalDocumentPath(filePath, _databaseSnapshots, out string canonicalDocumentPath)
+            ? canonicalDocumentPath
+            : filePath;
     }
 
     private Task OpenDocumentContentAsync(
@@ -7341,6 +7730,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             : state.DisplayName;
     }
 
+    private string GetOpenDocumentToolTip(string filePath)
+    {
+        ScopedResource? owningResource = FindOwningScopeResource(filePath);
+        if (owningResource == null)
+        {
+            return filePath;
+        }
+
+        string resourceName = GetReferenceResourceDisplayName(owningResource);
+        string resourceType = GetResourceKindDisplay(owningResource.Kind);
+        return string.IsNullOrWhiteSpace(filePath)
+            ? $"Resource: {resourceName} ({resourceType})"
+            : $"Resource: {resourceName} ({resourceType}){Environment.NewLine}{filePath}";
+    }
+
+    private ScopedResource? FindOwningScopeResource(string filePath)
+    {
+        if (_activeScope == null || string.IsNullOrWhiteSpace(filePath))
+        {
+            return null;
+        }
+
+        return _activeScope.Resources
+            .Where(resource => resource.Kind != ResourceKind.Diagram &&
+                               IsDocumentInScopedResource(resource, filePath))
+            .OrderByDescending(GetReferenceResourceSpecificity)
+            .ThenBy(resource => GetReferenceResourceDisplayName(resource))
+            .FirstOrDefault();
+    }
+
     private static string GetDisplayNameFromPath(string path)
     {
         string fileName = Path.GetFileName(path);
@@ -7450,8 +7869,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         TabItem tabItem = FindCodeDocumentTab(state.FilePath) ?? new TabItem
         {
             Tag = state.FilePath,
-            ToolTip = state.FilePath
+            ToolTip = GetOpenDocumentToolTip(state.FilePath)
         };
+        tabItem.ToolTip = GetOpenDocumentToolTip(state.FilePath);
         tabItem.Header = CreateCodeDocumentTabHeader(state);
         tabItem.Content = window;
 
@@ -8827,13 +9247,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return snapshot?.DisplayName ?? resource.DisplayName;
     }
 
-    private static ReferenceResourceContext CreateFallbackReferenceResourceContext(string documentPath)
+    private ReferenceResourceContext CreateFallbackReferenceResourceContext(string documentPath)
     {
         if (TryGetDatabaseSnapshotId(documentPath, out string snapshotId))
         {
+            DatabaseMetadataSnapshot? snapshot = _databaseSnapshots.Snapshots.FirstOrDefault(candidate =>
+                string.Equals(candidate.SnapshotId, snapshotId, StringComparison.OrdinalIgnoreCase));
             return new ReferenceResourceContext(
                 $"database:{snapshotId}",
-                "Database",
+                snapshot?.DisplayName ?? "Database",
                 ResourceKind.DatabaseSnapshot,
                 snapshotId);
         }
@@ -9236,19 +9658,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
-    private static bool TryGetDatabaseSnapshotId(string documentPath, out string snapshotId)
+    private bool TryGetDatabaseSnapshotId(string documentPath, out string snapshotId)
     {
-        const string databaseDocumentPrefix = "db://";
         snapshotId = string.Empty;
 
-        if (!documentPath.StartsWith(databaseDocumentPrefix, StringComparison.OrdinalIgnoreCase))
+        if (!DatabaseDocumentService.TryGetSnapshotKey(documentPath, out string snapshotKey))
         {
             return false;
         }
 
-        string rest = documentPath[databaseDocumentPrefix.Length..];
-        int slashIndex = rest.IndexOf('/', StringComparison.Ordinal);
-        snapshotId = slashIndex >= 0 ? rest[..slashIndex] : rest;
+        if (DatabaseDocumentService.TryResolveSnapshot(_databaseSnapshots, snapshotKey, out DatabaseMetadataSnapshot snapshot))
+        {
+            snapshotId = snapshot.SnapshotId;
+            return true;
+        }
+
+        snapshotId = snapshotKey;
         return !string.IsNullOrWhiteSpace(snapshotId);
     }
 
@@ -11549,6 +11974,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return false;
         }
 
+        if (!EnsurePersistenceReadyForSave("portal pairing"))
+        {
+            return false;
+        }
+
         string firstAddress = ResolvePortalAddress(firstDiagramId, firstPortalObjectId);
         string secondAddress = ResolvePortalAddress(secondDiagramId, secondPortalObjectId);
 
@@ -11564,7 +11994,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            await _diagramStore.SaveAsync(_diagramLibrary);
+            await SaveDiagramLibraryAsync();
             return true;
         }
         catch (Exception ex)
@@ -11624,12 +12054,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!EnsurePersistenceReadyForSave("portal pairing"))
+        {
+            return;
+        }
+
         ClearPortalPairingInActiveDiagram(portal.PairedPortalDiagramId, portal.PairedPortalObjectId);
         ClearPortalPairingInStoredDiagram(portal.PairedPortalDiagramId, portal.PairedPortalObjectId);
 
         try
         {
-            await _diagramStore.SaveAsync(_diagramLibrary);
+            await SaveDiagramLibraryAsync();
         }
         catch (Exception ex)
         {
@@ -11739,10 +12174,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return false;
         }
 
+        if (!EnsurePersistenceReadyForSave("diagram changes"))
+        {
+            return false;
+        }
+
         try
         {
             _diagramLibrary.Upsert(CreateCurrentDiagramDocument(_activeDiagramId, CurrentDiagramName));
-            await _diagramStore.SaveAsync(_diagramLibrary);
+            await SaveDiagramLibraryAsync();
             return true;
         }
         catch (Exception ex)
@@ -13953,7 +14393,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (settingsWindow.PersistenceDatabaseImported)
         {
+            _isPersistenceHydrated = false;
+            _persistenceLoadFailureMessage = "A persistence database was imported and must be loaded by restarting Surf2.";
             StatusText = "Imported database export. Restart Surf2 to load the imported setup.";
+            return;
+        }
+
+        if (!EnsurePersistenceReadyForSave("settings changes"))
+        {
             return;
         }
 
@@ -13961,7 +14408,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _appSettings = settingsWindow.Settings;
         _appSettings.EnsureDefaults();
         ApplyInternalLoggingSetting("settings saved");
-        await _settingsStore.SaveAsync(_appSettings);
+        await SaveSettingsAsync();
         RebuildReferenceIndexForActiveScope();
         ApplySettingsToOpenWindows();
         ApplyReferenceHighlightsToOpenWindows();
@@ -13999,6 +14446,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
+            if (!EnsurePersistenceReadyForSave("Workbench changes"))
+            {
+                return;
+            }
+
+            Scope? activeScope = await EnsureActiveScopeForWorkbenchSaveAsync();
+            if (activeScope == null)
+            {
+                return;
+            }
+
             string initialName = GetSuggestedWorkbenchName();
             string? name = PromptForWorkbenchName(initialName);
             if (string.IsNullOrWhiteSpace(name))
@@ -14020,6 +14478,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
             WorkbenchState workbench = CaptureWorkbenchState();
+            ApplyScopeToWorkbench(workbench, activeScope);
             workbench.Name = name;
             workbench.IsDefaultForScope = false;
             workbench.CreatedAtUtc = now;
@@ -14027,7 +14486,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             workbench.SavedAtUtc = now;
 
             _workbenchLibrary.Workbenches.Add(workbench);
-            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            await SaveWorkbenchLibraryAsync();
             RefreshSavedWorkbenches(workbench.WorkbenchId);
             StatusText = $"Saved Workbench '{workbench.Name}'.";
         }
@@ -14056,11 +14515,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (!EnsurePersistenceReadyForSave("Workbench changes"))
+        {
+            return;
+        }
+
         try
         {
             _workbenchLibrary.Workbenches.RemoveAll(candidate =>
                 string.Equals(candidate.WorkbenchId, workbench.WorkbenchId, StringComparison.OrdinalIgnoreCase));
-            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            await SaveWorkbenchLibraryAsync();
             RefreshSavedWorkbenches();
             StatusText = $"Deleted Workbench '{workbench.Name}'.";
         }
@@ -14125,6 +14589,57 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset,
             DiagramViewportVerticalOffset = DiagramScrollViewer.VerticalOffset
         };
+    }
+
+    private async Task<Scope?> EnsureActiveScopeForWorkbenchSaveAsync()
+    {
+        if (_activeScope == null)
+        {
+            StatusText = "Open a scope before saving a Workbench.";
+            return null;
+        }
+
+        Scope? scope = _scopeLibrary.Scopes.FirstOrDefault(candidate => ReferenceEquals(candidate, _activeScope));
+        if (scope == null && !string.IsNullOrWhiteSpace(_activeScope.ScopeId))
+        {
+            scope = _scopeLibrary.Scopes.FirstOrDefault(candidate =>
+                string.Equals(candidate.ScopeId, _activeScope.ScopeId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (scope == null)
+        {
+            StatusText = "Could not save Workbench because the active scope is no longer in the scope library.";
+            return null;
+        }
+
+        bool scopeChanged = false;
+        if (string.IsNullOrWhiteSpace(scope.ScopeId))
+        {
+            scope.ScopeId = Guid.NewGuid().ToString("N");
+            scopeChanged = true;
+        }
+
+        if (!string.Equals(_scopeLibrary.LastActiveScopeId, scope.ScopeId, StringComparison.OrdinalIgnoreCase))
+        {
+            _scopeLibrary.LastActiveScopeId = scope.ScopeId;
+            scopeChanged = true;
+        }
+
+        if (scopeChanged)
+        {
+            await SaveScopeLibraryAsync();
+        }
+
+        _activeScope = scope;
+        return scope;
+    }
+
+    private static void ApplyScopeToWorkbench(WorkbenchState workbench, Scope scope)
+    {
+        workbench.ScopeId = scope.ScopeId;
+        workbench.ScopeName = string.IsNullOrWhiteSpace(scope.Name)
+            ? "Untitled Scope"
+            : scope.Name;
     }
 
     private ExitUnsavedChangesState DetectExitUnsavedChanges()
@@ -14236,7 +14751,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
+            if (!EnsurePersistenceReadyForSave("Workbench changes"))
+            {
+                return false;
+            }
+
+            Scope? activeScope = await EnsureActiveScopeForWorkbenchSaveAsync();
+            if (activeScope == null)
+            {
+                return false;
+            }
+
             WorkbenchState workbench = CaptureWorkbenchState();
+            ApplyScopeToWorkbench(workbench, activeScope);
             DateTimeOffset now = DateTimeOffset.UtcNow;
             WorkbenchState? existingWorkbench = FindDefaultWorkbenchForScope(workbench.ScopeId);
 
@@ -14258,7 +14785,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             workbench.UpdatedAtUtc = now;
             workbench.SavedAtUtc = now;
             _workbenchLibrary.Workbenches.Add(workbench);
-            await _workbenchStore.SaveAsync(_workbenchLibrary);
+            await SaveWorkbenchLibraryAsync();
             RefreshSavedWorkbenches(workbench.WorkbenchId);
             StatusText = $"Saved default Workbench '{workbench.Name}'.";
             return true;
@@ -14696,6 +15223,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void ClearSelectedWorkbench()
+    {
+        _isUpdatingWorkbenchSelection = true;
+        try
+        {
+            if (WorkbenchSelector != null)
+            {
+                WorkbenchSelector.SelectedItem = null;
+            }
+        }
+        finally
+        {
+            _isUpdatingWorkbenchSelection = false;
+            UpdateWorkbenchCommandState();
+        }
+    }
+
     private void UpdateWorkbenchCommandState()
     {
         if (DeleteWorkbenchButton != null)
@@ -14768,6 +15312,52 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         changed |= _databaseSnapshotHistoryService.Normalize(_databaseSnapshots);
         return changed;
+    }
+
+    private bool NormalizeDiagramDatabaseLinks()
+    {
+        bool changed = false;
+        foreach (DiagramDocument diagram in _diagramLibrary.Diagrams)
+        {
+            foreach (DiagramObjectSnapshot diagramObject in diagram.Objects)
+            {
+                string normalizedLink = NormalizeDatabaseMetadataLink(diagramObject.Metadata.Link);
+                if (string.Equals(normalizedLink, diagramObject.Metadata.Link, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                diagramObject.Metadata.Link = normalizedLink;
+                diagram.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    private string NormalizeDatabaseMetadataLink(string link)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+        {
+            return string.Empty;
+        }
+
+        MetadataLinkTarget target = ParseMetadataLinkTarget(link);
+        string normalizedTarget = target.Link;
+        if (!DatabaseDocumentService.TryCreateCanonicalDocumentPath(target.Link, _databaseSnapshots, out normalizedTarget) &&
+            DatabaseDocumentService.TryGetSnapshotKey(target.Link, out string snapshotKey) &&
+            DatabaseDocumentService.TryResolveSnapshot(_databaseSnapshots, snapshotKey, out DatabaseMetadataSnapshot snapshot))
+        {
+            normalizedTarget = DatabaseDocumentService.CreateSnapshotDocumentPath(snapshot);
+        }
+
+        if (target.LineNumber.HasValue)
+        {
+            normalizedTarget = $"{normalizedTarget}:{target.LineNumber.Value.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        return normalizedTarget;
     }
 
     private static DateTimeOffset GetWorkbenchUpdatedAtUtc(WorkbenchState workbench)
@@ -15484,7 +16074,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OpenTabs.Add(new OpenWindowItem(
             state,
             GetCodeTypeLabel(state.FilePath),
+            GetOpenDocumentToolTip(state.FilePath),
             GetOpenTabTypeBackBrush(state.FilePath)));
+    }
+
+    private void RefreshOpenDocumentToolTips()
+    {
+        foreach (OpenWindowItem tab in OpenTabs)
+        {
+            tab.ToolTip = GetOpenDocumentToolTip(tab.FilePath);
+        }
+
+        RefreshCodeDocumentTabToolTips();
+    }
+
+    private void RefreshCodeDocumentTabToolTips()
+    {
+        foreach (TabItem tabItem in CodeDocumentsTabControl.Items.OfType<TabItem>())
+        {
+            if (tabItem.Tag is string filePath)
+            {
+                tabItem.ToolTip = GetOpenDocumentToolTip(filePath);
+            }
+        }
     }
 
     private void RemoveOpenTab(string filePath)
@@ -15959,6 +16571,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _referenceIndex = _activeScope == null
             ? ScopeReferenceIndex.Empty
             : _referenceIndexService.Build(_activeScope, _databaseSnapshots, _appSettings.CodeWindows, GetUnloadedResourceIds());
+        RefreshOpenDocumentToolTips();
     }
 
     private void ApplySettingsToOpenWindows()
@@ -15980,8 +16593,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         foreach (OpenWindowItem tab in OpenTabs)
         {
             tab.Type = GetCodeTypeLabel(tab.FilePath);
+            tab.ToolTip = GetOpenDocumentToolTip(tab.FilePath);
             tab.TypeBackBrush = GetOpenTabTypeBackBrush(tab.FilePath);
         }
+
+        RefreshCodeDocumentTabToolTips();
     }
 
     private void ApplySettingsToPreview()
@@ -16435,11 +17051,71 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             MessageBoxImage.Warning);
     }
 
+    private bool EnsurePersistenceReadyForSave(string operation)
+    {
+        if (_isPersistenceHydrated)
+        {
+            return true;
+        }
+
+        string reason = _persistenceLoadFailureMessage ?? "persistence state was not fully loaded";
+        StatusText = $"Blocked {operation}: persistence state was not fully loaded. Restart Surf2 before saving changes.";
+        InternalLogService.Warning(
+            "Blocked persistence save because startup hydration did not complete.",
+            ("Operation", operation),
+            ("Reason", reason));
+        return false;
+    }
+
+    private void EnsurePersistenceReadyForSaveOrThrow(string operation)
+    {
+        if (!EnsurePersistenceReadyForSave(operation))
+        {
+            throw new InvalidOperationException("Persistence state was not fully loaded.");
+        }
+    }
+
+    private async Task SaveScopeLibraryAsync(CancellationToken cancellationToken = default)
+    {
+        EnsurePersistenceReadyForSaveOrThrow("scope changes");
+        await _scopeStore.SaveAsync(_scopeLibrary, cancellationToken);
+    }
+
+    private async Task SaveDatabaseSnapshotsAsync(CancellationToken cancellationToken = default)
+    {
+        EnsurePersistenceReadyForSaveOrThrow("database snapshot changes");
+        await _databaseMetadataStore.SaveAsync(_databaseSnapshots, cancellationToken);
+    }
+
+    private async Task SaveDiagramLibraryAsync(CancellationToken cancellationToken = default)
+    {
+        EnsurePersistenceReadyForSaveOrThrow("diagram changes");
+        await _diagramStore.SaveAsync(_diagramLibrary, cancellationToken);
+    }
+
+    private async Task SaveWorkbenchLibraryAsync(CancellationToken cancellationToken = default)
+    {
+        EnsurePersistenceReadyForSaveOrThrow("Workbench changes");
+        await _workbenchStore.SaveAsync(_workbenchLibrary, cancellationToken);
+    }
+
+    private async Task SaveSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        EnsurePersistenceReadyForSaveOrThrow("settings changes");
+        await _settingsStore.SaveAsync(_appSettings, cancellationToken);
+    }
+
+    private async Task SaveWorkspaceStateDocumentAsync(CancellationToken cancellationToken = default)
+    {
+        EnsurePersistenceReadyForSaveOrThrow("workspace state");
+        await _workspaceStore.SaveAsync(_workspaceState, cancellationToken);
+    }
+
     private async Task SaveWorkspaceStateAsync()
     {
         try
         {
-            await _workspaceStore.SaveAsync(_workspaceState);
+            await SaveWorkspaceStateDocumentAsync();
         }
         catch (Exception ex)
         {
@@ -16466,6 +17142,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private Task SaveApplicationStateAsync(CancellationToken cancellationToken)
     {
+        EnsurePersistenceReadyForSaveOrThrow("application state");
         return Task.WhenAll(
             _scopeStore.SaveAsync(_scopeLibrary, cancellationToken),
             _databaseMetadataStore.SaveAsync(_databaseSnapshots, cancellationToken),
@@ -16489,6 +17166,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_shutdownSaveCompleted)
         {
+            return;
+        }
+
+        if (!_isPersistenceHydrated)
+        {
+            InternalLogService.Warning(
+                "Skipping shutdown persistence because startup hydration did not complete.",
+                ("Reason", _persistenceLoadFailureMessage ?? "<unknown>"));
+            _shutdownSaveCompleted = true;
             return;
         }
 

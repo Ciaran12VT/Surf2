@@ -440,7 +440,9 @@
         </Style>
 
         <HierarchicalDataTemplate DataType="{x:Type models:FileSystemNode}" ItemsSource="{Binding Children}">
-            <DockPanel LastChildFill="True" MinHeight="22">
+            <DockPanel LastChildFill="True"
+                       MinHeight="22"
+                       ToolTip="{Binding ToolTip}">
                 <Viewbox Width="16"
                          Height="16"
                          Margin="0,0,6,0"
@@ -828,7 +830,7 @@
                                         <DataTemplate DataType="{x:Type models:OpenWindowItem}">
                                             <Grid MinHeight="26"
                                                   Background="{Binding TypeBackBrush}"
-                                                  ToolTip="{Binding FilePath}">
+                                                  ToolTip="{Binding ToolTip}">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*" />
                                                     <ColumnDefinition Width="58" />

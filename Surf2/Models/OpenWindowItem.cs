@@ -8,12 +8,14 @@ namespace Surf2.Models;
 public sealed class OpenWindowItem : INotifyPropertyChanged
 {
     private string _type;
+    private string _toolTip;
     private Brush _typeBackBrush = Brushes.White;
 
-    public OpenWindowItem(OpenDocumentState state, string type, Brush typeBackBrush)
+    public OpenWindowItem(OpenDocumentState state, string type, string toolTip, Brush typeBackBrush)
     {
         State = state;
         _type = type;
+        _toolTip = toolTip;
         _typeBackBrush = typeBackBrush;
     }
 
@@ -26,6 +28,21 @@ public sealed class OpenWindowItem : INotifyPropertyChanged
         : State.DisplayName;
 
     public string FilePath => State.FilePath;
+
+    public string ToolTip
+    {
+        get => _toolTip;
+        set
+        {
+            if (string.Equals(_toolTip, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _toolTip = value;
+            OnPropertyChanged();
+        }
+    }
 
     public string Type
     {

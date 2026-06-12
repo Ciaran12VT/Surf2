@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.SqlClient;
@@ -8,8 +9,11 @@ public sealed class SqlServerDocumentStore
 {
     private const string SchemaName = "app";
     private const string TableName = "Surf2Documents";
+    private const char DocumentHydrationKeySeparator = '\u001f';
     private static readonly SemaphoreSlim InitializationLock = new(1, 1);
     private static readonly HashSet<string> InitializedConnectionStrings = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object HydratedDocumentsLock = new();
+    private static readonly HashSet<string> HydratedDocuments = new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -46,15 +50,36 @@ WHERE DocumentKey = @DocumentKey;
         command.Parameters.Add(new SqlParameter("@DocumentKey", documentKey));
 
         object? result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is string payload && !string.IsNullOrWhiteSpace(payload)
-            ? JsonSerializer.Deserialize<T>(payload, SerializerOptions)
-            : null;
+        if (result == null || result == DBNull.Value)
+        {
+            MarkDocumentHydrated(documentKey);
+            return null;
+        }
+
+        if (result is not string payload || string.IsNullOrWhiteSpace(payload))
+        {
+            throw new InvalidDataException($"Document '{documentKey}' has an empty SQL payload.");
+        }
+
+        T? value = JsonSerializer.Deserialize<T>(payload, SerializerOptions);
+        if (value == null)
+        {
+            throw new InvalidDataException($"Document '{documentKey}' could not be deserialized from SQL.");
+        }
+
+        MarkDocumentHydrated(documentKey);
+        return value;
     }
 
     public async Task SaveAsync<T>(string documentKey, T value, CancellationToken cancellationToken = default)
         where T : class
     {
         await EnsureInitializedAsync(cancellationToken);
+        if (!IsDocumentHydrated(documentKey))
+        {
+            throw new InvalidOperationException(
+                $"Refusing to save document '{documentKey}' before it has been successfully loaded in this session.");
+        }
 
         string payload = JsonSerializer.Serialize(value, SerializerOptions);
         await using var connection = new SqlConnection(_connectionString);
@@ -83,6 +108,27 @@ END;
     {
         var documentStore = new SqlServerDocumentStore(SqlServerConnectionOptions.FromConnectionString(connectionString));
         await documentStore.EnsureInitializedAsync(cancellationToken);
+    }
+
+    private void MarkDocumentHydrated(string documentKey)
+    {
+        lock (HydratedDocumentsLock)
+        {
+            HydratedDocuments.Add(CreateHydrationKey(documentKey));
+        }
+    }
+
+    private bool IsDocumentHydrated(string documentKey)
+    {
+        lock (HydratedDocumentsLock)
+        {
+            return HydratedDocuments.Contains(CreateHydrationKey(documentKey));
+        }
+    }
+
+    private string CreateHydrationKey(string documentKey)
+    {
+        return string.Concat(_connectionString, DocumentHydrationKeySeparator, documentKey);
     }
 
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
