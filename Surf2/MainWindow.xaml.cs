@@ -225,9 +225,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static readonly JsonSerializerOptions DirtyStateJsonSerializerOptions = new();
-    private static readonly Brush ActiveCodeCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xEE, 0xF1, 0xF5));
-    private static readonly Brush ActiveDiagramCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xF4, 0xF6, 0xF8));
-    private static readonly Brush InactiveCanvasBrush = CreateFrozenBrush(Color.FromRgb(0xD1, 0xD5, 0xDB));
+    private static Brush ActiveCodeCanvasBrush => AppThemeService.GetBrush(AppThemeService.ActiveCodeCanvasBrushKey);
+    private static Brush ActiveDiagramCanvasBrush => AppThemeService.GetBrush(AppThemeService.ActiveDiagramCanvasBrushKey);
+    private static Brush InactiveCanvasBrush => AppThemeService.GetBrush(AppThemeService.InactiveCanvasBrushKey);
     private static readonly TimeSpan ShutdownSaveTimeout = TimeSpan.FromSeconds(10);
 
     private readonly FileTreeService _fileTreeService = new();
@@ -466,82 +466,98 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            WorkspaceState workspaceState = await _workspaceStore.LoadAsync();
-            ScopeLibrary scopeLibrary = await _scopeStore.LoadAsync();
-            DatabaseSnapshotLibrary databaseSnapshots = await _databaseMetadataStore.LoadAsync();
-            DiagramLibrary diagramLibrary = await _diagramStore.LoadAsync();
-            WorkbenchLibrary workbenchLibrary = await _workbenchStore.LoadAsync();
-            AppSettings appSettings = await _settingsStore.LoadAsync();
-
-            _workspaceState = workspaceState;
-            _scopeLibrary = scopeLibrary;
-            _databaseSnapshots = databaseSnapshots;
-            _diagramLibrary = diagramLibrary;
-            _workbenchLibrary = workbenchLibrary;
-            _appSettings = appSettings;
-            _isPersistenceHydrated = true;
-            _persistenceLoadFailureMessage = null;
-        }
-        catch (Exception ex)
-        {
-            _isPersistenceHydrated = false;
-            _persistenceLoadFailureMessage = ex.Message;
-            InternalLogService.Error(ex, "Failed to hydrate persistence state during startup.");
-            StatusText = $"Could not restore workspace: {ex.Message}. Saving is disabled until Surf2 restarts successfully.";
-            return;
-        }
+        await ShowMainCanvasLoadingAsync("Loading Surf 2.0...", "Loading workspace data...");
 
         try
         {
-            bool workbenchLibraryChanged = NormalizeWorkbenchLibrary();
-            bool databaseSnapshotsChanged = NormalizeDatabaseSnapshots();
-            bool diagramLibraryChanged = NormalizeDiagramDatabaseLinks();
-            if (_appSettings.EnsureDefaults())
+            try
             {
-                await SaveSettingsAsync();
+                WorkspaceState workspaceState = await _workspaceStore.LoadAsync();
+                ScopeLibrary scopeLibrary = await _scopeStore.LoadAsync();
+                DatabaseSnapshotLibrary databaseSnapshots = await _databaseMetadataStore.LoadAsync();
+                DiagramLibrary diagramLibrary = await _diagramStore.LoadAsync();
+                WorkbenchLibrary workbenchLibrary = await _workbenchStore.LoadAsync();
+                AppSettings appSettings = await _settingsStore.LoadAsync();
+
+                _workspaceState = workspaceState;
+                _scopeLibrary = scopeLibrary;
+                _databaseSnapshots = databaseSnapshots;
+                _diagramLibrary = diagramLibrary;
+                _workbenchLibrary = workbenchLibrary;
+                _appSettings = appSettings;
+                _isPersistenceHydrated = true;
+                _persistenceLoadFailureMessage = null;
+            }
+            catch (Exception ex)
+            {
+                _isPersistenceHydrated = false;
+                _persistenceLoadFailureMessage = ex.Message;
+                InternalLogService.Error(ex, "Failed to hydrate persistence state during startup.");
+                StatusText = $"Could not restore workspace: {ex.Message}. Saving is disabled until Surf2 restarts successfully.";
+                return;
             }
 
-            if (workbenchLibraryChanged)
+            try
             {
-                await SaveWorkbenchLibraryAsync();
+                await ShowMainCanvasLoadingAsync("Restoring workspace...", "Preparing scopes and resources...");
+
+                bool workbenchLibraryChanged = NormalizeWorkbenchLibrary();
+                bool databaseSnapshotsChanged = NormalizeDatabaseSnapshots();
+                bool diagramLibraryChanged = NormalizeDiagramDatabaseLinks();
+                if (_appSettings.EnsureDefaults())
+                {
+                    await SaveSettingsAsync();
+                }
+
+                AppThemeService.Apply(_appSettings.Appearance.Theme);
+                ApplyThemeToRuntimeSurfaces();
+
+                if (workbenchLibraryChanged)
+                {
+                    await SaveWorkbenchLibraryAsync();
+                }
+
+                if (databaseSnapshotsChanged)
+                {
+                    await SaveDatabaseSnapshotsAsync();
+                }
+
+                if (diagramLibraryChanged)
+                {
+                    await SaveDiagramLibraryAsync();
+                }
+
+                RefreshDiagramImageToolMenu();
+                ApplyInternalLoggingSetting("startup settings loaded");
+                RefreshSavedWorkbenches();
+                await MigrateSavedFolderToDefaultScopeAsync();
+
+                WorkbenchState? startupWorkbench = _appSettings.LoadMostRecentWorkbenchOnStartup
+                    ? _workbenchLibrary.Workbenches
+                        .OrderByDescending(GetWorkbenchUpdatedAtUtc)
+                        .FirstOrDefault()
+                    : null;
+
+                if (startupWorkbench != null)
+                {
+                    await ShowMainCanvasLoadingAsync("Loading Workbench...", startupWorkbench.DisplayName);
+                    await LoadWorkbenchAsync(startupWorkbench, updateSelector: true);
+                }
+                else
+                {
+                    await ShowMainCanvasLoadingAsync("Loading startup scope...", "Preparing the main workspace...");
+                    await InitializeDefaultStartupStateAsync();
+                }
             }
-
-            if (databaseSnapshotsChanged)
+            catch (Exception ex)
             {
-                await SaveDatabaseSnapshotsAsync();
-            }
-
-            if (diagramLibraryChanged)
-            {
-                await SaveDiagramLibraryAsync();
-            }
-
-            RefreshDiagramImageToolMenu();
-            ApplyInternalLoggingSetting("startup settings loaded");
-            RefreshSavedWorkbenches();
-            await MigrateSavedFolderToDefaultScopeAsync();
-
-            WorkbenchState? startupWorkbench = _appSettings.LoadMostRecentWorkbenchOnStartup
-                ? _workbenchLibrary.Workbenches
-                    .OrderByDescending(GetWorkbenchUpdatedAtUtc)
-                    .FirstOrDefault()
-                : null;
-
-            if (startupWorkbench != null)
-            {
-                await LoadWorkbenchAsync(startupWorkbench, updateSelector: true);
-            }
-            else
-            {
-                await InitializeDefaultStartupStateAsync();
+                InternalLogService.Error(ex, "Failed to restore workspace after persistence state was hydrated.");
+                StatusText = $"Could not restore workspace: {ex.Message}";
             }
         }
-        catch (Exception ex)
+        finally
         {
-            InternalLogService.Error(ex, "Failed to restore workspace after persistence state was hydrated.");
-            StatusText = $"Could not restore workspace: {ex.Message}";
+            HideMainCanvasLoading();
         }
     }
 
@@ -607,7 +623,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await ShowObjectExplorerLoadingAsync($"Loading {scope.Name}...");
+        await ShowObjectExplorerLoadingAsync("Loading scope...", scope.Name);
 
         try
         {
@@ -656,10 +672,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task ShowObjectExplorerLoadingAsync(string message)
+    private async Task ShowMainCanvasLoadingAsync(string message, string detail = "")
+    {
+        MainCanvasLoadingText.Text = message;
+        MainCanvasLoadingDetailText.Text = detail;
+        MainCanvasLoadingDetailText.Visibility = string.IsNullOrWhiteSpace(detail)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        MainCanvasLoadingOverlay.Visibility = Visibility.Visible;
+        MainCanvasLoadingOverlay.IsHitTestVisible = true;
+        await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
+    }
+
+    private void HideMainCanvasLoading()
+    {
+        MainCanvasLoadingOverlay.Visibility = Visibility.Collapsed;
+        MainCanvasLoadingOverlay.IsHitTestVisible = false;
+    }
+
+    private async Task ShowObjectExplorerLoadingAsync(string message, string detail = "")
     {
         _objectExplorerLoadingDepth++;
         ObjectExplorerLoadingText.Text = message;
+        ObjectExplorerLoadingDetailText.Text = detail;
+        ObjectExplorerLoadingDetailText.Visibility = string.IsNullOrWhiteSpace(detail)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
         ObjectExplorerLoadingOverlay.Visibility = Visibility.Visible;
         ObjectExplorerLoadingOverlay.IsHitTestVisible = true;
         await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Render);
@@ -3729,8 +3767,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             MinHeight = 480,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Icon = Icon,
-            DataContext = DataContext
+            DataContext = DataContext,
+            UseLayoutRounding = true,
+            SnapsToDevicePixels = true
         };
+        _diagramPopoutWindow.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
+        _diagramPopoutWindow.SourceInitialized += (_, _) => AppThemeService.ApplyWindowChrome(_diagramPopoutWindow);
         _diagramPopoutWindow.Closing += DiagramPopoutWindow_Closing;
 
         DetachFromCurrentParent(DiagramViewHost);
@@ -4194,7 +4236,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         List<DiagramImageDefinition> images = _appSettings.DiagramImages.Images
             .Where(image => !string.IsNullOrWhiteSpace(image.Name) &&
                             !string.IsNullOrWhiteSpace(image.ImageDataBase64))
-            .OrderBy(image => image.Name)
+            .Select((image, index) => new { Image = image, Index = index })
+            .OrderBy(item => item.Image.SortOrder > 0 ? item.Image.SortOrder : item.Index + 1)
+            .ThenBy(item => item.Index)
+            .Select(item => item.Image)
             .ToList();
 
         if (images.Count == 0)
@@ -5659,13 +5704,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (_metadataEditorQueries.Count == 0)
         {
-            MetadataQueriesPanel.Children.Add(new TextBlock
+            var noQueriesText = new TextBlock
             {
                 Margin = new Thickness(0, 8, 0, 0),
-                Foreground = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
                 Text = "No queries yet.",
                 TextWrapping = TextWrapping.Wrap
-            });
+            };
+            SetThemeResource(noQueriesText, TextBlock.ForegroundProperty, AppThemeService.MutedTextBrushKey);
+            MetadataQueriesPanel.Children.Add(noQueriesText);
             return;
         }
 
@@ -5697,7 +5743,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 query.Status = status;
                 if (queryBlock != null)
                 {
-                    queryBlock.Background = GetQueryBlockBackgroundBrush(status);
+                    SetThemeResource(queryBlock, Border.BackgroundProperty, GetQueryBlockBackgroundBrushKey(status));
                 }
 
                 UpdateMetadataEditorTargetQueryIndicator();
@@ -5710,9 +5756,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             VerticalAlignment = VerticalAlignment.Center,
             FontWeight = FontWeights.SemiBold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
             Text = $"Query {query.QueryNumber}"
         };
+        SetThemeResource(numberTextBlock, TextBlock.ForegroundProperty, AppThemeService.TextBrushKey);
         header.Children.Add(numberTextBlock);
 
         var descriptionTextBox = new TextBox
@@ -5734,10 +5780,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var createdTextBlock = new TextBlock
         {
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
             FontSize = 11,
             Text = $"Created {query.CreatedDateUtc.LocalDateTime:g}"
         };
+        SetThemeResource(createdTextBlock, TextBlock.ForegroundProperty, AppThemeService.MutedTextBrushKey);
 
         var layout = new StackPanel();
         layout.Children.Add(header);
@@ -5748,23 +5794,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             Margin = new Thickness(0, 0, 0, 8),
             Padding = new Thickness(8),
-            BorderBrush = CreateFrozenBrush(Color.FromRgb(0xCB, 0xD5, 0xE1)),
             BorderThickness = new Thickness(1),
-            Background = GetQueryBlockBackgroundBrush(query.Status),
             Child = layout
         };
+        SetThemeResource(queryBlock, Border.BorderBrushProperty, AppThemeService.BorderBrushKey);
+        SetThemeResource(queryBlock, Border.BackgroundProperty, GetQueryBlockBackgroundBrushKey(query.Status));
 
         return queryBlock;
     }
 
-    private static Brush GetQueryBlockBackgroundBrush(QueryStatus status)
+    private static string GetQueryBlockBackgroundBrushKey(QueryStatus status)
     {
         return status switch
         {
-            QueryStatus.Resolved => CreateFrozenBrush(Color.FromRgb(0xDC, 0xFC, 0xE7)),
-            QueryStatus.Irrelevant => CreateFrozenBrush(Color.FromRgb(0xE5, 0xE7, 0xEB)),
-            _ => Brushes.White
+            QueryStatus.Resolved => AppThemeService.ToolButtonHoverBrushKey,
+            QueryStatus.Irrelevant => AppThemeService.PanelBrushKey,
+            _ => AppThemeService.SurfaceAltBrushKey
         };
+    }
+
+    private static void SetThemeResource(FrameworkElement element, DependencyProperty property, string resourceKey)
+    {
+        element.SetResourceReference(property, resourceKey);
     }
 
     private void MetadataBoldButton_Click(object sender, RoutedEventArgs e)
@@ -6522,10 +6573,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var nameTextBlock = new TextBlock
         {
             FontWeight = FontWeights.SemiBold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
             Text = workflow.WorkflowName,
             TextTrimming = TextTrimming.CharacterEllipsis
         };
+        SetThemeResource(nameTextBlock, TextBlock.ForegroundProperty, AppThemeService.TextBrushKey);
 
         var nameLayout = new DockPanel
         {
@@ -6541,9 +6592,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Margin = new Thickness(6, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 FontWeight = FontWeights.Bold,
-                Foreground = Brushes.Firebrick,
                 Text = "!"
             };
+            SetThemeResource(warningTextBlock, TextBlock.ForegroundProperty, AppThemeService.ErrorTextBrushKey);
             DockPanel.SetDock(warningTextBlock, Dock.Right);
             nameLayout.Children.Add(warningTextBlock);
         }
@@ -6553,10 +6604,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var detailsTextBlock = new TextBlock
         {
             Margin = new Thickness(0, 3, 0, 0),
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
             FontSize = 11,
             Text = $"{workflow.Items.Count} item(s)"
         };
+        SetThemeResource(detailsTextBlock, TextBlock.ForegroundProperty, AppThemeService.MutedTextBrushKey);
 
         var layout = new StackPanel();
         layout.Children.Add(nameLayout);
@@ -6566,12 +6617,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             Margin = new Thickness(0, 0, 0, 8),
             Padding = new Thickness(9),
-            BorderBrush = CreateFrozenBrush(Color.FromRgb(0xCB, 0xD5, 0xE1)),
             BorderThickness = new Thickness(1),
-            Background = CreateFrozenBrush(Color.FromRgb(0xF8, 0xFA, 0xFC)),
             Cursor = Cursors.Hand,
             Child = layout
         };
+        SetThemeResource(border, Border.BorderBrushProperty, AppThemeService.BorderBrushKey);
+        SetThemeResource(border, Border.BackgroundProperty, AppThemeService.SurfaceAltBrushKey);
         border.MouseLeftButtonDown += (_, e) =>
         {
             if (e.OriginalSource is DependencyObject source &&
@@ -6731,8 +6782,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         Border itemNumberBadge = CreateWorkflowBadge(
             item.ItemNumber.ToString(CultureInfo.InvariantCulture),
-            CreateFrozenBrush(Color.FromRgb(0xDB, 0xE7, 0xFF)),
-            CreateFrozenBrush(Color.FromRgb(0x1D, 0x4E, 0xD8)));
+            AppThemeService.SelectionBrushKey,
+            AppThemeService.SelectionTextBrushKey);
         summary.Children.Add(itemNumberBadge);
 
         var descriptionTextBox = new TextBox
@@ -6801,17 +6852,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             outerLayout.Children.Add(CreateWorkflowItemDetails(item));
         }
 
-        return new Border
+        var itemBlock = new Border
         {
             Margin = new Thickness(0, 0, 0, 8),
             Padding = new Thickness(8),
-            BorderBrush = CreateFrozenBrush(Color.FromRgb(0xCB, 0xD5, 0xE1)),
             BorderThickness = new Thickness(1),
-            Background = isExpanded
-                ? CreateFrozenBrush(Color.FromRgb(0xEF, 0xF6, 0xFF))
-                : CreateFrozenBrush(Color.FromRgb(0xF8, 0xFA, 0xFC)),
             Child = outerLayout
         };
+        SetThemeResource(itemBlock, Border.BorderBrushProperty, AppThemeService.BorderBrushKey);
+        SetThemeResource(
+            itemBlock,
+            Border.BackgroundProperty,
+            isExpanded ? AppThemeService.ToolButtonHoverBrushKey : AppThemeService.SurfaceAltBrushKey);
+        return itemBlock;
     }
 
     private void ApplyWorkflowSidebarButtonStyle(Button button, Brush background)
@@ -6852,6 +6905,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
     }
 
+    private static Border CreateWorkflowBadge(string text, string backgroundResourceKey, string foregroundResourceKey, double minWidth = 28)
+    {
+        Border badge = CreateWorkflowBadge(text, Brushes.Transparent, Brushes.Transparent, minWidth);
+        SetThemeResource(badge, Border.BackgroundProperty, backgroundResourceKey);
+        if (badge.Child is TextBlock textBlock)
+        {
+            SetThemeResource(textBlock, TextBlock.ForegroundProperty, foregroundResourceKey);
+        }
+
+        return badge;
+    }
+
     private UIElement CreateWorkflowItemDetails(WorkflowItem item)
     {
         var layout = new StackPanel
@@ -6864,10 +6929,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             MinHeight = 96,
             Margin = new Thickness(0, 4, 0, 8),
             AcceptsTab = true,
-            BorderBrush = CreateFrozenBrush(Color.FromRgb(0xCB, 0xD5, 0xE1)),
             BorderThickness = new Thickness(1),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
+        SetThemeResource(documentationBox, Control.BorderBrushProperty, AppThemeService.StrongBorderBrushKey);
+        SetThemeResource(documentationBox, Control.BackgroundProperty, AppThemeService.InputBackgroundBrushKey);
+        SetThemeResource(documentationBox, Control.ForegroundProperty, AppThemeService.InputTextBrushKey);
         LoadRichTextBoxDocument(documentationBox, item.ItemDocumentationXaml);
         documentationBox.LostKeyboardFocus += (_, _) =>
             item.ItemDocumentationXaml = SerializeRichTextBoxDocument(documentationBox);
@@ -6892,13 +6959,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
         DockPanel.SetDock(exportDocumentationButton, Dock.Right);
         documentationHeader.Children.Add(exportDocumentationButton);
-        documentationHeader.Children.Add(new TextBlock
+        var documentationHeaderText = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
             FontWeight = FontWeights.SemiBold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
             Text = "Documentation:"
-        });
+        };
+        SetThemeResource(documentationHeaderText, TextBlock.ForegroundProperty, AppThemeService.TextBrushKey);
+        documentationHeader.Children.Add(documentationHeaderText);
         layout.Children.Add(documentationHeader);
         layout.Children.Add(documentationBox);
 
@@ -6929,22 +6997,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
         DockPanel.SetDock(addQueryButton, Dock.Right);
         queryHeader.Children.Add(addQueryButton);
-        queryHeader.Children.Add(new TextBlock
+        var queryHeaderText = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
             FontWeight = FontWeights.SemiBold,
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x11, 0x18, 0x27)),
             Text = "Queries:"
-        });
+        };
+        SetThemeResource(queryHeaderText, TextBlock.ForegroundProperty, AppThemeService.TextBrushKey);
+        queryHeader.Children.Add(queryHeaderText);
         layout.Children.Add(queryHeader);
 
         if (item.Queries.Count == 0)
         {
-            layout.Children.Add(new TextBlock
+            var noQueriesText = new TextBlock
             {
-                Foreground = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
                 Text = "No queries yet."
-            });
+            };
+            SetThemeResource(noQueriesText, TextBlock.ForegroundProperty, AppThemeService.MutedTextBrushKey);
+            layout.Children.Add(noQueriesText);
         }
         else
         {
@@ -7007,7 +7077,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 query.Status = status;
                 if (queryBlock != null)
                 {
-                    queryBlock.Background = GetQueryBlockBackgroundBrush(status);
+                    SetThemeResource(queryBlock, Border.BackgroundProperty, GetQueryBlockBackgroundBrushKey(status));
                 }
 
                 UpdateWorkflowItemQueryIndicators(item);
@@ -7018,8 +7088,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         header.Children.Add(CreateWorkflowBadge(
             $"Query {query.QueryNumber}",
-            CreateFrozenBrush(Color.FromRgb(0xEE, 0xF2, 0xFF)),
-            CreateFrozenBrush(Color.FromRgb(0x37, 0x30, 0xA3)),
+            AppThemeService.SelectionBrushKey,
+            AppThemeService.SelectionTextBrushKey,
             minWidth: 62));
 
         var descriptionTextBox = new TextBox
@@ -7035,10 +7105,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var createdTextBlock = new TextBlock
         {
-            Foreground = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B)),
             FontSize = 11,
             Text = $"Created {query.CreatedDateUtc.LocalDateTime:g}"
         };
+        SetThemeResource(createdTextBlock, TextBlock.ForegroundProperty, AppThemeService.MutedTextBrushKey);
 
         var layout = new StackPanel();
         layout.Children.Add(header);
@@ -7049,11 +7119,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             Margin = new Thickness(0, 0, 0, 8),
             Padding = new Thickness(8),
-            BorderBrush = CreateFrozenBrush(Color.FromRgb(0xCB, 0xD5, 0xE1)),
             BorderThickness = new Thickness(1),
-            Background = GetQueryBlockBackgroundBrush(query.Status),
             Child = layout
         };
+        SetThemeResource(queryBlock, Border.BorderBrushProperty, AppThemeService.BorderBrushKey);
+        SetThemeResource(queryBlock, Border.BackgroundProperty, GetQueryBlockBackgroundBrushKey(query.Status));
 
         return queryBlock;
     }
@@ -7200,6 +7270,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         PlaceDiagramResourceOnDiagram(
             node.Name,
             node.FullPath,
+            node.ResourceKind,
             () => TryGetObjectExplorerNodeContent(node, out string content) ? content : null,
             canvasPoint);
     }
@@ -7209,6 +7280,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         PlaceDiagramResourceOnDiagram(
             openTab.FileName,
             openTab.FilePath,
+            GetDiagramImageResourceKind(openTab.FilePath),
             () => TryGetOpenTabContent(openTab, out string content) ? content : null,
             canvasPoint);
     }
@@ -7216,6 +7288,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void PlaceDiagramResourceOnDiagram(
         string displayName,
         string link,
+        ResourceKind resourceKind,
         Func<string?> getContent,
         Point canvasPoint)
     {
@@ -7224,7 +7297,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        DiagramImageDefinition? imageDefinition = FindDiagramImageMatchForResource(displayName, getContent);
+        DiagramImageDefinition? imageDefinition = FindDiagramImageMatchForResource(displayName, resourceKind, getContent);
         if (imageDefinition == null)
         {
             StatusText = $"No diagram image regex matched '{displayName}'.";
@@ -7264,30 +7337,101 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = $"Added '{displayName}' using diagram image '{imageDefinition.Name}'.";
     }
 
-    private DiagramImageDefinition? FindDiagramImageMatchForResource(string displayName, Func<string?> getContent)
+    private DiagramImageDefinition? FindDiagramImageMatchForResource(
+        string displayName,
+        ResourceKind resourceKind,
+        Func<string?> getContent)
     {
-        foreach (DiagramImageDefinition image in _appSettings.DiagramImages.Images)
+        foreach (DiagramImageDefinition image in _appSettings.DiagramImages.Images
+                     .Select((image, index) => new { Image = image, Index = index })
+                     .OrderBy(item => item.Image.SortOrder > 0 ? item.Image.SortOrder : item.Index + 1)
+                     .ThenBy(item => item.Index)
+                     .Select(item => item.Image))
         {
             if (string.IsNullOrWhiteSpace(image.ImageDataBase64) ||
-                string.IsNullOrWhiteSpace(image.Regex) ||
-                !TryCreateDiagramImageRegex(image.Regex, out Regex? regex) ||
-                regex == null)
+                !DiagramImageResourceTypeMatches(image.ResourceTypeFilter, resourceKind))
             {
                 continue;
             }
 
-            string matchTarget = DiagramImageDefinition.NormalizeMatchTarget(image.MatchTarget);
-            string? input = matchTarget == DiagramImageDefinition.ContentMatchTarget
-                ? getContent()
-                : displayName;
+            string nameRegexPattern = image.NameRegex?.Trim() ?? string.Empty;
+            string contentRegexPattern = image.ContentRegex?.Trim() ?? string.Empty;
 
-            if (!string.IsNullOrEmpty(input) && regex.IsMatch(input))
+            if (string.IsNullOrWhiteSpace(nameRegexPattern) &&
+                string.IsNullOrWhiteSpace(contentRegexPattern) &&
+                !string.IsNullOrWhiteSpace(image.Regex))
             {
-                return image;
+                if (DiagramImageDefinition.NormalizeMatchTarget(image.MatchTarget) == DiagramImageDefinition.ContentMatchTarget)
+                {
+                    contentRegexPattern = image.Regex.Trim();
+                }
+                else
+                {
+                    nameRegexPattern = image.Regex.Trim();
+                }
             }
+
+            if (string.IsNullOrWhiteSpace(nameRegexPattern) &&
+                string.IsNullOrWhiteSpace(contentRegexPattern))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(nameRegexPattern) &&
+                (!TryCreateDiagramImageRegex(nameRegexPattern, out Regex? nameRegex) ||
+                 nameRegex == null ||
+                 !nameRegex.IsMatch(displayName)))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(contentRegexPattern))
+            {
+                if (!TryCreateDiagramImageRegex(contentRegexPattern, out Regex? contentRegex) ||
+                    contentRegex == null)
+                {
+                    continue;
+                }
+
+                string? content = getContent();
+                if (string.IsNullOrEmpty(content) || !contentRegex.IsMatch(content))
+                {
+                    continue;
+                }
+            }
+
+            return image;
         }
 
         return null;
+    }
+
+    private static ResourceKind GetDiagramImageResourceKind(string path)
+    {
+        if (DatabaseDocumentService.IsDatabaseDocumentPath(path))
+        {
+            return ResourceKind.DatabaseSnapshot;
+        }
+
+        if (DiagramDocumentService.IsDiagramDocumentPath(path))
+        {
+            return ResourceKind.Diagram;
+        }
+
+        return Directory.Exists(path) ? ResourceKind.Folder : ResourceKind.File;
+    }
+
+    private static bool DiagramImageResourceTypeMatches(string? resourceTypeFilter, ResourceKind resourceKind)
+    {
+        string normalizedFilter = DiagramImageDefinition.NormalizeResourceTypeFilter(resourceTypeFilter);
+        return normalizedFilter switch
+        {
+            DiagramImageDefinition.FileResourceTypeFilter => resourceKind == ResourceKind.File,
+            DiagramImageDefinition.FolderResourceTypeFilter => resourceKind == ResourceKind.Folder,
+            DiagramImageDefinition.DatabaseResourceTypeFilter => resourceKind == ResourceKind.DatabaseSnapshot,
+            DiagramImageDefinition.DiagramResourceTypeFilter => resourceKind == ResourceKind.Diagram,
+            _ => true
+        };
     }
 
     private static bool TryCreateDiagramImageRegex(string pattern, out Regex? regex)
@@ -10370,6 +10514,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         var root = new Grid();
+        root.SetResourceReference(Panel.BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
@@ -10377,20 +10522,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             FontSize = 13,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x1F, 0x29, 0x37)),
             Text = PreviewHeaderText.Text,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
         };
+        _previewPopoutHeaderText.SetResourceReference(TextBlock.ForegroundProperty, AppThemeService.TextBrushKey);
 
         var header = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0xF8, 0xFA, 0xFC)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xE4, 0xE7, 0xEB)),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Padding = new Thickness(10, 7, 10, 7),
             Child = _previewPopoutHeaderText
         };
+        header.SetResourceReference(Border.BackgroundProperty, AppThemeService.SurfaceAltBrushKey);
+        header.SetResourceReference(Border.BorderBrushProperty, AppThemeService.BorderBrushKey);
         root.Children.Add(header);
 
         _previewPopoutEditor = new TextEditor
@@ -10402,6 +10547,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ShowLineNumbers = true,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto
         };
+        _previewPopoutEditor.SetResourceReference(Control.BackgroundProperty, AppThemeService.SurfaceBrushKey);
+        _previewPopoutEditor.SetResourceReference(Control.ForegroundProperty, AppThemeService.TextBrushKey);
         Grid.SetRow(_previewPopoutEditor, 1);
         root.Children.Add(_previewPopoutEditor);
 
@@ -14506,6 +14653,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         bool connectionSettingsChanged = settingsWindow.ConnectionSettingsWereChanged;
         _appSettings = settingsWindow.Settings;
         _appSettings.EnsureDefaults();
+        AppThemeService.Apply(_appSettings.Appearance.Theme);
+        ApplyThemeToRuntimeSurfaces();
         ApplyInternalLoggingSetting("settings saved");
         await SaveSettingsAsync();
         RebuildReferenceIndexForActiveScope();
@@ -14534,6 +14683,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ("Enabled", _appSettings.Diagnostics.EnableInternalLogging),
             ("LogFile", InternalLogService.IsEnabled ? InternalLogService.LogFilePath : "<disabled>"),
             ("LogDirectory", InternalLogService.IsEnabled ? InternalLogService.LogDirectory : "<disabled>"));
+    }
+
+    private void ApplyThemeToRuntimeSurfaces()
+    {
+        SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
+
+        if (WorkspaceCanvas != null && DiagramCanvas != null)
+        {
+            UpdateWorkspaceCanvasBackgrounds(
+                CodeViewToggle?.IsChecked == true,
+                DiagramViewToggle?.IsChecked == true);
+        }
+
+        ObjectExplorer?.Items.Refresh();
+        OpenTabsList?.Items.Refresh();
+        _diagramPopoutWindow?.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
+        _previewPopoutWindow?.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
+        AppThemeService.ApplyWindowChromeToOpenWindows();
     }
 
     private async void SaveWorkbenchButton_Click(object sender, RoutedEventArgs e)

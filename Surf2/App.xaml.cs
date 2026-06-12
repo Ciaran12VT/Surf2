@@ -15,6 +15,10 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
         AppDomain.CurrentDomain.ProcessExit += CurrentDomain_ProcessExit;
         TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+        EventManager.RegisterClassHandler(
+            typeof(Window),
+            FrameworkElement.LoadedEvent,
+            new RoutedEventHandler(Window_Loaded));
 
         base.OnStartup(e);
     }
@@ -66,5 +70,13 @@ public partial class App : Application
     private static void CurrentDomain_ProcessExit(object? sender, EventArgs e)
     {
         InternalLogService.Info("Process exit event.");
+    }
+
+    private static void Window_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is Window window)
+        {
+            AppThemeService.ApplyWindowChrome(window);
+        }
     }
 }

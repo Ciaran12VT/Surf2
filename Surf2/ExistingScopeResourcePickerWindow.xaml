@@ -6,8 +6,10 @@
         Height="540"
         MinWidth="620"
         MinHeight="380"
+        Background="{DynamicResource Theme.WindowBackgroundBrush}"
         WindowStartupLocation="CenterOwner">
-    <Grid Margin="12">
+    <Grid Margin="12"
+          Background="{DynamicResource Theme.WindowBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -32,6 +34,7 @@
 
         <ListView x:Name="ResourcesListView"
                   Grid.Row="1"
+                  BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
                   MouseDoubleClick="ResourcesListView_MouseDoubleClick"
                   SelectionChanged="ResourcesListView_SelectionChanged"
                   SelectionMode="Extended">
@@ -56,15 +59,17 @@
         <DockPanel Grid.Row="2" Margin="0,12,0,0">
             <TextBlock x:Name="StatusTextBlock"
                        VerticalAlignment="Center"
-                       Foreground="#64748B" />
+                       Foreground="{DynamicResource Theme.SubtleTextBrush}" />
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button x:Name="AddButton"
                         Width="84"
                         Margin="0,0,8,0"
+                        Style="{StaticResource SurfSaveButtonStyle}"
                         Click="AddButton_Click"
                         Content="Add"
                         IsEnabled="False" />
                 <Button Width="84"
+                        Style="{StaticResource SurfCloseButtonStyle}"
                         Click="CancelButton_Click"
                         Content="Cancel" />
             </StackPanel>

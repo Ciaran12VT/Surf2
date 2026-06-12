@@ -21,6 +21,7 @@ public partial class SettingsWindow : Window
     private readonly ObservableCollection<DiagramImageDefinition> _diagramImages = [];
     private readonly LocalConnectionSettingsStore _connectionSettingsStore = new();
     private readonly PersistencePackageService _persistencePackageService = new();
+    private readonly DiagramImagePackageService _diagramImagePackageService = new();
     private bool _loadingSelection;
     private bool _loadingHighlightSelection;
     private bool _loadingDiagramImageSelection;
@@ -57,7 +58,8 @@ public partial class SettingsWindow : Window
         }
 
         foreach (DiagramImageDefinition image in Settings.DiagramImages.Images
-                     .OrderBy(image => image.Name))
+                     .OrderBy(image => image.SortOrder)
+                     .ThenBy(image => image.Name))
         {
             _diagramImages.Add(image.Clone());
         }
@@ -65,9 +67,11 @@ public partial class SettingsWindow : Window
         BackcolorList.ItemsSource = _backcolors;
         HighlightStyleList.ItemsSource = _highlightStyles;
         DiagramImageList.ItemsSource = _diagramImages;
+        RefreshDiagramImageSortOrders();
         LoadConnectionSettings();
         LoadKeyboardShortcutSettings();
         LoadResourceComparisonSettings();
+        LoadAppearanceSettings();
         LoadDiagnosticsSettings();
         LoadMostRecentWorkbenchCheckBox.IsChecked = Settings.LoadMostRecentWorkbenchOnStartup;
 
@@ -115,6 +119,7 @@ public partial class SettingsWindow : Window
             KeyboardShortcutSettingsPanel == null ||
             ResourceComparisonSettingsPanel == null ||
             WorkbenchSettingsPanel == null ||
+            AppearanceSettingsPanel == null ||
             PersistenceSettingsPanel == null ||
             DiagnosticsSettingsPanel == null)
         {
@@ -127,8 +132,9 @@ public partial class SettingsWindow : Window
         KeyboardShortcutSettingsPanel.Visibility = SectionList.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
         ResourceComparisonSettingsPanel.Visibility = SectionList.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
         WorkbenchSettingsPanel.Visibility = SectionList.SelectedIndex == 5 ? Visibility.Visible : Visibility.Collapsed;
-        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 6 ? Visibility.Visible : Visibility.Collapsed;
-        DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 7 ? Visibility.Visible : Visibility.Collapsed;
+        AppearanceSettingsPanel.Visibility = SectionList.SelectedIndex == 6 ? Visibility.Visible : Visibility.Collapsed;
+        PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 7 ? Visibility.Visible : Visibility.Collapsed;
+        DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 8 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -296,6 +302,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -407,6 +414,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -429,21 +437,25 @@ public partial class SettingsWindow : Window
 
         bool hasSelection = image != null;
         DiagramImageNameTextBox.IsEnabled = hasSelection;
-        DiagramImageRegexTextBox.IsEnabled = hasSelection;
-        DiagramImageMatchTargetComboBox.IsEnabled = hasSelection;
+        DiagramImageNameRegexTextBox.IsEnabled = hasSelection;
+        DiagramImageContentRegexTextBox.IsEnabled = hasSelection;
+        DiagramImageResourceTypeComboBox.IsEnabled = hasSelection;
         ImportDiagramImageButton.IsEnabled = hasSelection;
         RemoveDiagramImageButton.IsEnabled = hasSelection;
+        MoveDiagramImageUpButton.IsEnabled = hasSelection && DiagramImageList.SelectedIndex > 0;
+        MoveDiagramImageDownButton.IsEnabled = hasSelection && DiagramImageList.SelectedIndex >= 0 && DiagramImageList.SelectedIndex < _diagramImages.Count - 1;
 
         DiagramImageNameTextBox.Text = image?.Name ?? string.Empty;
-        DiagramImageRegexTextBox.Text = image?.Regex ?? string.Empty;
-        SelectDiagramImageMatchTarget(image?.MatchTarget);
+        DiagramImageNameRegexTextBox.Text = image?.NameRegex ?? string.Empty;
+        DiagramImageContentRegexTextBox.Text = image?.ContentRegex ?? string.Empty;
+        SelectDiagramImageResourceType(image?.ResourceTypeFilter);
         DiagramImageFileText.Text = image == null
             ? string.Empty
             : string.IsNullOrWhiteSpace(image.OriginalFileName)
                 ? "No image imported."
                 : image.OriginalFileName;
         DiagramImagePreview.Source = CreateImageSource(image?.ImageDataBase64);
-        DiagramImageValidationText.Text = string.Empty;
+        ClearDiagramImageStatus();
 
         _loadingDiagramImageSelection = false;
     }
@@ -458,7 +470,7 @@ public partial class SettingsWindow : Window
         _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
     }
 
-    private void DiagramImageRegexTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    private void DiagramImageNameRegexTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_loadingDiagramImageSelection || _activeDiagramImage == null)
         {
@@ -468,7 +480,7 @@ public partial class SettingsWindow : Window
         _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
     }
 
-    private void DiagramImageMatchTargetComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void DiagramImageContentRegexTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_loadingDiagramImageSelection || _activeDiagramImage == null)
         {
@@ -478,20 +490,30 @@ public partial class SettingsWindow : Window
         _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
     }
 
-    private void SelectDiagramImageMatchTarget(string? matchTarget)
+    private void DiagramImageResourceTypeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        string normalizedTarget = DiagramImageDefinition.NormalizeMatchTarget(matchTarget);
-        foreach (object item in DiagramImageMatchTargetComboBox.Items)
+        if (_loadingDiagramImageSelection || _activeDiagramImage == null)
+        {
+            return;
+        }
+
+        _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
+    }
+
+    private void SelectDiagramImageResourceType(string? resourceTypeFilter)
+    {
+        string normalizedFilter = DiagramImageDefinition.NormalizeResourceTypeFilter(resourceTypeFilter);
+        foreach (object item in DiagramImageResourceTypeComboBox.Items)
         {
             if (item is ComboBoxItem comboBoxItem &&
-                string.Equals(comboBoxItem.Content?.ToString(), normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                string.Equals(comboBoxItem.Content?.ToString(), normalizedFilter, StringComparison.OrdinalIgnoreCase))
             {
-                DiagramImageMatchTargetComboBox.SelectedItem = comboBoxItem;
+                DiagramImageResourceTypeComboBox.SelectedItem = comboBoxItem;
                 return;
             }
         }
 
-        DiagramImageMatchTargetComboBox.SelectedIndex = 0;
+        DiagramImageResourceTypeComboBox.SelectedIndex = 0;
     }
 
     private void ImportDiagramImageButton_Click(object sender, RoutedEventArgs e)
@@ -519,7 +541,7 @@ public partial class SettingsWindow : Window
 
             if (CreateImageSource(encoded) == null)
             {
-                DiagramImageValidationText.Text = "The selected file is not a supported image.";
+                SetDiagramImageError("The selected file is not a supported image.");
                 return;
             }
 
@@ -537,12 +559,165 @@ public partial class SettingsWindow : Window
         }
         catch (IOException ex)
         {
-            DiagramImageValidationText.Text = $"Could not import image: {ex.Message}";
+            SetDiagramImageError($"Could not import image: {ex.Message}");
         }
         catch (UnauthorizedAccessException ex)
         {
-            DiagramImageValidationText.Text = $"Could not import image: {ex.Message}";
+            SetDiagramImageError($"Could not import image: {ex.Message}");
         }
+    }
+
+    private async void ExportDiagramImagePackageButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveDiagramImageSettings(validateActive: true))
+        {
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export Image Package",
+            Filter = "Surf2 image package (*.surfimages.zip)|*.surfimages.zip|Zip files (*.zip)|*.zip|All files (*.*)|*.*",
+            DefaultExt = ".surfimages.zip",
+            FileName = $"surf-images-{DateTime.Now:yyyyMMdd-HHmmss}.surfimages.zip"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        SetDiagramImagePackageActionsEnabled(false);
+        SetDiagramImageStatus("Exporting image package...", isError: false);
+
+        try
+        {
+            DiagramImagePackageExportResult result = await _diagramImagePackageService.ExportAsync(
+                dialog.FileName,
+                Settings.DiagramImages.Images);
+            SetDiagramImageStatus($"Exported {result.ImageCount} diagram image(s).", isError: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            SetDiagramImageError($"Export failed: {ex.Message}");
+        }
+        finally
+        {
+            SetDiagramImagePackageActionsEnabled(true);
+        }
+    }
+
+    private async void ImportDiagramImagePackageButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeDiagramImage != null)
+        {
+            _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
+        }
+
+        var dialog = new OpenFileDialog
+        {
+            Title = "Import Image Package",
+            Filter = "Surf2 image package (*.surfimages.zip)|*.surfimages.zip|Zip files (*.zip)|*.zip|All files (*.*)|*.*"
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        SetDiagramImagePackageActionsEnabled(false);
+        SetDiagramImageStatus("Importing image package...", isError: false);
+
+        try
+        {
+            DiagramImagePackageImportResult result = await _diagramImagePackageService.ImportAsync(dialog.FileName);
+            int importedCount = AddImportedDiagramImages(result.Images, out int skippedCount, out DiagramImageDefinition? firstImported);
+
+            if (importedCount == 0)
+            {
+                SetDiagramImageError(skippedCount == 0
+                    ? "The selected image package did not contain any images."
+                    : $"No images were imported. Skipped {skippedCount} invalid image(s).");
+                return;
+            }
+
+            DiagramImageList.Items.Refresh();
+            if (firstImported != null)
+            {
+                DiagramImageList.SelectedItem = firstImported;
+            }
+
+            string skippedText = skippedCount > 0 ? $" Skipped {skippedCount} invalid image(s)." : string.Empty;
+            SetDiagramImageStatus($"Imported {importedCount} diagram image(s). Click Save to apply them.{skippedText}", isError: false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            SetDiagramImageError($"Import failed: {ex.Message}");
+        }
+        finally
+        {
+            SetDiagramImagePackageActionsEnabled(true);
+        }
+    }
+
+    private int AddImportedDiagramImages(
+        IEnumerable<DiagramImageDefinition> importedImages,
+        out int skippedCount,
+        out DiagramImageDefinition? firstImported)
+    {
+        var usedIds = new HashSet<string>(
+            _diagramImages
+                .Select(image => image.Id)
+                .Where(id => !string.IsNullOrWhiteSpace(id)),
+            StringComparer.OrdinalIgnoreCase);
+        var usedNames = new HashSet<string>(
+            _diagramImages
+                .Select(image => image.Name)
+                .Where(name => !string.IsNullOrWhiteSpace(name)),
+            StringComparer.OrdinalIgnoreCase);
+
+        int importedCount = 0;
+        skippedCount = 0;
+        firstImported = null;
+
+        foreach (DiagramImageDefinition importedImage in importedImages)
+        {
+            if (CreateImageSource(importedImage.ImageDataBase64) == null ||
+                !IsDiagramImageRegexValid(importedImage.NameRegex) ||
+                !IsDiagramImageRegexValid(importedImage.ContentRegex))
+            {
+                skippedCount++;
+                continue;
+            }
+
+            string originalFileName = Path.GetFileName(importedImage.OriginalFileName) ?? string.Empty;
+            var image = new DiagramImageDefinition
+            {
+                Id = CreateUniqueDiagramImageId(importedImage.Id, usedIds),
+                Name = CreateUniqueDiagramImageName(importedImage.Name, usedNames),
+                NameRegex = importedImage.NameRegex?.Trim() ?? string.Empty,
+                ContentRegex = importedImage.ContentRegex?.Trim() ?? string.Empty,
+                ResourceTypeFilter = DiagramImageDefinition.NormalizeResourceTypeFilter(importedImage.ResourceTypeFilter),
+                SortOrder = _diagramImages.Count + 1,
+                OriginalFileName = originalFileName,
+                ImageDataBase64 = importedImage.ImageDataBase64
+            };
+            image.Regex = DiagramImageDefinition.GetLegacyRegex(image.NameRegex, image.ContentRegex);
+            image.MatchTarget = DiagramImageDefinition.GetLegacyMatchTarget(image.NameRegex, image.ContentRegex);
+
+            _diagramImages.Add(image);
+            RefreshDiagramImageSortOrders();
+            firstImported ??= image;
+            importedCount++;
+        }
+
+        return importedCount;
+    }
+
+    private void SetDiagramImagePackageActionsEnabled(bool isEnabled)
+    {
+        ExportDiagramImagePackageButton.IsEnabled = isEnabled;
+        ImportDiagramImagePackageButton.IsEnabled = isEnabled;
     }
 
     private void AddDiagramImageButton_Click(object sender, RoutedEventArgs e)
@@ -554,10 +729,13 @@ public partial class SettingsWindow : Window
 
         var image = new DiagramImageDefinition
         {
-            Name = "New Image"
+            Name = "New Image",
+            ResourceTypeFilter = DiagramImageDefinition.AnyResourceTypeFilter,
+            SortOrder = _diagramImages.Count + 1
         };
 
         _diagramImages.Add(image);
+        RefreshDiagramImageSortOrders();
         DiagramImageList.SelectedItem = image;
         DiagramImageNameTextBox.Focus();
         DiagramImageNameTextBox.SelectAll();
@@ -572,6 +750,7 @@ public partial class SettingsWindow : Window
 
         int index = DiagramImageList.SelectedIndex;
         _diagramImages.Remove(image);
+        RefreshDiagramImageSortOrders();
 
         if (_diagramImages.Count == 0)
         {
@@ -581,6 +760,41 @@ public partial class SettingsWindow : Window
         }
 
         DiagramImageList.SelectedIndex = Math.Min(index, _diagramImages.Count - 1);
+    }
+
+    private void MoveDiagramImageUpButton_Click(object sender, RoutedEventArgs e)
+    {
+        MoveSelectedDiagramImage(-1);
+    }
+
+    private void MoveDiagramImageDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        MoveSelectedDiagramImage(1);
+    }
+
+    private void MoveSelectedDiagramImage(int offset)
+    {
+        if (DiagramImageList.SelectedItem is not DiagramImageDefinition image)
+        {
+            return;
+        }
+
+        if (!CommitDiagramImageFieldsToSetting(image, requireValid: false))
+        {
+            return;
+        }
+
+        int currentIndex = DiagramImageList.SelectedIndex;
+        int newIndex = currentIndex + offset;
+        if (newIndex < 0 || newIndex >= _diagramImages.Count)
+        {
+            return;
+        }
+
+        _diagramImages.Move(currentIndex, newIndex);
+        RefreshDiagramImageSortOrders();
+        DiagramImageList.SelectedItem = image;
+        LoadSelectedDiagramImage(image);
     }
 
     private void SaveDiagramImagesButton_Click(object sender, RoutedEventArgs e)
@@ -594,6 +808,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -792,6 +1007,7 @@ public partial class SettingsWindow : Window
         ConnectionSettingsWereChanged = true;
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
 
         DialogResult = true;
@@ -809,6 +1025,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -825,6 +1042,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -841,6 +1059,24 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
+        SaveDiagnosticsSettings();
+        DialogResult = true;
+        Close();
+    }
+
+    private void SaveAppearanceSettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!SaveBackcolorSettings() ||
+            !SaveReferenceHighlightSettings(validateActive: false) ||
+            !SaveDiagramImageSettings(validateActive: false))
+        {
+            return;
+        }
+
+        SaveWorkbenchSettings();
+        SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -857,6 +1093,7 @@ public partial class SettingsWindow : Window
 
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
+        SaveAppearanceSettings();
         SaveDiagnosticsSettings();
         DialogResult = true;
         Close();
@@ -925,6 +1162,36 @@ public partial class SettingsWindow : Window
     {
         Settings.Diagnostics ??= new DiagnosticsSettings();
         EnableInternalLoggingCheckBox.IsChecked = Settings.Diagnostics.EnableInternalLogging;
+    }
+
+    private void LoadAppearanceSettings()
+    {
+        Settings.Appearance ??= new AppearanceSettings();
+        SelectAppearanceTheme(Settings.Appearance.Theme);
+    }
+
+    private void SaveAppearanceSettings()
+    {
+        Settings.Appearance ??= new AppearanceSettings();
+        Settings.Appearance.Theme = AppearanceThemeComboBox.SelectedItem is ComboBoxItem item
+            ? AppearanceSettings.NormalizeTheme(item.Content?.ToString())
+            : AppearanceSettings.LightTheme;
+    }
+
+    private void SelectAppearanceTheme(string? theme)
+    {
+        string normalizedTheme = AppearanceSettings.NormalizeTheme(theme);
+        foreach (object item in AppearanceThemeComboBox.Items)
+        {
+            if (item is ComboBoxItem comboBoxItem &&
+                string.Equals(comboBoxItem.Content?.ToString(), normalizedTheme, StringComparison.OrdinalIgnoreCase))
+            {
+                AppearanceThemeComboBox.SelectedItem = comboBoxItem;
+                return;
+            }
+        }
+
+        AppearanceThemeComboBox.SelectedIndex = 0;
     }
 
     private void SaveDiagnosticsSettings()
@@ -1034,38 +1301,53 @@ public partial class SettingsWindow : Window
         var normalizedImages = new List<DiagramImageDefinition>();
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (DiagramImageDefinition image in _diagramImages)
+        for (int index = 0; index < _diagramImages.Count; index++)
         {
+            DiagramImageDefinition image = _diagramImages[index];
             string name = (image.Name ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(name))
             {
-                DiagramImageValidationText.Text = "Every diagram image needs a name.";
+                SetDiagramImageError("Every diagram image needs a name.");
                 return false;
             }
 
             if (!names.Add(name))
             {
-                DiagramImageValidationText.Text = $"Duplicate diagram image name: {name}";
+                SetDiagramImageError($"Duplicate diagram image name: {name}");
                 return false;
             }
 
             if (string.IsNullOrWhiteSpace(image.ImageDataBase64) ||
                 CreateImageSource(image.ImageDataBase64) == null)
             {
-                DiagramImageValidationText.Text = $"Import a valid image for {name}.";
+                SetDiagramImageError($"Import a valid image for {name}.");
                 return false;
             }
 
-            string regex = image.Regex?.Trim() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(regex))
+            string nameRegex = image.NameRegex?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(nameRegex))
             {
                 try
                 {
-                    _ = new Regex(regex);
+                    _ = new Regex(nameRegex);
                 }
                 catch (ArgumentException ex)
                 {
-                    DiagramImageValidationText.Text = $"Regex for {name} is invalid: {ex.Message}";
+                    SetDiagramImageError($"Name regex for {name} is invalid: {ex.Message}");
+                    return false;
+                }
+            }
+
+            string contentRegex = image.ContentRegex?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(contentRegex))
+            {
+                try
+                {
+                    _ = new Regex(contentRegex);
+                }
+                catch (ArgumentException ex)
+                {
+                    SetDiagramImageError($"Content regex for {name} is invalid: {ex.Message}");
                     return false;
                 }
             }
@@ -1074,8 +1356,12 @@ public partial class SettingsWindow : Window
             {
                 Id = string.IsNullOrWhiteSpace(image.Id) ? Guid.NewGuid().ToString("N") : image.Id,
                 Name = name,
-                Regex = regex,
-                MatchTarget = DiagramImageDefinition.NormalizeMatchTarget(image.MatchTarget),
+                Regex = DiagramImageDefinition.GetLegacyRegex(nameRegex, contentRegex),
+                MatchTarget = DiagramImageDefinition.GetLegacyMatchTarget(nameRegex, contentRegex),
+                NameRegex = nameRegex,
+                ContentRegex = contentRegex,
+                ResourceTypeFilter = DiagramImageDefinition.NormalizeResourceTypeFilter(image.ResourceTypeFilter),
+                SortOrder = index + 1,
                 OriginalFileName = image.OriginalFileName?.Trim() ?? string.Empty,
                 ImageDataBase64 = image.ImageDataBase64
             });
@@ -1146,29 +1432,49 @@ public partial class SettingsWindow : Window
         {
             if (requireValid)
             {
-                DiagramImageValidationText.Text = "Image name cannot be blank.";
+                SetDiagramImageError("Image name cannot be blank.");
             }
 
             return false;
         }
 
         image.Name = name;
-        image.Regex = (DiagramImageRegexTextBox.Text ?? string.Empty).Trim();
-        image.MatchTarget = DiagramImageMatchTargetComboBox.SelectedItem is ComboBoxItem selectedTarget
-            ? DiagramImageDefinition.NormalizeMatchTarget(selectedTarget.Content?.ToString())
-            : DiagramImageDefinition.NameMatchTarget;
+        image.NameRegex = (DiagramImageNameRegexTextBox.Text ?? string.Empty).Trim();
+        image.ContentRegex = (DiagramImageContentRegexTextBox.Text ?? string.Empty).Trim();
+        image.ResourceTypeFilter = DiagramImageResourceTypeComboBox.SelectedItem is ComboBoxItem selectedResourceType
+            ? DiagramImageDefinition.NormalizeResourceTypeFilter(selectedResourceType.Content?.ToString())
+            : DiagramImageDefinition.AnyResourceTypeFilter;
+        image.Regex = DiagramImageDefinition.GetLegacyRegex(image.NameRegex, image.ContentRegex);
+        image.MatchTarget = DiagramImageDefinition.GetLegacyMatchTarget(image.NameRegex, image.ContentRegex);
 
-        if (!string.IsNullOrWhiteSpace(image.Regex))
+        if (!string.IsNullOrWhiteSpace(image.NameRegex))
         {
             try
             {
-                _ = new Regex(image.Regex);
+                _ = new Regex(image.NameRegex);
             }
             catch (ArgumentException ex)
             {
                 if (requireValid)
                 {
-                    DiagramImageValidationText.Text = $"Regex is invalid: {ex.Message}";
+                    SetDiagramImageError($"Name regex is invalid: {ex.Message}");
+                }
+
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(image.ContentRegex))
+        {
+            try
+            {
+                _ = new Regex(image.ContentRegex);
+            }
+            catch (ArgumentException ex)
+            {
+                if (requireValid)
+                {
+                    SetDiagramImageError($"Content regex is invalid: {ex.Message}");
                 }
 
                 return false;
@@ -1176,8 +1482,84 @@ public partial class SettingsWindow : Window
         }
 
         DiagramImageList.Items.Refresh();
-        DiagramImageValidationText.Text = string.Empty;
+        ClearDiagramImageStatus();
         return true;
+    }
+
+    private void RefreshDiagramImageSortOrders()
+    {
+        for (int index = 0; index < _diagramImages.Count; index++)
+        {
+            _diagramImages[index].SortOrder = index + 1;
+        }
+
+        DiagramImageList.Items.Refresh();
+    }
+
+    private void SetDiagramImageError(string message)
+    {
+        SetDiagramImageStatus(message, isError: true);
+    }
+
+    private void SetDiagramImageStatus(string message, bool isError)
+    {
+        DiagramImageValidationText.Foreground = isError ? Brushes.Firebrick : Brushes.DarkGreen;
+        DiagramImageValidationText.Text = message;
+    }
+
+    private void ClearDiagramImageStatus()
+    {
+        DiagramImageValidationText.Foreground = Brushes.Firebrick;
+        DiagramImageValidationText.Text = string.Empty;
+    }
+
+    private static string CreateUniqueDiagramImageId(string? candidateId, HashSet<string> usedIds)
+    {
+        string id = string.IsNullOrWhiteSpace(candidateId)
+            ? Guid.NewGuid().ToString("N")
+            : candidateId.Trim();
+
+        while (!usedIds.Add(id))
+        {
+            id = Guid.NewGuid().ToString("N");
+        }
+
+        return id;
+    }
+
+    private static string CreateUniqueDiagramImageName(string? candidateName, HashSet<string> usedNames)
+    {
+        string baseName = string.IsNullOrWhiteSpace(candidateName)
+            ? "Imported Image"
+            : candidateName.Trim();
+        string name = baseName;
+        int suffix = 2;
+
+        while (!usedNames.Add(name))
+        {
+            name = $"{baseName} ({suffix})";
+            suffix++;
+        }
+
+        return name;
+    }
+
+    private static bool IsDiagramImageRegexValid(string? regex)
+    {
+        if (string.IsNullOrWhiteSpace(regex))
+        {
+            return true;
+        }
+
+        try
+        {
+            _ = new Regex(regex);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     private void UpdatePreview(string? colorText)

@@ -6,6 +6,7 @@
         Height="560"
         MinWidth="1000"
         MinHeight="460"
+        Background="{DynamicResource Theme.WindowBackgroundBrush}"
         WindowStartupLocation="CenterOwner">
     <Window.Resources>
         <Style x:Key="ScopeActionButtonStyle" TargetType="{x:Type Button}">
@@ -68,7 +69,8 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="12">
+    <Grid Margin="12"
+          Background="{DynamicResource Theme.WindowBackgroundBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="260" />
             <ColumnDefinition Width="10" />
@@ -105,7 +107,7 @@
                       Width="5"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Stretch"
-                      Background="#D7DCE2" />
+                      Background="{DynamicResource Theme.BorderBrush}" />
 
         <Grid Grid.Column="2">
             <Grid.RowDefinitions>
@@ -151,7 +153,8 @@
                            Text="Scoped Resources" />
                 <ListView x:Name="ResourceList"
                           Grid.Row="1"
-                          Margin="0,8,0,8">
+                          Margin="0,8,0,8"
+                          BorderBrush="{DynamicResource Theme.StrongBorderBrush}">
                     <ListView.View>
                         <GridView>
                             <GridViewColumn Width="170"
@@ -232,7 +235,7 @@
             <DockPanel Grid.Row="3" Margin="0,12,0,0">
                 <TextBlock x:Name="StatusTextBlock"
                            VerticalAlignment="Center"
-                           Foreground="#4B5563" />
+                           Foreground="{DynamicResource Theme.SubtleTextBrush}" />
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Button Width="132"
                             Margin="0,0,8,0"

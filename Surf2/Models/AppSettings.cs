@@ -14,6 +14,8 @@ public sealed class AppSettings
 
     public DiagnosticsSettings Diagnostics { get; set; } = new();
 
+    public AppearanceSettings Appearance { get; set; } = new();
+
     public bool LoadMostRecentWorkbenchOnStartup { get; set; }
 
     public bool EnsureDefaults()
@@ -49,10 +51,22 @@ public sealed class AppSettings
             changed = true;
         }
 
+        changed |= DiagramImages.EnsureDefaults();
+
         if (Diagnostics == null)
         {
             Diagnostics = new DiagnosticsSettings();
             changed = true;
+        }
+
+        if (Appearance == null)
+        {
+            Appearance = new AppearanceSettings();
+            changed = true;
+        }
+        else
+        {
+            changed |= Appearance.EnsureDefaults();
         }
 
         changed |= CodeWindows.EnsureDefaultBackcolorEntries();
@@ -68,6 +82,7 @@ public sealed class AppSettings
         KeyboardShortcuts ??= new KeyboardShortcutSettings();
         ResourceComparison ??= new ResourceComparisonSettings();
         Diagnostics ??= new DiagnosticsSettings();
+        Appearance ??= new AppearanceSettings();
         CodeWindows.BackcolorsByExtension ??= [];
         ReferenceHighlights.Styles ??= [];
         DiagramImages.Images ??= [];
@@ -96,8 +111,45 @@ public sealed class AppSettings
             DiagramImages = DiagramImages.Clone(),
             KeyboardShortcuts = KeyboardShortcuts.Clone(),
             ResourceComparison = ResourceComparison.Clone(),
-            Diagnostics = Diagnostics.Clone()
+            Diagnostics = Diagnostics.Clone(),
+            Appearance = Appearance.Clone()
         };
+    }
+}
+
+public sealed class AppearanceSettings
+{
+    public const string LightTheme = "Light";
+
+    public const string DarkTheme = "Dark";
+
+    public string Theme { get; set; } = LightTheme;
+
+    public bool EnsureDefaults()
+    {
+        string normalizedTheme = NormalizeTheme(Theme);
+        if (string.Equals(Theme, normalizedTheme, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        Theme = normalizedTheme;
+        return true;
+    }
+
+    public AppearanceSettings Clone()
+    {
+        return new AppearanceSettings
+        {
+            Theme = NormalizeTheme(Theme)
+        };
+    }
+
+    public static string NormalizeTheme(string? theme)
+    {
+        return string.Equals(theme, DarkTheme, StringComparison.OrdinalIgnoreCase)
+            ? DarkTheme
+            : LightTheme;
     }
 }
 

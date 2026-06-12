@@ -150,6 +150,7 @@ public sealed class FileTreeService
             },
             parentKey: FileSystemNode.RootParentKey,
             scopeResourceId: resource.ResourceId,
+            resourceKind: resource.Kind,
             isScopeResourceRoot: true,
             isScopeResourceLoaded: isScopeResourceLoaded,
             toolTip: CreateFolderResourceToolTip(resource.Path, isDirectory && exists));
@@ -235,6 +236,7 @@ public sealed class FileTreeService
             iconKind: iconKind,
             parentKey: parentKey,
             scopeResourceId: scopeResourceId,
+            resourceKind: ResourceKind.Folder,
             isScopeResourceRoot: isScopeResourceRoot,
             toolTip: isScopeResourceRoot ? CreateFolderResourceToolTip(directoryPath, exists: true) : null)
         {
@@ -326,6 +328,7 @@ public sealed class FileTreeService
             iconKind: iconKind,
             parentKey: parentKey,
             scopeResourceId: scopeResourceId,
+            resourceKind: ResourceKind.File,
             isScopeResourceRoot: isScopeResourceRoot);
         ApplyContentSearchMetadata(node, matcher, searchTarget);
         return node;
@@ -359,6 +362,7 @@ public sealed class FileTreeService
             iconKind: FileSystemNodeIconKind.Database,
             parentKey: FileSystemNode.RootParentKey,
             scopeResourceId: resource.ResourceId,
+            resourceKind: ResourceKind.DatabaseSnapshot,
             isScopeResourceRoot: true)
         {
             IsLoaded = true,
@@ -393,7 +397,8 @@ public sealed class FileTreeService
             $"{snapshot.SnapshotId}/{folderName}",
             isDirectory: true,
             displayName: folderName,
-            parentKey: root.NodeKey)
+            parentKey: root.NodeKey,
+            resourceKind: ResourceKind.DatabaseSnapshot)
         {
             IsLoaded = true,
             IsExpanded = true
@@ -423,7 +428,8 @@ public sealed class FileTreeService
                 DatabaseDocumentService.CreateObjectDocumentPath(snapshot, databaseObject),
                 isDirectory: false,
                 displayName: displayName,
-                parentKey: folder.NodeKey)
+                parentKey: folder.NodeKey,
+                resourceKind: ResourceKind.DatabaseSnapshot)
             {
                 IsVirtualDocument = true
             };
@@ -453,7 +459,8 @@ public sealed class FileTreeService
             $"{snapshot.SnapshotId}/Tables",
             isDirectory: true,
             displayName: "Tables",
-            parentKey: root.NodeKey)
+            parentKey: root.NodeKey,
+            resourceKind: ResourceKind.DatabaseSnapshot)
         {
             IsLoaded = true,
             IsExpanded = true
@@ -496,7 +503,8 @@ public sealed class FileTreeService
                 DatabaseDocumentService.CreateTableDocumentPath(snapshot, table),
                 isDirectory: false,
                 displayName: label,
-                parentKey: folder.NodeKey)
+                parentKey: folder.NodeKey,
+                resourceKind: ResourceKind.DatabaseSnapshot)
             {
                 IsVirtualDocument = true
             };
@@ -767,6 +775,7 @@ public sealed class FileTreeService
             iconKind: FileSystemNodeIconKind.Database,
             parentKey: FileSystemNode.RootParentKey,
             scopeResourceId: resource.ResourceId,
+            resourceKind: ResourceKind.DatabaseSnapshot,
             isScopeResourceRoot: true,
             isScopeResourceLoaded: isScopeResourceLoaded);
 
@@ -795,7 +804,8 @@ public sealed class FileTreeService
             $"{snapshot.SnapshotId}/{folderName}",
             isDirectory: true,
             displayName: folderName,
-            parentKey: root.NodeKey)
+            parentKey: root.NodeKey,
+            resourceKind: ResourceKind.DatabaseSnapshot)
         {
             IsLoaded = true
         };
@@ -809,7 +819,8 @@ public sealed class FileTreeService
                 DatabaseDocumentService.CreateObjectDocumentPath(snapshot, databaseObject),
                 isDirectory: false,
                 displayName: SqlName.FormatPlainMultipartName(databaseObject.SchemaName, databaseObject.ObjectName),
-                parentKey: folder.NodeKey)
+                parentKey: folder.NodeKey,
+                resourceKind: ResourceKind.DatabaseSnapshot)
             {
                 IsVirtualDocument = true
             });
@@ -824,7 +835,8 @@ public sealed class FileTreeService
             $"{snapshot.SnapshotId}/Tables",
             isDirectory: true,
             displayName: "Tables",
-            parentKey: root.NodeKey)
+            parentKey: root.NodeKey,
+            resourceKind: ResourceKind.DatabaseSnapshot)
         {
             IsLoaded = true
         };
@@ -843,7 +855,8 @@ public sealed class FileTreeService
                 DatabaseDocumentService.CreateTableDocumentPath(snapshot, table),
                 isDirectory: false,
                 displayName: label,
-                parentKey: folder.NodeKey)
+                parentKey: folder.NodeKey,
+                resourceKind: ResourceKind.DatabaseSnapshot)
             {
                 IsVirtualDocument = true
             });
@@ -867,7 +880,8 @@ public sealed class FileTreeService
             isDirectory: true,
             displayName: "Diagrams",
             iconKind: FileSystemNodeIconKind.Diagrams,
-            parentKey: FileSystemNode.RootParentKey)
+            parentKey: FileSystemNode.RootParentKey,
+            resourceKind: ResourceKind.Diagram)
         {
             IsLoaded = true
         };
@@ -914,7 +928,8 @@ public sealed class FileTreeService
             isDirectory: true,
             displayName: "Diagrams",
             iconKind: FileSystemNodeIconKind.Diagrams,
-            parentKey: FileSystemNode.RootParentKey)
+            parentKey: FileSystemNode.RootParentKey,
+            resourceKind: ResourceKind.Diagram)
         {
             IsLoaded = true,
             IsExpanded = true
@@ -959,6 +974,7 @@ public sealed class FileTreeService
             displayName: $"{displayName}{suffix}",
             parentKey: parentKey,
             scopeResourceId: resource.ResourceId,
+            resourceKind: ResourceKind.Diagram,
             isScopeResourceRoot: true,
             isScopeResourceLoaded: isScopeResourceLoaded)
         {

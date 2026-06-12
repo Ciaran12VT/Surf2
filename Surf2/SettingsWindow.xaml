@@ -6,6 +6,7 @@
         Height="590"
         MinWidth="720"
         MinHeight="460"
+        Background="{DynamicResource Theme.WindowBackgroundBrush}"
         WindowStartupLocation="CenterOwner">
     <Window.Resources>
         <Style x:Key="SettingsActionButtonStyle" TargetType="{x:Type Button}">
@@ -67,7 +68,8 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="12">
+    <Grid Margin="12"
+          Background="{DynamicResource Theme.WindowBackgroundBrush}">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="180" />
             <ColumnDefinition Width="10" />
@@ -92,6 +94,7 @@
                 <ListBoxItem Content="Keyboard Shortcuts" />
                 <ListBoxItem Content="Resource Comparison" />
                 <ListBoxItem Content="Workbench" />
+                <ListBoxItem Content="Appearance" />
                 <ListBoxItem Content="Persistence" />
                 <ListBoxItem Content="Diagnostics" />
             </ListBox>
@@ -101,7 +104,7 @@
                       Width="5"
                       HorizontalAlignment="Center"
                       VerticalAlignment="Stretch"
-                      Background="#D7DCE2" />
+                      Background="{DynamicResource Theme.BorderBrush}" />
 
         <Grid Grid.Column="2">
             <Grid x:Name="CodeWindowSettingsPanel">
@@ -141,12 +144,12 @@
                                         BorderThickness="1" />
                                 <TextBlock Grid.Column="2"
                                            VerticalAlignment="Center"
-                                           Foreground="#4B5563"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                            Text="{Binding Backcolor}" />
                                 <TextBlock Grid.Column="3"
                                            Margin="10,0,0,0"
                                            VerticalAlignment="Center"
-                                           Foreground="#4B5563"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                            Text="{Binding Language}" />
                             </Grid>
                         </DataTemplate>
@@ -197,7 +200,7 @@
                 <DockPanel Grid.Row="3" Margin="0,12,0,0">
                     <TextBlock x:Name="ValidationText"
                                VerticalAlignment="Center"
-                               Foreground="#B91C1C" />
+                               Foreground="{DynamicResource Theme.ErrorTextBrush}" />
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Width="80"
                                 Margin="0,0,8,0"
@@ -228,6 +231,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -264,7 +268,7 @@
                                         BorderThickness="1" />
                                 <TextBlock Grid.Column="3"
                                            VerticalAlignment="Center"
-                                           Foreground="#4B5563"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                            Text="{Binding Foreground}" />
                             </Grid>
                         </DataTemplate>
@@ -390,7 +394,7 @@
                 <DockPanel Grid.Row="3" Margin="0,12,0,0">
                     <TextBlock x:Name="HighlightValidationText"
                                VerticalAlignment="Center"
-                               Foreground="#B91C1C" />
+                               Foreground="{DynamicResource Theme.ErrorTextBrush}" />
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Width="96"
                                 Margin="0,0,8,0"
@@ -412,6 +416,7 @@
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock FontSize="14"
@@ -426,26 +431,37 @@
                         <DataTemplate>
                             <Grid MinHeight="30" Margin="0,2">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="170" />
-                                    <ColumnDefinition Width="80" />
-                                    <ColumnDefinition Width="160" />
+                                    <ColumnDefinition Width="44" />
+                                    <ColumnDefinition Width="150" />
+                                    <ColumnDefinition Width="92" />
+                                    <ColumnDefinition Width="130" />
+                                    <ColumnDefinition Width="130" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock VerticalAlignment="Center"
-                                           FontWeight="SemiBold"
-                                           Text="{Binding Name}" />
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                                           Text="{Binding SortOrder}" />
                                 <TextBlock Grid.Column="1"
                                            VerticalAlignment="Center"
-                                           Foreground="#4B5563"
-                                           Text="{Binding MatchTarget}" />
+                                           FontWeight="SemiBold"
+                                           Text="{Binding Name}" />
                                 <TextBlock Grid.Column="2"
                                            VerticalAlignment="Center"
-                                           Foreground="#4B5563"
-                                           Text="{Binding Regex}"
-                                           TextTrimming="CharacterEllipsis" />
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                                           Text="{Binding ResourceTypeFilter}" />
                                 <TextBlock Grid.Column="3"
                                            VerticalAlignment="Center"
-                                           Foreground="#4B5563"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                                           Text="{Binding NameRegex}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="4"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                                           Text="{Binding ContentRegex}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="5"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                            Text="{Binding OriginalFileName}" />
                             </Grid>
                         </DataTemplate>
@@ -454,12 +470,14 @@
 
                 <Grid Grid.Row="2">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="92" />
-                        <ColumnDefinition Width="170" />
-                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="104" />
+                        <ColumnDefinition Width="210" />
+                        <ColumnDefinition Width="104" />
+                        <ColumnDefinition Width="130" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -470,11 +488,26 @@
                              Grid.Column="1"
                              Height="26"
                              TextChanged="DiagramImageNameTextBox_TextChanged" />
+                    <TextBlock Grid.Column="2"
+                               Margin="12,0,0,0"
+                               VerticalAlignment="Center"
+                               Text="Resource" />
+                    <ComboBox x:Name="DiagramImageResourceTypeComboBox"
+                              Grid.Column="3"
+                              Height="26"
+                              SelectionChanged="DiagramImageResourceTypeComboBox_SelectionChanged">
+                        <ComboBoxItem Content="Any" />
+                        <ComboBoxItem Content="File" />
+                        <ComboBoxItem Content="Folder" />
+                        <ComboBoxItem Content="Database" />
+                        <ComboBoxItem Content="Diagram" />
+                    </ComboBox>
                     <Button x:Name="ImportDiagramImageButton"
-                            Grid.Column="2"
+                            Grid.Column="4"
                             Width="94"
                             Height="26"
                             Margin="8,0,0,0"
+                            HorizontalAlignment="Left"
                             Style="{StaticResource SettingsPrimaryButtonStyle}"
                             Click="ImportDiagramImageButton_Click"
                             Content="Import" />
@@ -482,79 +515,108 @@
                     <TextBlock Grid.Row="1"
                                Margin="0,10,0,0"
                                VerticalAlignment="Center"
-                               Text="Regex" />
-                    <TextBox x:Name="DiagramImageRegexTextBox"
+                               Text="Name Regex" />
+                    <TextBox x:Name="DiagramImageNameRegexTextBox"
                              Grid.Row="1"
                              Grid.Column="1"
+                             Grid.ColumnSpan="4"
                              Height="26"
                              Margin="0,10,0,0"
-                             TextChanged="DiagramImageRegexTextBox_TextChanged" />
-                    <ComboBox x:Name="DiagramImageMatchTargetComboBox"
-                              Grid.Row="1"
-                              Grid.Column="2"
-                              Width="94"
-                              Height="26"
-                              Margin="8,10,0,0"
-                              SelectionChanged="DiagramImageMatchTargetComboBox_SelectionChanged">
-                        <ComboBoxItem Content="Name" />
-                        <ComboBoxItem Content="Content" />
-                    </ComboBox>
+                             TextChanged="DiagramImageNameRegexTextBox_TextChanged" />
 
                     <TextBlock Grid.Row="2"
                                Margin="0,10,0,0"
+                               VerticalAlignment="Center"
+                               Text="Content Regex" />
+                    <TextBox x:Name="DiagramImageContentRegexTextBox"
+                             Grid.Row="2"
+                             Grid.Column="1"
+                             Grid.ColumnSpan="4"
+                             Height="26"
+                             Margin="0,10,0,0"
+                             TextChanged="DiagramImageContentRegexTextBox_TextChanged" />
+
+                    <TextBlock Grid.Row="3"
+                               Margin="0,10,0,0"
                                VerticalAlignment="Top"
                                Text="Preview" />
-                    <Border Grid.Row="2"
+                    <Border Grid.Row="3"
                             Grid.Column="1"
-                            Grid.ColumnSpan="3"
+                            Grid.ColumnSpan="4"
                             Width="150"
                             Height="92"
                             Margin="0,10,0,0"
                             HorizontalAlignment="Left"
-                            BorderBrush="#CBD5E1"
+                            BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
                             BorderThickness="1"
-                            Background="#F8FAFC">
+                            Background="{DynamicResource Theme.SurfaceAltBrush}">
                         <Image x:Name="DiagramImagePreview"
                                Margin="6"
                                Stretch="Uniform" />
                     </Border>
                     <TextBlock x:Name="DiagramImageFileText"
-                               Grid.Row="2"
+                               Grid.Row="3"
                                Grid.Column="1"
-                               Grid.ColumnSpan="3"
+                               Grid.ColumnSpan="4"
                                Margin="164,10,0,0"
                                VerticalAlignment="Top"
-                               Foreground="#4B5563"
+                               Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                TextWrapping="Wrap" />
                 </Grid>
 
-                <DockPanel Grid.Row="3" Margin="0,12,0,0">
-                    <TextBlock x:Name="DiagramImageValidationText"
-                               VerticalAlignment="Center"
-                               Foreground="#B91C1C" />
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                        <Button Width="80"
-                                Margin="0,0,8,0"
-                                Style="{StaticResource SettingsPrimaryButtonStyle}"
-                                Click="AddDiagramImageButton_Click"
-                                Content="Add" />
-                        <Button x:Name="RemoveDiagramImageButton"
-                                Width="80"
-                                Margin="0,0,8,0"
-                                Style="{StaticResource SettingsDangerButtonStyle}"
-                                Click="RemoveDiagramImageButton_Click"
-                                Content="Remove" />
-                        <Button Width="96"
-                                Margin="0,0,8,0"
-                                Style="{StaticResource SettingsSaveButtonStyle}"
-                                Click="SaveDiagramImagesButton_Click"
-                                Content="Save" />
-                        <Button Width="86"
-                                Style="{StaticResource SettingsCloseButtonStyle}"
-                                Click="CloseButton_Click"
-                                Content="Close" />
-                    </StackPanel>
-                </DockPanel>
+                <TextBlock x:Name="DiagramImageValidationText"
+                           Grid.Row="3"
+                           Margin="0,12,0,0"
+                           Foreground="{DynamicResource Theme.ErrorTextBrush}"
+                           TextWrapping="Wrap" />
+                <WrapPanel Grid.Row="4"
+                           Margin="0,10,0,0"
+                           HorizontalAlignment="Right">
+                    <Button x:Name="ExportDiagramImagePackageButton"
+                            Width="112"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="ExportDiagramImagePackageButton_Click"
+                            Content="Export Package" />
+                    <Button x:Name="ImportDiagramImagePackageButton"
+                            Width="112"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="ImportDiagramImagePackageButton_Click"
+                            Content="Import Package" />
+                    <Button Width="80"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="AddDiagramImageButton_Click"
+                            Content="Add" />
+                    <Button x:Name="MoveDiagramImageUpButton"
+                            Width="70"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="MoveDiagramImageUpButton_Click"
+                            Content="Up" />
+                    <Button x:Name="MoveDiagramImageDownButton"
+                            Width="70"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsPrimaryButtonStyle}"
+                            Click="MoveDiagramImageDownButton_Click"
+                            Content="Down" />
+                    <Button x:Name="RemoveDiagramImageButton"
+                            Width="80"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsDangerButtonStyle}"
+                            Click="RemoveDiagramImageButton_Click"
+                            Content="Remove" />
+                    <Button Width="96"
+                            Margin="0,0,8,0"
+                            Style="{StaticResource SettingsSaveButtonStyle}"
+                            Click="SaveDiagramImagesButton_Click"
+                            Content="Save" />
+                    <Button Width="86"
+                            Style="{StaticResource SettingsCloseButtonStyle}"
+                            Click="CloseButton_Click"
+                            Content="Close" />
+                </WrapPanel>
             </Grid>
 
             <Grid x:Name="PersistenceSettingsPanel"
@@ -573,7 +635,7 @@
                 <TextBlock x:Name="ConnectionOverrideText"
                            Grid.Row="1"
                            Margin="0,8,0,0"
-                           Foreground="#4B5563"
+                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
                            TextWrapping="Wrap" />
 
                 <Grid Grid.Row="2" Margin="0,12,0,0">
@@ -629,9 +691,9 @@
                     <Border Grid.Row="4"
                             Margin="0,14,0,0"
                             Padding="10"
-                            BorderBrush="#D7DCE2"
+                            BorderBrush="{DynamicResource Theme.BorderBrush}"
                             BorderThickness="1"
-                            Background="#F8FAFC">
+                            Background="{DynamicResource Theme.SurfaceAltBrush}">
                         <TextBlock TextWrapping="Wrap">
                             <Run Text="Connection changes are used the next time Surf2 starts. " />
                             <Run Text="The environment variable SURF2_CONNECTION_STRING overrides this local setting when it is present." />
@@ -642,7 +704,7 @@
                 <DockPanel Grid.Row="3" Margin="0,12,0,0">
                     <TextBlock x:Name="PersistenceValidationText"
                                VerticalAlignment="Center"
-                               Foreground="#4B5563"
+                               Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                TextWrapping="Wrap" />
                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                         <Button Width="96"
@@ -716,9 +778,9 @@
                 <Border Grid.Row="2"
                         Margin="0,14,0,0"
                         Padding="10"
-                        BorderBrush="#D7DCE2"
+                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                         BorderThickness="1"
-                        Background="#F8FAFC">
+                        Background="{DynamicResource Theme.SurfaceAltBrush}">
                     <TextBlock TextWrapping="Wrap"
                                Text="These shortcuts control mouse-driven navigation helpers. Standard left-drag canvas panning and normal editor scrolling remain available." />
                 </Border>
@@ -729,6 +791,51 @@
                                 Margin="0,0,8,0"
                                 Style="{StaticResource SettingsSaveButtonStyle}"
                                 Click="SaveKeyboardShortcutSettingsButton_Click"
+                                Content="Save" />
+                        <Button Width="86"
+                                Style="{StaticResource SettingsCloseButtonStyle}"
+                                Click="CloseButton_Click"
+                                Content="Close" />
+                    </StackPanel>
+                </DockPanel>
+            </Grid>
+
+            <Grid x:Name="AppearanceSettingsPanel"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock FontSize="14"
+                           FontWeight="SemiBold"
+                           Text="Appearance" />
+
+                <Grid Grid.Row="1"
+                      Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="88" />
+                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center"
+                               Text="Theme" />
+                    <ComboBox x:Name="AppearanceThemeComboBox"
+                              Grid.Column="1"
+                              Height="26">
+                        <ComboBoxItem Content="Light" />
+                        <ComboBoxItem Content="Dark" />
+                    </ComboBox>
+                </Grid>
+
+                <DockPanel Grid.Row="3" Margin="0,12,0,0">
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                        <Button Width="96"
+                                Margin="0,0,8,0"
+                                Style="{StaticResource SettingsSaveButtonStyle}"
+                                Click="SaveAppearanceSettingsButton_Click"
                                 Content="Save" />
                         <Button Width="86"
                                 Style="{StaticResource SettingsCloseButtonStyle}"
@@ -796,9 +903,9 @@
                 <Border Grid.Row="2"
                         Margin="0,14,0,0"
                         Padding="10"
-                        BorderBrush="#D7DCE2"
+                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                         BorderThickness="1"
-                        Background="#F8FAFC">
+                        Background="{DynamicResource Theme.SurfaceAltBrush}">
                     <TextBlock TextWrapping="Wrap"
                                Text="When enabled, Surf2 starts from your newest explicitly saved Workbench. When disabled, Surf2 starts in its default empty state." />
                 </Border>
@@ -839,9 +946,9 @@
                 <Border Grid.Row="2"
                         Margin="0,14,0,0"
                         Padding="10"
-                        BorderBrush="#D7DCE2"
+                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                         BorderThickness="1"
-                        Background="#F8FAFC">
+                        Background="{DynamicResource Theme.SurfaceAltBrush}">
                     <TextBlock TextWrapping="Wrap"
                                Text="When enabled, Surf2 writes internal diagnostic logs to an internal-logs folder beside the app or to the per-user fallback location if that folder is not writable." />
                 </Border>

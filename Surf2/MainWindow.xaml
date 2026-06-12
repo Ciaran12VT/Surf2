@@ -11,7 +11,7 @@
         Height="780"
         MinWidth="960"
         MinHeight="600"
-        Background="#F6F7F9"
+        Background="{DynamicResource Theme.WindowBackgroundBrush}"
         Closing="Window_Closing"
         Icon="Assets/surf2_icon.ico"
         Loaded="Window_Loaded">
@@ -113,7 +113,7 @@
         <Style x:Key="ExplorerTabPinToggleStyle" TargetType="{x:Type ToggleButton}">
             <Setter Property="Width" Value="18" />
             <Setter Property="Height" Value="18" />
-            <Setter Property="Foreground" Value="#6B7280" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.MutedTextBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
@@ -133,12 +133,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E5E7EB" />
-                                <Setter Property="Foreground" Value="#1F2937" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ButtonChromeHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#DBEAFE" />
-                                <Setter Property="Foreground" Value="#1D4ED8" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.SelectionBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -149,7 +149,7 @@
         <Style x:Key="PreviewHeaderIconButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Width" Value="24" />
             <Setter Property="Height" Value="24" />
-            <Setter Property="Foreground" Value="#4B5563" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.SubtleTextBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
@@ -169,11 +169,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E5E7EB" />
-                                <Setter Property="Foreground" Value="#111827" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ButtonChromeHoverBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#D1D5DB" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ButtonChromePressedBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -220,8 +220,8 @@
         <Style x:Key="SettingsCogButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Width" Value="32" />
             <Setter Property="Height" Value="32" />
-            <Setter Property="Foreground" Value="#1F2937" />
-            <Setter Property="Background" Value="#F3F4F6" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource Theme.ButtonChromeBrush}" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
@@ -238,10 +238,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E5E7EB" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ButtonChromeHoverBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#D1D5DB" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ButtonChromePressedBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -264,10 +264,10 @@
                                           RecognizesAccessKey="True" />
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Foreground" Value="#4B5563" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.SubtleTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter Property="Foreground" Value="Black" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
                                 <Setter Property="FontWeight" Value="Bold" />
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -277,7 +277,7 @@
         </Style>
 
         <Style x:Key="ViewModeToggleStyle" TargetType="{x:Type ToggleButton}">
-            <Setter Property="Foreground" Value="#9CA3AF" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.MutedTextBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
@@ -292,10 +292,10 @@
                                           RecognizesAccessKey="True" />
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Foreground" Value="#4B5563" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.SubtleTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter Property="Foreground" Value="Black" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
                                 <Setter Property="FontWeight" Value="Bold" />
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -307,8 +307,8 @@
         <Style x:Key="DiagramToolToggleButtonStyle" TargetType="{x:Type ToggleButton}">
             <Setter Property="Width" Value="30" />
             <Setter Property="Height" Value="26" />
-            <Setter Property="Background" Value="#FFFFFF" />
-            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="Background" Value="{DynamicResource Theme.SurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.StrongBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -325,12 +325,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E0ECFF" />
-                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#93C5FD" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ToolButtonHoverBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource Theme.ToolButtonHoverBorderBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#BFDBFE" />
-                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#2563EB" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ToolButtonCheckedBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource Theme.ToolButtonCheckedBorderBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -341,8 +341,8 @@
         <Style x:Key="DiagramToolButtonStyle" TargetType="{x:Type Button}">
             <Setter Property="Width" Value="42" />
             <Setter Property="Height" Value="26" />
-            <Setter Property="Background" Value="#FFFFFF" />
-            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="Background" Value="{DynamicResource Theme.SurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.StrongBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -359,12 +359,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E0ECFF" />
-                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#93C5FD" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ToolButtonHoverBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource Theme.ToolButtonHoverBorderBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#BFDBFE" />
-                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#2563EB" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ToolButtonCheckedBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource Theme.ToolButtonCheckedBorderBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -373,9 +373,9 @@
         </Style>
 
         <Style x:Key="WorkflowSidebarToggleStyle" TargetType="{x:Type ToggleButton}">
-            <Setter Property="Foreground" Value="#111827" />
-            <Setter Property="Background" Value="#FFFFFF" />
-            <Setter Property="BorderBrush" Value="#CBD5E1" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
+            <Setter Property="Background" Value="{DynamicResource Theme.SurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Theme.StrongBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -393,12 +393,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#E0ECFF" />
-                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#93C5FD" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ToolButtonHoverBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource Theme.ToolButtonHoverBorderBrush}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="ButtonChrome" Property="Background" Value="#BFDBFE" />
-                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="#2563EB" />
+                                <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.ToolButtonCheckedBrush}" />
+                                <Setter TargetName="ButtonChrome" Property="BorderBrush" Value="{DynamicResource Theme.ToolButtonCheckedBorderBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -471,9 +471,9 @@
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0"
-                BorderBrush="#D7DCE2"
+                BorderBrush="{DynamicResource Theme.BorderBrush}"
                 BorderThickness="0,0,0,1"
-                Background="#FFFFFF">
+                Background="{DynamicResource Theme.SurfaceBrush}">
             <DockPanel Margin="10,8">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <ComboBox x:Name="WorkbenchSelector"
@@ -576,21 +576,21 @@
                                     <ColumnDefinition Width="3" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <Border Background="#FFFFFF" />
+                                <Border Background="{DynamicResource Theme.SurfaceBrush}" />
                                 <Border Grid.Column="1"
                                         Background="#374151" />
                                 <Border Grid.Column="2"
-                                        Background="#D1D5DB" />
+                                        Background="{DynamicResource Theme.InactiveCanvasBrush}" />
                             </Grid>
                             <Ellipse Fill="Transparent"
-                                     Stroke="#6B7280"
+                                     Stroke="{DynamicResource Theme.MutedTextBrush}"
                                      StrokeThickness="1" />
                         </Grid>
                     </Button>
                 </StackPanel>
                 <TextBlock Margin="14,0,0,0"
                            VerticalAlignment="Center"
-                           Foreground="#4B5563"
+                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
                            Text="{Binding CurrentFolderDisplay}" />
             </DockPanel>
         </Border>
@@ -603,9 +603,9 @@
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0"
-                    BorderBrush="#D7DCE2"
+                    BorderBrush="{DynamicResource Theme.BorderBrush}"
                     BorderThickness="0,0,1,0"
-                    Background="#FFFFFF">
+                    Background="{DynamicResource Theme.SurfaceBrush}">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -615,16 +615,16 @@
                         <RowDefinition Height="2*" MinHeight="90" />
                     </Grid.RowDefinitions>
                     <Border Grid.Row="0"
-                            BorderBrush="#E4E7EB"
+                            BorderBrush="{DynamicResource Theme.BorderBrush}"
                             BorderThickness="0,0,0,1"
                             Padding="10,8">
                         <TextBlock FontSize="13"
                                    FontWeight="SemiBold"
-                                   Foreground="#1F2937"
+                                   Foreground="{DynamicResource Theme.TextBrush}"
                                    Text="Object Explorer" />
                     </Border>
                     <Border Grid.Row="1"
-                            BorderBrush="#E4E7EB"
+                            BorderBrush="{DynamicResource Theme.BorderBrush}"
                             BorderThickness="0,0,0,1"
                             Padding="8,6">
                         <Grid>
@@ -690,14 +690,15 @@
                             </TreeView.ItemContainerStyle>
                         </TreeView>
                         <Grid x:Name="ObjectExplorerLoadingOverlay"
-                              Background="#BFFFFFFF"
+                              Background="{DynamicResource Theme.OverlayBrush}"
                               Visibility="Collapsed">
-                            <Border Width="190"
+                            <Border MinWidth="190"
+                                    MaxWidth="280"
                                     Padding="16,14"
                                     HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
-                                    Background="White"
-                                    BorderBrush="#D8DEE8"
+                                    Background="{DynamicResource Theme.SurfaceBrush}"
+                                    BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
                                     BorderThickness="1"
                                     CornerRadius="10">
                                 <StackPanel HorizontalAlignment="Center">
@@ -712,10 +713,10 @@
                                                  Height="30"
                                                  HorizontalAlignment="Center"
                                                  VerticalAlignment="Center"
-                                                 Stroke="#D7DCE2"
+                                                 Stroke="{DynamicResource Theme.BorderBrush}"
                                                  StrokeThickness="4" />
                                         <Path Data="M17,2 A15,15 0 0 1 32,17"
-                                              Stroke="#2563EB"
+                                              Stroke="{DynamicResource Theme.AccentBrush}"
                                               StrokeEndLineCap="Round"
                                               StrokeStartLineCap="Round"
                                               StrokeThickness="4" />
@@ -738,8 +739,19 @@
                                                HorizontalAlignment="Center"
                                                FontSize="12"
                                                FontWeight="SemiBold"
-                                               Foreground="#1F2937"
+                                               Foreground="{DynamicResource Theme.TextBrush}"
                                                Text="Loading resources..." />
+                                    <TextBlock x:Name="ObjectExplorerLoadingDetailText"
+                                               MaxWidth="240"
+                                               MaxHeight="48"
+                                               Margin="0,4,0,0"
+                                               HorizontalAlignment="Center"
+                                               FontSize="11"
+                                               Foreground="{DynamicResource Theme.MutedTextBrush}"
+                                               TextAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               TextWrapping="Wrap"
+                                               Visibility="Collapsed" />
                                 </StackPanel>
                             </Border>
                         </Grid>
@@ -748,12 +760,12 @@
                                   Height="5"
                                   HorizontalAlignment="Stretch"
                                   VerticalAlignment="Stretch"
-                                  Background="#D7DCE2"
+                                  Background="{DynamicResource Theme.BorderBrush}"
                                   ResizeBehavior="PreviousAndNext"
                                   ResizeDirection="Rows" />
                     <TabControl x:Name="ExplorerDetailTabs"
                                 Grid.Row="4"
-                                BorderBrush="#E4E7EB"
+                                BorderBrush="{DynamicResource Theme.BorderBrush}"
                                 BorderThickness="0,1,0,0">
                         <TabItem x:Name="OpenWindowsTabItem">
                             <TabItem.Header>
@@ -775,9 +787,9 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <Border Grid.Row="0"
-                                        BorderBrush="#E4E7EB"
+                                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                                         BorderThickness="0,0,0,1"
-                                        Background="#F8FAFC"
+                                        Background="{DynamicResource Theme.SurfaceAltBrush}"
                                         Padding="8,5">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -787,12 +799,12 @@
                                         </Grid.ColumnDefinitions>
                                         <TextBlock FontSize="11"
                                                    FontWeight="SemiBold"
-                                                   Foreground="#4B5563"
+                                                   Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                                    Text="Name" />
                                         <TextBlock Grid.Column="1"
                                                    FontSize="11"
                                                    FontWeight="SemiBold"
-                                                   Foreground="#4B5563"
+                                                   Foreground="{DynamicResource Theme.SubtleTextBrush}"
                                                    Text="Type" />
                                     </Grid>
                                 </Border>
@@ -817,7 +829,8 @@
                                         </ContextMenu>
                                     </ListBox.ContextMenu>
                                     <ListBox.ItemContainerStyle>
-                                        <Style TargetType="{x:Type ListBoxItem}">
+                                        <Style TargetType="{x:Type ListBoxItem}"
+                                               BasedOn="{StaticResource {x:Type ListBoxItem}}">
                                             <Setter Property="HorizontalContentAlignment"
                                                     Value="Stretch" />
                                             <Setter Property="Padding"
@@ -881,9 +894,9 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <Border Grid.Row="0"
-                                        BorderBrush="#E4E7EB"
+                                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                                         BorderThickness="0,0,0,1"
-                                        Background="#F8FAFC"
+                                        Background="{DynamicResource Theme.SurfaceAltBrush}"
                                         Padding="8,6">
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -894,7 +907,7 @@
                                                    VerticalAlignment="Center"
                                                    FontSize="12"
                                                    FontWeight="SemiBold"
-                                                   Foreground="#1F2937"
+                                                   Foreground="{DynamicResource Theme.TextBrush}"
                                                    Text="No reference selected"
                                                    TextTrimming="CharacterEllipsis" />
                                         <Button x:Name="PreviewPopOutButton"
@@ -908,7 +921,7 @@
                                 </Border>
                                 <Grid Grid.Row="1">
                                     <avalonEdit:TextEditor x:Name="PreviewEditor"
-                                                           Background="#FFFFFF"
+                                                           Background="{DynamicResource Theme.SurfaceBrush}"
                                                            FontFamily="Consolas"
                                                            FontSize="12"
                                                            HorizontalScrollBarVisibility="Auto"
@@ -921,7 +934,7 @@
                                                Margin="14"
                                                HorizontalAlignment="Center"
                                                VerticalAlignment="Center"
-                                               Foreground="#7B8794"
+                                               Foreground="{DynamicResource Theme.MutedTextBrush}"
                                                IsHitTestVisible="False"
                                                Text="Single-click a reference to preview it."
                                                TextAlignment="Center"
@@ -936,9 +949,9 @@
             <GridSplitter Grid.Column="1"
                           Width="5"
                           HorizontalAlignment="Stretch"
-                          Background="#D7DCE2" />
+                          Background="{DynamicResource Theme.BorderBrush}" />
 
-            <Border Grid.Column="2" Background="#EEF1F5">
+            <Border Grid.Column="2" Background="{DynamicResource Theme.PanelBrush}">
                 <Grid x:Name="WorkspaceViewGrid">
                     <Grid.RowDefinitions>
                         <RowDefinition x:Name="CodeViewRow" Height="*" MinHeight="140" />
@@ -963,9 +976,9 @@
                         </Grid.RowDefinitions>
 
                         <Border Grid.Row="0"
-                                BorderBrush="#D7DCE2"
+                                BorderBrush="{DynamicResource Theme.BorderBrush}"
                                 BorderThickness="0,0,0,1"
-                                Background="#FFFFFF">
+                                Background="{DynamicResource Theme.SurfaceBrush}">
                             <DockPanel Margin="10,4">
                                 <StackPanel DockPanel.Dock="Left"
                                             Orientation="Horizontal">
@@ -989,7 +1002,7 @@
                                             Width="1"
                                             Height="22"
                                             Margin="10,0,4,0"
-                                            Background="#CBD5E1" />
+                                            Background="{DynamicResource Theme.StrongBorderBrush}" />
                                     <ToggleButton x:Name="ReferenceConnectionLinesToggle"
                                                   Width="104"
                                                   Height="23"
@@ -1010,7 +1023,7 @@
                                 <Canvas x:Name="WorkspaceCanvas"
                                         Width="100000"
                                         Height="100000"
-                                        Background="#EEF1F5"
+                                        Background="{DynamicResource Theme.PanelBrush}"
                                         MouseLeftButtonDown="WorkspaceCanvas_MouseLeftButtonDown"
                                         MouseLeftButtonUp="WorkspaceCanvas_MouseLeftButtonUp"
                                         MouseMove="WorkspaceCanvas_MouseMove"
@@ -1030,14 +1043,14 @@
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
                                        FontSize="18"
-                                       Foreground="#7B8794"
+                                       Foreground="{DynamicResource Theme.MutedTextBrush}"
                                        IsHitTestVisible="False"
                                        Text="Open a folder, then double-click a file to view it." />
                             <TextBlock x:Name="EmptyCodeTabsHint"
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
                                        FontSize="18"
-                                       Foreground="#7B8794"
+                                       Foreground="{DynamicResource Theme.MutedTextBrush}"
                                        IsHitTestVisible="False"
                                        Text="Open a folder, then double-click a file to view it."
                                        Visibility="Collapsed" />
@@ -1050,7 +1063,7 @@
                                   Height="5"
                                   HorizontalAlignment="Stretch"
                                   VerticalAlignment="Stretch"
-                                  Background="#D7DCE2"
+                                  Background="{DynamicResource Theme.BorderBrush}"
                                   ResizeBehavior="PreviousAndNext"
                                   ResizeDirection="Rows"
                                   Visibility="Collapsed" />
@@ -1080,9 +1093,9 @@
                             </Grid.RowDefinitions>
 
                             <Border Grid.Row="0"
-                                    BorderBrush="#D7DCE2"
+                                    BorderBrush="{DynamicResource Theme.BorderBrush}"
                                     BorderThickness="0,0,0,1"
-                                    Background="#FFFFFF">
+                                    Background="{DynamicResource Theme.SurfaceBrush}">
                                 <DockPanel Margin="10,4" LastChildFill="True">
                                     <StackPanel DockPanel.Dock="Right"
                                                 Orientation="Horizontal">
@@ -1114,9 +1127,9 @@
                                                 ToolTip="Export the diagram">
                                             <Button.ContextMenu>
                                                 <ContextMenu Padding="4"
-                                                             BorderBrush="#CBD5E1"
+                                                             BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
                                                              BorderThickness="1"
-                                                             Background="#FFFFFF">
+                                                             Background="{DynamicResource Theme.SurfaceBrush}">
                                                     <Button Width="116"
                                                             Height="28"
                                                             Margin="0,0,0,4"
@@ -1193,7 +1206,7 @@
                                         <Rectangle Width="16"
                                                    Height="12"
                                                    Fill="Transparent"
-                                                   Stroke="#111827"
+                                                   Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                    StrokeDashArray="2,2"
                                                    StrokeThickness="1.6" />
                                     </ToggleButton>
@@ -1207,7 +1220,7 @@
                                                    Fill="Transparent"
                                                    RadiusX="1"
                                                    RadiusY="1"
-                                                   Stroke="#111827"
+                                                   Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                    StrokeThickness="2" />
                                     </ToggleButton>
                                     <ToggleButton x:Name="DiagramEllipseToolButton"
@@ -1218,7 +1231,7 @@
                                         <Ellipse Width="15"
                                                  Height="13"
                                                  Fill="Transparent"
-                                                 Stroke="#111827"
+                                                 Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                  StrokeThickness="2" />
                                     </ToggleButton>
                                     <ToggleButton x:Name="DiagramImageToolButton"
@@ -1241,23 +1254,23 @@
                                                   HorizontalAlignment="Center"
                                                   VerticalAlignment="Center">
                                                 <Rectangle Fill="Transparent"
-                                                           Stroke="#111827"
+                                                           Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                            StrokeThickness="1.6" />
                                                 <Polygon Points="2,12 6,7 9,10 12,5 15,12"
-                                                         Fill="#111827" />
+                                                         Fill="{DynamicResource Theme.IconStrokeBrush}" />
                                                 <Ellipse Width="3"
                                                          Height="3"
                                                          Margin="3,2,0,0"
                                                          HorizontalAlignment="Left"
                                                          VerticalAlignment="Top"
-                                                         Fill="#111827" />
+                                                         Fill="{DynamicResource Theme.IconStrokeBrush}" />
                                             </Grid>
                                             <Polygon Grid.Column="1"
                                                      Width="5"
                                                      Height="3"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="#4B5563"
+                                                     Fill="{DynamicResource Theme.SubtleTextBrush}"
                                                      Points="0,0 5,0 2.5,3" />
                                         </Grid>
                                     </ToggleButton>
@@ -1289,7 +1302,7 @@
                                                       Y1="11"
                                                       X2="15"
                                                       Y2="3"
-                                                      Stroke="#111827"
+                                                      Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                       StrokeThickness="2"
                                                       StrokeStartLineCap="Round"
                                                       StrokeEndLineCap="Round" />
@@ -1299,7 +1312,7 @@
                                                      Height="3"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="#4B5563"
+                                                     Fill="{DynamicResource Theme.SubtleTextBrush}"
                                                      Points="0,0 5,0 2.5,3" />
                                         </Grid>
                                     </ToggleButton>
@@ -1314,20 +1327,20 @@
                                                   Y1="14"
                                                   X2="9"
                                                   Y2="5"
-                                                  Stroke="#111827"
+                                                  Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                   StrokeThickness="1.5" />
                                             <Rectangle Canvas.Left="8"
                                                        Canvas.Top="2"
                                                        Width="14"
                                                        Height="10"
                                                        Fill="Transparent"
-                                                       Stroke="#111827"
+                                                       Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                        StrokeThickness="1.5" />
                                             <TextBlock Canvas.Left="11"
                                                        Canvas.Top="1"
                                                        FontSize="9"
                                                        FontWeight="Bold"
-                                                       Foreground="#111827"
+                                                       Foreground="{DynamicResource Theme.TextBrush}"
                                                        Text="T" />
                                                 </Canvas>
                                     </ToggleButton>
@@ -1343,14 +1356,14 @@
                                                      Height="16"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="#E5E7EB"
-                                                     Stroke="#111827"
+                                                     Fill="{DynamicResource Theme.ButtonChromeHoverBrush}"
+                                                     Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                      StrokeThickness="1.6" />
                                             <Ellipse Width="6"
                                                      Height="6"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="#111827" />
+                                                     Fill="{DynamicResource Theme.IconStrokeBrush}" />
                                         </Grid>
                                     </ToggleButton>
                                     <ToggleButton x:Name="DiagramInfoPointToolButton"
@@ -1364,22 +1377,22 @@
                                                      Height="16"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="White"
-                                                     Stroke="#111827"
+                                                     Fill="{DynamicResource Theme.SurfaceBrush}"
+                                                     Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                      StrokeThickness="1.6" />
                                             <TextBlock Margin="0,-1,0,0"
                                                        HorizontalAlignment="Center"
                                                        VerticalAlignment="Center"
                                                        FontSize="12"
                                                        FontWeight="Bold"
-                                                       Foreground="#111827"
+                                                       Foreground="{DynamicResource Theme.TextBrush}"
                                                        Text="i" />
                                         </Grid>
                                     </ToggleButton>
                                     <Border Width="1"
                                             Height="22"
                                             Margin="10,0,4,0"
-                                            Background="#CBD5E1" />
+                                            Background="{DynamicResource Theme.StrongBorderBrush}" />
                                     <Button x:Name="DiagramOutlineColorButton"
                                             Margin="6,0,0,0"
                                             Style="{StaticResource DiagramToolButtonStyle}"
@@ -1487,7 +1500,7 @@
                                                      Height="4"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="#4B5563"
+                                                     Fill="{DynamicResource Theme.SubtleTextBrush}"
                                                      Points="0,0 6,0 3,4" />
                                         </Grid>
                                     </Button>
@@ -1598,7 +1611,7 @@
                                                      Height="4"
                                                      HorizontalAlignment="Center"
                                                      VerticalAlignment="Center"
-                                                     Fill="#4B5563"
+                                                     Fill="{DynamicResource Theme.SubtleTextBrush}"
                                                      Points="0,0 6,0 3,4" />
                                         </Grid>
                                     </Button>
@@ -1612,7 +1625,7 @@
                                         <Canvas Width="17"
                                                 Height="17">
                                             <Path Data="M5,7 L5,5.8 C5,3.1 6.7,1.5 8.5,1.5 C10.3,1.5 12,3.1 12,5.8 L12,7"
-                                                  Stroke="#111827"
+                                                  Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                   StrokeThickness="1.8"
                                                   StrokeStartLineCap="Round"
                                                   StrokeEndLineCap="Round" />
@@ -1623,27 +1636,27 @@
                                                        RadiusX="1.4"
                                                        RadiusY="1.4"
                                                        Fill="Transparent"
-                                                       Stroke="#111827"
+                                                       Stroke="{DynamicResource Theme.IconStrokeBrush}"
                                                        StrokeThickness="1.8" />
                                             <Ellipse Canvas.Left="7.2"
                                                      Canvas.Top="10"
                                                      Width="2.6"
                                                      Height="2.6"
-                                                     Fill="#111827" />
+                                                     Fill="{DynamicResource Theme.IconStrokeBrush}" />
                                         </Canvas>
                                     </ToggleButton>
                                     <Border Width="1"
                                             Height="22"
                                             Margin="12,0,8,0"
-                                            Background="#CBD5E1" />
+                                            Background="{DynamicResource Theme.StrongBorderBrush}" />
                                     <TextBlock VerticalAlignment="Center"
-                                               Foreground="#64748B"
+                                               Foreground="{DynamicResource Theme.MutedTextBrush}"
                                                Text="Diagram:" />
                                     <TextBlock MaxWidth="220"
                                                Margin="6,0,0,0"
                                                VerticalAlignment="Center"
                                                FontWeight="SemiBold"
-                                               Foreground="#111827"
+                                               Foreground="{DynamicResource Theme.TextBrush}"
                                                Text="{Binding CurrentDiagramName}"
                                                TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
@@ -1658,7 +1671,7 @@
                                         AllowDrop="True"
                                         Width="100000"
                                         Height="100000"
-                                        Background="#F4F6F8"
+                                        Background="{DynamicResource Theme.ActiveDiagramCanvasBrush}"
                                         DragOver="DiagramCanvas_DragOver"
                                         Drop="DiagramCanvas_Drop"
                                         MouseLeftButtonDown="DiagramCanvas_MouseLeftButtonDown"
@@ -1691,7 +1704,7 @@
                                       Width="5"
                                       HorizontalAlignment="Stretch"
                                       VerticalAlignment="Stretch"
-                                      Background="#D7DCE2"
+                                      Background="{DynamicResource Theme.BorderBrush}"
                                       ResizeBehavior="PreviousAndNext"
                                       ResizeDirection="Columns"
                                       Visibility="Collapsed" />
@@ -1699,9 +1712,9 @@
                         <Border x:Name="DiagramSidebarHost"
                                 Grid.Column="2"
                                 MinWidth="280"
-                                BorderBrush="#D7DCE2"
+                                BorderBrush="{DynamicResource Theme.BorderBrush}"
                                 BorderThickness="1,0,0,0"
-                                Background="#FFFFFF"
+                                Background="{DynamicResource Theme.SurfaceBrush}"
                                 Visibility="Collapsed">
                             <Grid>
                                 <Grid.RowDefinitions>
@@ -1711,9 +1724,9 @@
                                 </Grid.RowDefinitions>
 
                                 <Border Grid.Row="0"
-                                        BorderBrush="#E5E7EB"
+                                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                                         BorderThickness="0,0,0,1"
-                                        Background="#F8FAFC">
+                                        Background="{DynamicResource Theme.SurfaceAltBrush}">
                                     <DockPanel Margin="8,5">
                                         <Button x:Name="CollapseDiagramSidebarButton"
                                                 DockPanel.Dock="Left"
@@ -1726,7 +1739,7 @@
                                         <TextBlock Margin="10,0,0,0"
                                                    VerticalAlignment="Center"
                                                    FontWeight="SemiBold"
-                                                   Foreground="#111827"
+                                                   Foreground="{DynamicResource Theme.TextBrush}"
                                                    Text="Diagram Details" />
                                     </DockPanel>
                                 </Border>
@@ -1758,7 +1771,7 @@
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock VerticalAlignment="Center"
                                                                FontWeight="SemiBold"
-                                                               Foreground="#111827"
+                                                               Foreground="{DynamicResource Theme.TextBrush}"
                                                                Text="Link:" />
                                                     <TextBox x:Name="MetadataLinkTextBox"
                                                              Grid.Column="1"
@@ -1796,7 +1809,7 @@
                                                             Content="Export PDF" />
                                                     <TextBlock VerticalAlignment="Center"
                                                                FontWeight="SemiBold"
-                                                               Foreground="#111827"
+                                                               Foreground="{DynamicResource Theme.TextBrush}"
                                                                Text="Documentation:" />
                                                 </DockPanel>
 
@@ -1872,7 +1885,7 @@
                                                 <RichTextBox x:Name="MetadataDocumentationRichTextBox"
                                                              Grid.Row="3"
                                                              AcceptsTab="True"
-                                                             BorderBrush="#CBD5E1"
+                                                             BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
                                                              BorderThickness="1"
                                                              SelectionChanged="MetadataDocumentationRichTextBox_SelectionChanged"
                                                              VerticalScrollBarVisibility="Auto">
@@ -1883,7 +1896,7 @@
                                                               Height="5"
                                                               HorizontalAlignment="Stretch"
                                                               VerticalAlignment="Stretch"
-                                                              Background="#D7DCE2"
+                                                              Background="{DynamicResource Theme.BorderBrush}"
                                                               ResizeBehavior="PreviousAndNext"
                                                               ResizeDirection="Rows" />
 
@@ -1906,7 +1919,7 @@
                                                                 ToolTip="Add query" />
                                                         <TextBlock VerticalAlignment="Center"
                                                                    FontWeight="SemiBold"
-                                                                   Foreground="#111827"
+                                                                   Foreground="{DynamicResource Theme.TextBrush}"
                                                                    Text="Queries:" />
                                                     </DockPanel>
                                                     <ScrollViewer Grid.Row="1"
@@ -1917,12 +1930,12 @@
                                             </Grid>
 
                                             <Border x:Name="MetadataEditorPlaceholder"
-                                                    Background="#FFFFFF">
+                                                    Background="{DynamicResource Theme.SurfaceBrush}">
                                                 <TextBlock x:Name="MetadataEditorPlaceholderText"
                                                            Margin="18"
                                                            HorizontalAlignment="Center"
                                                            VerticalAlignment="Center"
-                                                           Foreground="#64748B"
+                                                           Foreground="{DynamicResource Theme.MutedTextBrush}"
                                                            Text="Select a diagram object to edit metadata."
                                                            TextWrapping="Wrap"
                                                            TextAlignment="Center" />
@@ -1953,7 +1966,7 @@
                                                                    Margin="12"
                                                                    HorizontalAlignment="Center"
                                                                    VerticalAlignment="Center"
-                                                                   Foreground="#64748B"
+                                                                   Foreground="{DynamicResource Theme.MutedTextBrush}"
                                                                    Text="No workflows for this diagram yet."
                                                                    TextWrapping="Wrap"
                                                                    TextAlignment="Center" />
@@ -1987,7 +2000,7 @@
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock VerticalAlignment="Center"
                                                                FontWeight="SemiBold"
-                                                               Foreground="#111827"
+                                                               Foreground="{DynamicResource Theme.TextBrush}"
                                                                Text="Workflow Name:" />
                                                     <TextBox x:Name="WorkflowNameTextBox"
                                                              Grid.Column="1"
@@ -2014,7 +2027,7 @@
                                                                    Margin="12"
                                                                    HorizontalAlignment="Center"
                                                                    VerticalAlignment="Center"
-                                                                   Foreground="#64748B"
+                                                                   Foreground="{DynamicResource Theme.MutedTextBrush}"
                                                                    Text="No workflow items yet."
                                                                    TextWrapping="Wrap"
                                                                    TextAlignment="Center" />
@@ -2026,9 +2039,9 @@
                                 </TabControl>
 
                                 <Border Grid.Row="2"
-                                        BorderBrush="#E5E7EB"
+                                        BorderBrush="{DynamicResource Theme.BorderBrush}"
                                         BorderThickness="0,1,0,0"
-                                        Background="#F8FAFC">
+                                        Background="{DynamicResource Theme.SurfaceAltBrush}">
                                     <Button x:Name="DiagramSidebarSaveButton"
                                             Width="88"
                                             Height="28"
@@ -2041,17 +2054,87 @@
                             </Grid>
                         </Border>
                     </Grid>
+
+                    <Grid x:Name="MainCanvasLoadingOverlay"
+                          Grid.RowSpan="3"
+                          Grid.ColumnSpan="3"
+                          Panel.ZIndex="100"
+                          Background="{DynamicResource Theme.OverlayBrush}"
+                          Visibility="Visible">
+                        <Border MinWidth="230"
+                                MaxWidth="360"
+                                Padding="20,18"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Background="{DynamicResource Theme.SurfaceBrush}"
+                                BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="10">
+                            <StackPanel HorizontalAlignment="Center">
+                                <Grid Width="42"
+                                      Height="42"
+                                      HorizontalAlignment="Center"
+                                      RenderTransformOrigin="0.5,0.5">
+                                    <Grid.RenderTransform>
+                                        <RotateTransform />
+                                    </Grid.RenderTransform>
+                                    <Ellipse Width="36"
+                                             Height="36"
+                                             HorizontalAlignment="Center"
+                                             VerticalAlignment="Center"
+                                             Stroke="{DynamicResource Theme.BorderBrush}"
+                                             StrokeThickness="4" />
+                                    <Path Data="M21,3 A18,18 0 0 1 39,21"
+                                          Stroke="{DynamicResource Theme.AccentBrush}"
+                                          StrokeEndLineCap="Round"
+                                          StrokeStartLineCap="Round"
+                                          StrokeThickness="4" />
+                                    <Grid.Triggers>
+                                        <EventTrigger RoutedEvent="Loaded">
+                                            <BeginStoryboard>
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                     From="0"
+                                                                     To="360"
+                                                                     Duration="0:0:0.85"
+                                                                     RepeatBehavior="Forever" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </EventTrigger>
+                                    </Grid.Triggers>
+                                </Grid>
+                                <TextBlock x:Name="MainCanvasLoadingText"
+                                           Margin="0,12,0,0"
+                                           HorizontalAlignment="Center"
+                                           FontSize="14"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource Theme.TextBrush}"
+                                           Text="Loading Surf 2.0..." />
+                                <TextBlock x:Name="MainCanvasLoadingDetailText"
+                                           MaxWidth="300"
+                                           MaxHeight="54"
+                                           Margin="0,5,0,0"
+                                           HorizontalAlignment="Center"
+                                           FontSize="12"
+                                           Foreground="{DynamicResource Theme.MutedTextBrush}"
+                                           Text="Loading workspace data..."
+                                           TextAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
                 </Grid>
             </Border>
         </Grid>
 
         <Border Grid.Row="2"
-                BorderBrush="#D7DCE2"
+                BorderBrush="{DynamicResource Theme.BorderBrush}"
                 BorderThickness="0,1,0,0"
-                Background="#FFFFFF">
+                Background="{DynamicResource Theme.SurfaceBrush}">
             <TextBlock Margin="10,0"
                        VerticalAlignment="Center"
-                       Foreground="#4B5563"
+                       Foreground="{DynamicResource Theme.SubtleTextBrush}"
                        Text="{Binding StatusText}" />
         </Border>
     </Grid>

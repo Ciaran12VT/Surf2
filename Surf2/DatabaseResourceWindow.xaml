@@ -6,8 +6,10 @@
         Height="560"
         MinWidth="680"
         MinHeight="500"
+        Background="{DynamicResource Theme.WindowBackgroundBrush}"
         WindowStartupLocation="CenterOwner">
-    <Grid Margin="12">
+    <Grid Margin="12"
+          Background="{DynamicResource Theme.WindowBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -66,9 +68,9 @@
             <Border Grid.Row="1"
                     Margin="0,12,0,0"
                     Padding="12"
-                    BorderBrush="#D7DCE2"
+                    BorderBrush="{DynamicResource Theme.BorderBrush}"
                     BorderThickness="1"
-                    Background="#F8FAFC">
+                    Background="{DynamicResource Theme.SurfaceAltBrush}">
                 <UniformGrid Columns="3">
                     <TextBlock x:Name="StoredProceduresCountText"
                                Margin="0,0,12,8"
@@ -135,7 +137,7 @@
         <DockPanel Grid.Row="3" Margin="0,12,0,0">
             <TextBlock x:Name="StatusTextBlock"
                        VerticalAlignment="Center"
-                       Foreground="#4B5563"
+                       Foreground="{DynamicResource Theme.SubtleTextBrush}"
                        Text="Copy the query, run it in SSMS, copy the result set, then paste it here." />
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button x:Name="AddButton"

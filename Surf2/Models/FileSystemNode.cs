@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Media;
+using Surf2.Services;
 
 namespace Surf2.Models;
 
@@ -44,6 +45,7 @@ public sealed class FileSystemNode
         bool isVirtualFolder = false,
         string? virtualFolderId = null,
         string? scopeResourceId = null,
+        ResourceKind? resourceKind = null,
         bool isScopeResourceRoot = false,
         bool isScopeResourceLoaded = true,
         string? toolTip = null)
@@ -61,6 +63,7 @@ public sealed class FileSystemNode
         ParentKey = string.IsNullOrWhiteSpace(parentKey) ? RootParentKey : parentKey;
         NaturalParentKey = ParentKey;
         IconKind = !exists ? FileSystemNodeIconKind.Missing : iconKind ?? (isDirectory ? FileSystemNodeIconKind.Folder : FileSystemNodeIconKind.File);
+        ResourceKind = resourceKind ?? (isDirectory ? ResourceKind.Folder : ResourceKind.File);
         Name = displayName ?? Path.GetFileName(path);
 
         if (string.IsNullOrWhiteSpace(Name))
@@ -92,6 +95,8 @@ public sealed class FileSystemNode
     public bool IsScopeResourceRoot { get; }
 
     public bool IsScopeResourceLoaded { get; }
+
+    public ResourceKind ResourceKind { get; }
 
     public string? ToolTip { get; }
 
@@ -140,8 +145,8 @@ public sealed class FileSystemNode
         : !Exists || HasUnresolvedQueries
             ? Brushes.Firebrick
             : IsDirectory
-                ? Brushes.Black
-                : Brushes.DimGray;
+                ? AppThemeService.GetBrush(AppThemeService.TextBrushKey)
+                : AppThemeService.GetBrush(AppThemeService.SubtleTextBrushKey);
 
     public void AddLoadingPlaceholder()
     {
