@@ -266,6 +266,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private TextEditor? _previewPopoutEditor;
     private TextBlock? _previewPopoutHeaderText;
     private ReferenceHighlightColorizer? _previewPopoutReferenceHighlightColorizer;
+    private Window? _diagramPopoutWindow;
     private TabItem? _pinnedExplorerDetailTab;
     private int _windowSequence;
     private int _zIndex;
@@ -3696,6 +3697,104 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SetCurrentDiagramIdentity(null, "Unsaved Diagram");
         await RefreshObjectExplorerAfterDiagramChangeAsync();
         StatusText = $"Deleted diagram '{diagramName}' and removed {removedResources} scope reference(s).";
+    }
+
+    private void DiagramPopOutButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_diagramPopoutWindow != null)
+        {
+            if (_diagramPopoutWindow.WindowState == WindowState.Minimized)
+            {
+                _diagramPopoutWindow.WindowState = WindowState.Normal;
+            }
+
+            _diagramPopoutWindow.Activate();
+            return;
+        }
+
+        PopOutDiagramView();
+    }
+
+    private void PopOutDiagramView()
+    {
+        EnsureDiagramViewVisible();
+
+        _diagramPopoutWindow = new Window
+        {
+            Title = $"Diagram View - {CurrentDiagramName}",
+            Owner = this,
+            Width = Math.Max(960, ActualWidth * 0.72),
+            Height = Math.Max(700, ActualHeight * 0.78),
+            MinWidth = 720,
+            MinHeight = 480,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Icon = Icon,
+            DataContext = DataContext
+        };
+        _diagramPopoutWindow.Closing += DiagramPopoutWindow_Closing;
+
+        DetachFromCurrentParent(DiagramViewHost);
+        _diagramPopoutWindow.Content = DiagramViewHost;
+        ApplyWorkspaceViewLayout();
+        UpdateDiagramPopOutButtonState();
+
+        _diagramPopoutWindow.Show();
+        _diagramPopoutWindow.Activate();
+        _ = Dispatcher.BeginInvoke(new Action(RestoreDiagramViewport), DispatcherPriority.ContextIdle);
+        StatusText = "Popped out diagram view.";
+    }
+
+    private void DiagramPopoutWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        RestoreDiagramViewFromPopout(closeWindow: false);
+        StatusText = "Restored diagram view.";
+    }
+
+    private void RestoreDiagramViewFromPopout(bool closeWindow)
+    {
+        Window? popoutWindow = _diagramPopoutWindow;
+        if (popoutWindow == null)
+        {
+            return;
+        }
+
+        popoutWindow.Closing -= DiagramPopoutWindow_Closing;
+        if (ReferenceEquals(popoutWindow.Content, DiagramViewHost))
+        {
+            popoutWindow.Content = null;
+        }
+
+        DetachFromCurrentParent(DiagramViewHost);
+        if (!WorkspaceViewGrid.Children.Contains(DiagramViewHost))
+        {
+            WorkspaceViewGrid.Children.Add(DiagramViewHost);
+        }
+
+        _diagramPopoutWindow = null;
+        UpdateDiagramPopOutButtonState();
+        ApplyWorkspaceViewLayout();
+
+        if (closeWindow && popoutWindow.IsVisible)
+        {
+            popoutWindow.Close();
+        }
+
+        if (DiagramViewToggle?.IsChecked == true)
+        {
+            _ = Dispatcher.BeginInvoke(new Action(RestoreDiagramViewport), DispatcherPriority.ContextIdle);
+        }
+    }
+
+    private void UpdateDiagramPopOutButtonState()
+    {
+        if (DiagramPopOutButton == null)
+        {
+            return;
+        }
+
+        DiagramPopOutButton.ToolTip = _diagramPopoutWindow == null
+            ? "Pop out diagram view"
+            : "Diagram view is popped out";
     }
 
     private async Task<bool> SaveCurrentDiagramAsync(string diagramId, string diagramName)
@@ -16307,18 +16406,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         bool showCode = CodeViewToggle?.IsChecked == true;
         bool showDiagram = DiagramViewToggle?.IsChecked == true;
+        bool showDiagramInMain = showDiagram && _diagramPopoutWindow == null;
 
-        if (!showCode && !showDiagram)
+        if (!showCode && !showDiagramInMain)
         {
             showCode = true;
         }
 
         CodeViewHost.Visibility = showCode ? Visibility.Visible : Visibility.Collapsed;
-        DiagramViewHost.Visibility = showDiagram ? Visibility.Visible : Visibility.Collapsed;
-        UpdateSplitOrientationButton(showCode && showDiagram);
-        UpdateWorkspaceCanvasBackgrounds(showCode, showDiagram);
+        DiagramViewHost.Visibility = _diagramPopoutWindow != null || showDiagram
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        UpdateSplitOrientationButton(showCode && showDiagramInMain);
+        UpdateWorkspaceCanvasBackgrounds(showCode, showDiagramInMain);
 
-        if (showCode && showDiagram)
+        if (showCode && showDiagramInMain)
         {
             ApplySplitWorkspaceLayout();
             EnsureDiagramViewportInitialized();
@@ -16552,8 +16654,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         _activeDiagramId = string.IsNullOrWhiteSpace(diagramId) ? null : diagramId;
         CurrentDiagramName = diagramName;
+        UpdateDiagramPopoutTitle();
         OnPropertyChanged(nameof(CanSaveDiagramAs));
         OnPropertyChanged(nameof(CanDeleteDiagram));
+    }
+
+    private void UpdateDiagramPopoutTitle()
+    {
+        if (_diagramPopoutWindow != null)
+        {
+            _diagramPopoutWindow.Title = $"Diagram View - {CurrentDiagramName}";
+        }
     }
 
     private void EnsureDiagramViewportInitialized()
@@ -17216,6 +17327,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
+            RestoreDiagramViewFromPopout(closeWindow: true);
             CaptureViewportState();
             SyncOpenDocumentStatesFromWindows();
             StatusText = "Saving application state...";

@@ -1172,6 +1172,17 @@
                                                 Click="DeleteDiagramButton_Click"
                                                 Content="Delete"
                                                 IsEnabled="{Binding CanDeleteDiagram}" />
+                                        <Button x:Name="DiagramPopOutButton"
+                                                Width="32"
+                                                Height="26"
+                                                Margin="8,0,0,0"
+                                                Padding="0"
+                                                Background="#111827"
+                                                FontFamily="Segoe MDL2 Assets"
+                                                Style="{StaticResource RoundedToolbarButtonStyle}"
+                                                Click="DiagramPopOutButton_Click"
+                                                Content="&#xE8A7;"
+                                                ToolTip="Pop out diagram view" />
                                     </StackPanel>
                                     <StackPanel DockPanel.Dock="Left"
                                                 Orientation="Horizontal">
