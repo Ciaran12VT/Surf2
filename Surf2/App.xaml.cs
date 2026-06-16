@@ -42,8 +42,19 @@ public partial class App : Application
                     .GetResult();
                 if (response != null)
                 {
-                    Shutdown(response.Success ? 0 : 2);
-                    return;
+                    if (response.Success || response.WasCancelled)
+                    {
+                        Shutdown(response.Success ? 0 : 2);
+                        return;
+                    }
+
+                    InternalLogService.Warning(
+                        "Existing Surf2 instance rejected an external-open request; continuing startup locally.",
+                        ("Message", response.Message),
+                        ("ScopeId", externalOpenRequest.ScopeId),
+                        ("ScopeName", externalOpenRequest.ScopeName),
+                        ("ResourcePath", externalOpenRequest.ResourcePath),
+                        ("ResourceKind", externalOpenRequest.ResourceKind));
                 }
             }
             catch (Exception ex)
@@ -150,7 +161,36 @@ public partial class App : Application
 
         if (externalOpenRequest != null)
         {
-            _ = mainWindow.OpenExternalResourceAsync(externalOpenRequest);
+            _ = OpenStartupExternalResourceAsync(mainWindow, externalOpenRequest);
+        }
+    }
+
+    private static async Task OpenStartupExternalResourceAsync(
+        MainWindow mainWindow,
+        ExternalOpenRequest externalOpenRequest)
+    {
+        try
+        {
+            ExternalOpenResponse response = await mainWindow.OpenExternalResourceAsync(externalOpenRequest);
+            if (!response.Success && !response.WasCancelled)
+            {
+                MessageBox.Show(
+                    mainWindow,
+                    response.Message,
+                    "Open Surf2 resource",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            InternalLogService.Error(ex, "Failed to handle startup external-open request.");
+            MessageBox.Show(
+                mainWindow,
+                $"Could not open the requested Surf2 resource: {ex.Message}",
+                "Open Surf2 resource",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
     }
 
@@ -176,7 +216,19 @@ public partial class App : Application
     {
         Task<ExternalOpenResponse> operation = await mainWindow.Dispatcher.InvokeAsync(() =>
             mainWindow.OpenExternalResourceAsync(request));
-        return await operation;
+        ExternalOpenResponse response = await operation;
+        if (!response.Success && !response.WasCancelled)
+        {
+            await mainWindow.Dispatcher.InvokeAsync(() =>
+                MessageBox.Show(
+                    mainWindow,
+                    response.Message,
+                    "Open Surf2 resource",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning));
+        }
+
+        return response;
     }
 
     private static void Window_Loaded(object sender, RoutedEventArgs e)
