@@ -381,6 +381,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly DispatcherTimer _codeCtrlShiftZoomTimer;
     private readonly DispatcherTimer _diagramShiftPanTimer;
     private readonly DispatcherTimer _diagramCtrlShiftZoomTimer;
+    private readonly TaskCompletionSource<bool> _startupReadyCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public MainWindow()
     {
@@ -558,6 +559,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         finally
         {
             HideMainCanvasLoading();
+            _startupReadyCompletion.TrySetResult(true);
         }
     }
 
@@ -670,6 +672,220 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             RootNodes.Add(node);
         }
+    }
+
+    public async Task<ExternalOpenResponse> OpenExternalResourceAsync(ExternalOpenRequest request)
+    {
+        await _startupReadyCompletion.Task;
+
+        if (request == null || !request.HasTarget)
+        {
+            return ExternalOpenResponse.Fail("External-open request must include a scope and resource path.");
+        }
+
+        if (!_isPersistenceHydrated)
+        {
+            string reason = _persistenceLoadFailureMessage ?? "persistence state was not fully loaded";
+            string message = $"Could not open external Surf resource because {reason}.";
+            StatusText = message;
+            return ExternalOpenResponse.Fail(message);
+        }
+
+        try
+        {
+            ActivateForExternalOpen();
+
+            Scope? targetScope = FindExternalOpenScope(request);
+            if (targetScope == null)
+            {
+                string scopeDisplay = !string.IsNullOrWhiteSpace(request.ScopeName)
+                    ? request.ScopeName
+                    : request.ScopeId;
+                string message = $"Could not find Surf scope '{scopeDisplay}'.";
+                StatusText = message;
+                return ExternalOpenResponse.Fail(message);
+            }
+
+            if (!await PromptAndSaveBeforeExternalOpenAsync(request))
+            {
+                return ExternalOpenResponse.Cancelled("External Surf resource open was cancelled.");
+            }
+
+            await LoadScopeForExternalOpenAsync(targetScope);
+            return await OpenExternalResourceInActiveScopeAsync(request);
+        }
+        catch (Exception ex)
+        {
+            InternalLogService.Error(
+                ex,
+                "Failed to process external-open request.",
+                ("ScopeId", request.ScopeId),
+                ("ScopeName", request.ScopeName),
+                ("ResourcePath", request.ResourcePath),
+                ("ResourceKind", request.ResourceKind));
+            StatusText = $"Could not open external Surf resource: {ex.Message}";
+            return ExternalOpenResponse.Fail(StatusText);
+        }
+    }
+
+    private void ActivateForExternalOpen()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Show();
+        Activate();
+    }
+
+    private Scope? FindExternalOpenScope(ExternalOpenRequest request)
+    {
+        if (!string.IsNullOrWhiteSpace(request.ScopeId))
+        {
+            Scope? scope = _scopeLibrary.Scopes.FirstOrDefault(candidate =>
+                string.Equals(candidate.ScopeId, request.ScopeId, StringComparison.OrdinalIgnoreCase));
+            if (scope != null)
+            {
+                return scope;
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(request.ScopeName)
+            ? null
+            : _scopeLibrary.Scopes.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, request.ScopeName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<bool> PromptAndSaveBeforeExternalOpenAsync(ExternalOpenRequest request)
+    {
+        ExitUnsavedChangesState unsavedChanges = DetectExitUnsavedChanges();
+        if (!unsavedChanges.HasAnyChanges)
+        {
+            return true;
+        }
+
+        MessageBoxResult saveChoice = PromptToSaveBeforeExternalOpen(unsavedChanges, request.DisplayName);
+        if (saveChoice == MessageBoxResult.Cancel)
+        {
+            StatusText = "External Surf resource open cancelled.";
+            return false;
+        }
+
+        return saveChoice != MessageBoxResult.Yes ||
+               await SaveUnsavedChangesForExitAsync(unsavedChanges);
+    }
+
+    private MessageBoxResult PromptToSaveBeforeExternalOpen(
+        ExitUnsavedChangesState unsavedChanges,
+        string resourceDisplayName)
+    {
+        string changeDescription = unsavedChanges switch
+        {
+            { HasDiagramChanges: true, HasWorkbenchChanges: true } => "the diagram and Workbench state",
+            { HasDiagramChanges: true } => "the diagram",
+            { HasWorkbenchChanges: true } => "the Workbench state",
+            _ => "the current state"
+        };
+
+        return MessageBox.Show(
+            this,
+            $"There are unsaved changes to {changeDescription}. Save before opening '{resourceDisplayName}'?\n\nYes saves and opens the requested resource. No opens without saving. Cancel keeps the current workspace open.",
+            "Save before opening resource?",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Warning);
+    }
+
+    private async Task LoadScopeForExternalOpenAsync(Scope targetScope)
+    {
+        bool scopeChanged = _activeScope == null ||
+            !string.Equals(_activeScope.ScopeId, targetScope.ScopeId, StringComparison.OrdinalIgnoreCase);
+
+        if (!scopeChanged)
+        {
+            return;
+        }
+
+        CloseAllOpenWindows();
+        ClearSelectedWorkbench();
+        _scopeLibrary.LastActiveScopeId = targetScope.ScopeId;
+        await SaveScopeLibraryAsync();
+        await SaveWorkspaceStateAsync();
+        await LoadScopeAsync(targetScope);
+    }
+
+    private async Task<ExternalOpenResponse> OpenExternalResourceInActiveScopeAsync(ExternalOpenRequest request)
+    {
+        string resourcePath = request.ResourcePath.Trim();
+        if (TryFocusExternalContainerResource(resourcePath, request.ResourceKind))
+        {
+            return ExternalOpenResponse.Ok(StatusText);
+        }
+
+        if (DiagramDocumentService.IsDiagramDocumentPath(resourcePath))
+        {
+            await OpenDiagramAsync(resourcePath);
+            return ExternalOpenResponse.Ok(StatusText);
+        }
+
+        if (DatabaseDocumentService.IsDatabaseDocumentPath(resourcePath) || File.Exists(resourcePath))
+        {
+            await OpenFileWithRelatedTableDataAsync(
+                resourcePath,
+                targetLineNumber: request.LineNumber,
+                targetColumnNumber: request.ColumnNumber);
+            return ExternalOpenResponse.Ok(StatusText);
+        }
+
+        string message = $"Could not find Surf resource '{request.DisplayName}'.";
+        StatusText = message;
+        return ExternalOpenResponse.Fail(message);
+    }
+
+    private bool TryFocusExternalContainerResource(string resourcePath, string resourceKind)
+    {
+        if (TryFocusInternalContainerLink(resourcePath))
+        {
+            return true;
+        }
+
+        if (_activeScope == null)
+        {
+            return false;
+        }
+
+        if (IsDatabaseContainerKind(resourceKind))
+        {
+            ScopedResource? databaseResource = _activeScope.Resources.FirstOrDefault(resource =>
+                resource.Kind == ResourceKind.DatabaseSnapshot &&
+                DatabaseLinkTargetsScopedResource(resourcePath, resource));
+            if (databaseResource != null)
+            {
+                FocusDatabaseResourceInObjectExplorer(databaseResource);
+                return true;
+            }
+        }
+
+        if (IsFolderContainerKind(resourceKind) &&
+            Directory.Exists(resourcePath) &&
+            IsDirectoryInActiveScope(resourcePath))
+        {
+            FocusFolderInObjectExplorer(resourcePath);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsDatabaseContainerKind(string resourceKind)
+    {
+        return string.Equals(resourceKind, "Database", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(resourceKind, "DatabaseSnapshot", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsFolderContainerKind(string resourceKind)
+    {
+        return string.Equals(resourceKind, "Folder", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ShowMainCanvasLoadingAsync(string message, string detail = "")
