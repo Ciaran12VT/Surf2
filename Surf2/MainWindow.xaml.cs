@@ -419,6 +419,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    public event EventHandler? ActiveScopeChanged;
+
     public ObservableCollection<FileSystemNode> RootNodes { get; } = [];
 
     public ObservableCollection<OpenWindowItem> OpenTabs { get; } = [];
@@ -434,6 +436,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public bool CanSaveDiagramAs => !string.IsNullOrWhiteSpace(_activeDiagramId);
 
     public bool CanDeleteDiagram => !string.IsNullOrWhiteSpace(_activeDiagramId);
+
+    public string ActiveScopeId => _activeScope?.ScopeId ?? string.Empty;
+
+    public string ActiveScopeName => _activeScope?.Name ?? string.Empty;
 
     public string CurrentDiagramName
     {
@@ -613,7 +619,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         int loadVersion = ++_scopeLoadVersion;
         RootNodes.Clear();
         _expandedObjectExplorerNodeKeys.Clear();
-        _activeScope = scope;
+        SetActiveScope(scope);
         ObjectExplorerSearchTextBox.Clear();
 
         if (scope == null)
@@ -706,7 +712,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return ExternalOpenResponse.Fail(message);
             }
 
-            if (!await PromptAndSaveBeforeExternalOpenAsync(request))
+            bool scopeChanged = _activeScope == null ||
+                !string.Equals(_activeScope.ScopeId, targetScope.ScopeId, StringComparison.OrdinalIgnoreCase);
+            if (scopeChanged &&
+                !request.SuppressSavePrompt &&
+                !await PromptAndSaveBeforeExternalOpenAsync(request))
             {
                 return ExternalOpenResponse.Cancelled("External Surf resource open was cancelled.");
             }
@@ -15218,8 +15228,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             await SaveScopeLibraryAsync();
         }
 
-        _activeScope = scope;
+        SetActiveScope(scope);
         return scope;
+    }
+
+    private void SetActiveScope(Scope? scope)
+    {
+        string previousScopeId = _activeScope?.ScopeId ?? string.Empty;
+        string previousScopeName = _activeScope?.Name ?? string.Empty;
+
+        _activeScope = scope;
+
+        string currentScopeId = _activeScope?.ScopeId ?? string.Empty;
+        string currentScopeName = _activeScope?.Name ?? string.Empty;
+        if (!string.Equals(previousScopeId, currentScopeId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previousScopeName, currentScopeName, StringComparison.Ordinal))
+        {
+            ActiveScopeChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private static void ApplyScopeToWorkbench(WorkbenchState workbench, Scope scope)

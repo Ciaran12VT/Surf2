@@ -10,7 +10,10 @@ namespace Surf2;
 /// </summary>
 public partial class App : Application
 {
-    private ExternalOpenPipeServer? _externalOpenPipeServer;
+    private ExternalOpenPipeServer? _databaseExternalOpenPipeServer;
+    private ExternalOpenPipeServer? _anyInstanceExternalOpenPipeServer;
+    private ExternalOpenPipeServer? _activeScopeExternalOpenPipeServer;
+    private string _activeScopePipeName = string.Empty;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -59,7 +62,7 @@ public partial class App : Application
             try
             {
                 ExternalOpenResponse? response = ExternalOpenPipeClient
-                    .TrySendAsync(externalOpenRequest, TimeSpan.FromMilliseconds(1200))
+                    .TrySendAsync(externalOpenRequest, TimeSpan.FromMilliseconds(350))
                     .GetAwaiter()
                     .GetResult();
                 if (response != null)
@@ -107,7 +110,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _externalOpenPipeServer?.Dispose();
+        _activeScopeExternalOpenPipeServer?.Dispose();
+        _anyInstanceExternalOpenPipeServer?.Dispose();
+        _databaseExternalOpenPipeServer?.Dispose();
         InternalLogService.Info(
             "Surf2 exit.",
             ("ExitCode", e.ApplicationExitCode));
@@ -171,7 +176,7 @@ public partial class App : Application
 
         var mainWindow = new MainWindow();
         MainWindow = mainWindow;
-        StartExternalOpenPipeServer(mainWindow);
+        StartExternalOpenPipeServers(mainWindow);
 
         bool splashClosed = false;
         void CloseSplash()
@@ -207,6 +212,7 @@ public partial class App : Application
     {
         try
         {
+            externalOpenRequest.SuppressSavePrompt = true;
             ExternalOpenResponse response = await mainWindow.OpenExternalResourceAsync(externalOpenRequest);
             if (!response.Success && !response.WasCancelled)
             {
@@ -230,19 +236,69 @@ public partial class App : Application
         }
     }
 
-    private void StartExternalOpenPipeServer(MainWindow mainWindow)
+    private void StartExternalOpenPipeServers(MainWindow mainWindow)
     {
         try
         {
             string connectionString = SqlServerConnectionOptions.CreateDefault().ConnectionString;
-            _externalOpenPipeServer = new ExternalOpenPipeServer(
-                connectionString,
-                request => DispatchExternalOpenRequestAsync(mainWindow, request));
-            _externalOpenPipeServer.Start();
+            _databaseExternalOpenPipeServer = StartExternalOpenPipeServer(
+                ExternalOpenPipeNames.CreateDatabase(connectionString),
+                mainWindow);
+            _anyInstanceExternalOpenPipeServer = StartExternalOpenPipeServer(
+                ExternalOpenPipeNames.AnyInstance,
+                mainWindow);
+
+            mainWindow.ActiveScopeChanged += (_, _) =>
+                RefreshActiveScopeExternalOpenPipeServer(mainWindow, connectionString);
+            RefreshActiveScopeExternalOpenPipeServer(mainWindow, connectionString);
         }
         catch (Exception ex)
         {
-            InternalLogService.Error(ex, "Failed to start external-open pipe server.");
+            InternalLogService.Error(ex, "Failed to start external-open pipe servers.");
+        }
+    }
+
+    private ExternalOpenPipeServer StartExternalOpenPipeServer(
+        string pipeName,
+        MainWindow mainWindow)
+    {
+        var pipeServer = new ExternalOpenPipeServer(
+                pipeName,
+                request => DispatchExternalOpenRequestAsync(mainWindow, request));
+        pipeServer.Start();
+        InternalLogService.Info(
+            "External-open pipe server started.",
+            ("PipeName", pipeName));
+        return pipeServer;
+    }
+
+    private void RefreshActiveScopeExternalOpenPipeServer(
+        MainWindow mainWindow,
+        string connectionString)
+    {
+        try
+        {
+            string? pipeName = ExternalOpenPipeNames.CreateActiveScope(
+                connectionString,
+                mainWindow.ActiveScopeId,
+                mainWindow.ActiveScopeName);
+            if (string.Equals(_activeScopePipeName, pipeName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _activeScopeExternalOpenPipeServer?.Dispose();
+            _activeScopeExternalOpenPipeServer = null;
+            _activeScopePipeName = pipeName ?? string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(pipeName))
+            {
+                _activeScopeExternalOpenPipeServer = StartExternalOpenPipeServer(pipeName, mainWindow);
+            }
+        }
+        catch (Exception ex)
+        {
+            InternalLogService.Error(ex, "Failed to refresh active-scope external-open pipe server.");
         }
     }
 

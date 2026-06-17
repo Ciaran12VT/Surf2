@@ -18,6 +18,8 @@ public sealed class ExternalOpenRequest
 
     public int? ColumnNumber { get; set; }
 
+    public bool SuppressSavePrompt { get; set; }
+
     public bool HasTarget =>
         !string.IsNullOrWhiteSpace(ResourcePath) &&
         (!string.IsNullOrWhiteSpace(ScopeId) || !string.IsNullOrWhiteSpace(ScopeName));

@@ -20,10 +20,10 @@ public sealed class ExternalOpenPipeServer : IDisposable
     private Task? _serverTask;
 
     public ExternalOpenPipeServer(
-        string connectionString,
+        string pipeName,
         Func<ExternalOpenRequest, Task<ExternalOpenResponse>> handler)
     {
-        _pipeName = ExternalOpenPipeNames.Create(connectionString);
+        _pipeName = pipeName;
         _handler = handler;
     }
 
@@ -115,7 +115,26 @@ public static class ExternalOpenPipeClient
         TimeSpan connectTimeout)
     {
         string connectionString = ResolveConnectionString(request.ConnectionString);
-        string pipeName = ExternalOpenPipeNames.Create(connectionString);
+        foreach (string pipeName in ExternalOpenPipeNames.CreateOpenRequestCandidates(
+            connectionString,
+            request.ScopeId,
+            request.ScopeName))
+        {
+            if (TrySendToPipe(request, pipeName, connectTimeout))
+            {
+                return Task.FromResult<ExternalOpenResponse?>(
+                    ExternalOpenResponse.Ok("External-open request was forwarded to an existing Surf2 instance."));
+            }
+        }
+
+        return Task.FromResult<ExternalOpenResponse?>(null);
+    }
+
+    private static bool TrySendToPipe(
+        ExternalOpenRequest request,
+        string pipeName,
+        TimeSpan connectTimeout)
+    {
         InternalLogService.Info(
             "Attempting to forward external-open request to running Surf2 instance.",
             ("PipeName", pipeName),
@@ -145,30 +164,15 @@ public static class ExternalOpenPipeClient
             InternalLogService.Info(
                 "External-open request was forwarded to a running Surf2 instance.",
                 ("PipeName", pipeName));
-            return Task.FromResult<ExternalOpenResponse?>(
-                ExternalOpenResponse.Ok("External-open request was forwarded to an existing Surf2 instance."));
+            return true;
         }
-        catch (OperationCanceledException)
-        {
-            InternalLogService.Warning(
-                "Timed out while forwarding external-open request to running Surf2 instance.",
-                ("PipeName", pipeName));
-            return Task.FromResult<ExternalOpenResponse?>(null);
-        }
-        catch (TimeoutException)
-        {
-            InternalLogService.Warning(
-                "Timed out while forwarding external-open request to running Surf2 instance.",
-                ("PipeName", pipeName));
-            return Task.FromResult<ExternalOpenResponse?>(null);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or IOException or UnauthorizedAccessException)
         {
             InternalLogService.Warning(
                 "Could not forward external-open request to running Surf2 instance.",
                 ("PipeName", pipeName),
                 ("Error", ex.Message));
-            return Task.FromResult<ExternalOpenResponse?>(null);
+            return false;
         }
     }
 
@@ -194,7 +198,14 @@ public static class ExternalOpenPipeClient
 
 public static class ExternalOpenPipeNames
 {
+    public const string AnyInstance = "Surf2.ExternalOpen.Any";
+
     public static string Create(string connectionString)
+    {
+        return CreateDatabase(connectionString);
+    }
+
+    public static string CreateDatabase(string connectionString)
     {
         string normalizedConnectionString;
         try
@@ -211,5 +222,37 @@ public static class ExternalOpenPipeNames
 
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedConnectionString));
         return $"Surf2.ExternalOpen.{Convert.ToHexString(hash)[..16]}";
+    }
+
+    public static string? CreateActiveScope(string connectionString, string scopeId, string scopeName)
+    {
+        string scopeKey = !string.IsNullOrWhiteSpace(scopeId)
+            ? scopeId.Trim()
+            : scopeName.Trim();
+        if (string.IsNullOrWhiteSpace(scopeKey))
+        {
+            return null;
+        }
+
+        string databasePipeName = CreateDatabase(connectionString);
+        string normalizedScopeKey = scopeKey.ToUpperInvariant();
+        string key = $"{databasePipeName}|{normalizedScopeKey}";
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(key));
+        return $"Surf2.ExternalOpen.Scope.{Convert.ToHexString(hash)[..16]}";
+    }
+
+    public static IEnumerable<string> CreateOpenRequestCandidates(
+        string connectionString,
+        string scopeId,
+        string scopeName)
+    {
+        string? activeScopePipeName = CreateActiveScope(connectionString, scopeId, scopeName);
+        if (!string.IsNullOrWhiteSpace(activeScopePipeName))
+        {
+            yield return activeScopePipeName;
+        }
+
+        yield return CreateDatabase(connectionString);
+        yield return AnyInstance;
     }
 }
