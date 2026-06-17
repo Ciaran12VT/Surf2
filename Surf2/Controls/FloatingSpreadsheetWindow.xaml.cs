@@ -29,6 +29,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private List<string> _headers = [];
     private bool _isDragging;
     private bool _isApplyingColumnFilters;
+    private bool _ignoreFilterTextChanges;
+    private bool _isDetachedFromVisualTree;
     private bool _matchAnyColumnFilter;
     private bool _pendingColumnFiltersUseAnyMatch;
     private Point _dragStartPoint;
@@ -62,6 +64,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
         PreviewMouseWheel += FloatingSpreadsheetWindow_PreviewMouseWheel;
         IsVisibleChanged += FloatingSpreadsheetWindow_IsVisibleChanged;
+        Loaded += FloatingSpreadsheetWindow_Loaded;
+        Unloaded += FloatingSpreadsheetWindow_Unloaded;
         ApplyColumnFilters(State.SpreadsheetFilters, useAnyMatch: false);
         Loaded += async (_, _) => await LoadCsvAsync(content);
     }
@@ -240,6 +244,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
         int appliedFilterCount = 0;
         _isApplyingColumnFilters = true;
+        _ignoreFilterTextChanges = true;
         try
         {
             ClearFilterTextBoxes();
@@ -259,6 +264,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
         }
         finally
         {
+            _ignoreFilterTextChanges = false;
             _isApplyingColumnFilters = false;
         }
 
@@ -344,6 +350,11 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private void FilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (sender is not TextBox textBox || textBox.Tag is not int columnIndex)
+        {
+            return;
+        }
+
+        if (_ignoreFilterTextChanges || _isDetachedFromVisualTree || !IsVisible)
         {
             return;
         }
@@ -448,7 +459,16 @@ public partial class FloatingSpreadsheetWindow : UserControl
         _matchAnyColumnFilter = false;
         _pendingColumnFiltersUseAnyMatch = false;
         SyncStateFilters();
-        ClearFilterTextBoxes();
+        _ignoreFilterTextChanges = true;
+        try
+        {
+            ClearFilterTextBoxes();
+        }
+        finally
+        {
+            _ignoreFilterTextChanges = false;
+        }
+
         ApplyFilters();
     }
 
@@ -464,9 +484,23 @@ public partial class FloatingSpreadsheetWindow : UserControl
             return;
         }
 
+        _isDetachedFromVisualTree = false;
         RestoreFiltersFromStateIfNeeded();
         RefreshFilterTextBoxes();
         ApplyFilters();
+    }
+
+    private void FloatingSpreadsheetWindow_Loaded(object sender, RoutedEventArgs e)
+    {
+        _isDetachedFromVisualTree = false;
+        RestoreFiltersFromStateIfNeeded();
+        RefreshFilterTextBoxes();
+        ApplyFilters();
+    }
+
+    private void FloatingSpreadsheetWindow_Unloaded(object sender, RoutedEventArgs e)
+    {
+        _isDetachedFromVisualTree = true;
     }
 
     private void RestoreFiltersFromStateIfNeeded()
@@ -505,14 +539,13 @@ public partial class FloatingSpreadsheetWindow : UserControl
         }
 
         _isApplyingColumnFilters = true;
+        _ignoreFilterTextChanges = true;
         try
         {
             List<KeyValuePair<int, string>> filters = _filters.ToList();
-            _filters.Clear();
             ClearFilterTextBoxes();
             foreach ((int columnIndex, string filter) in filters)
             {
-                _filters[columnIndex] = filter;
                 SetFilterTextBoxText(columnIndex, filter);
             }
 
@@ -520,6 +553,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
         }
         finally
         {
+            _ignoreFilterTextChanges = false;
             _isApplyingColumnFilters = false;
         }
     }
