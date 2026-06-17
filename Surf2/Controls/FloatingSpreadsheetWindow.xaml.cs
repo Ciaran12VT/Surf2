@@ -23,11 +23,14 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private readonly ObservableCollection<CsvGridRow> _rows = [];
     private readonly Dictionary<int, string> _filters = [];
     private readonly Dictionary<int, string> _pendingColumnFilters = [];
+    private readonly Dictionary<string, string> _pendingColumnNameFilters = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<int> _anyMatchFilterColumnIndexes = [];
     private readonly DispatcherTimer _filterDebounceTimer;
+    private List<string> _headers = [];
     private bool _isDragging;
     private bool _isApplyingColumnFilters;
     private bool _matchAnyColumnFilter;
+    private bool _pendingColumnFiltersUseAnyMatch;
     private Point _dragStartPoint;
     private double _dragStartLeft;
     private double _dragStartTop;
@@ -58,6 +61,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
         _filterDebounceTimer.Tick += FilterDebounceTimer_Tick;
 
         PreviewMouseWheel += FloatingSpreadsheetWindow_PreviewMouseWheel;
+        IsVisibleChanged += FloatingSpreadsheetWindow_IsVisibleChanged;
+        ApplyColumnFilters(State.SpreadsheetFilters, useAnyMatch: false);
         Loaded += async (_, _) => await LoadCsvAsync(content);
     }
 
@@ -66,6 +71,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
     public event EventHandler? BoundsChanged;
 
     public event EventHandler? BringToFrontRequested;
+
+    public event EventHandler? FilterReferenceCopyRequested;
 
     public OpenDocumentState State { get; }
 
@@ -103,7 +110,13 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     public void ApplyColumnFilters(IReadOnlyDictionary<int, string> filters)
     {
+        ApplyColumnFilters(filters, useAnyMatch: true);
+    }
+
+    private void ApplyColumnFilters(IReadOnlyDictionary<int, string> filters, bool useAnyMatch)
+    {
         _pendingColumnFilters.Clear();
+        _pendingColumnFiltersUseAnyMatch = useAnyMatch;
         foreach ((int columnIndex, string filter) in filters)
         {
             if (columnIndex < 0 || string.IsNullOrWhiteSpace(filter))
@@ -115,6 +128,45 @@ public partial class FloatingSpreadsheetWindow : UserControl
         }
 
         ApplyPendingColumnFilters();
+    }
+
+    public void ApplyColumnFiltersByName(IReadOnlyDictionary<string, string> filters)
+    {
+        _pendingColumnNameFilters.Clear();
+        _pendingColumnFiltersUseAnyMatch = false;
+        foreach ((string columnName, string filter) in filters)
+        {
+            if (string.IsNullOrWhiteSpace(columnName) || string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            _pendingColumnNameFilters[columnName.Trim()] = filter.Trim();
+        }
+
+        ApplyPendingColumnFilters();
+    }
+
+    public IReadOnlyDictionary<string, string> GetColumnFiltersByName()
+    {
+        var filters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach ((int columnIndex, string filter) in _filters.OrderBy(pair => pair.Key))
+        {
+            if (columnIndex < 0 ||
+                columnIndex >= _headers.Count ||
+                string.IsNullOrWhiteSpace(filter))
+            {
+                continue;
+            }
+
+            string header = _headers[columnIndex];
+            if (!string.IsNullOrWhiteSpace(header))
+            {
+                filters[header] = filter;
+            }
+        }
+
+        return filters;
     }
 
     private async Task LoadCsvAsync(string content)
@@ -150,6 +202,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private void BuildColumns(IReadOnlyList<string> headers)
     {
         SpreadsheetGrid.Columns.Clear();
+        _headers = headers.ToList();
         _filters.Clear();
 
         for (int index = 0; index < headers.Count; index++)
@@ -173,12 +226,14 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private bool ApplyPendingColumnFilters()
     {
-        if (_pendingColumnFilters.Count == 0 || SpreadsheetGrid.Columns.Count == 0)
+        if ((_pendingColumnFilters.Count == 0 && _pendingColumnNameFilters.Count == 0) ||
+            SpreadsheetGrid.Columns.Count == 0)
         {
             return false;
         }
 
         _filterDebounceTimer.Stop();
+        MapPendingColumnNameFilters();
         _filters.Clear();
         _anyMatchFilterColumnIndexes.Clear();
         _matchAnyColumnFilter = false;
@@ -208,16 +263,38 @@ public partial class FloatingSpreadsheetWindow : UserControl
         }
 
         _pendingColumnFilters.Clear();
+        _pendingColumnNameFilters.Clear();
         _filterDebounceTimer.Stop();
 
         if (appliedFilterCount == 0)
         {
+            _pendingColumnFiltersUseAnyMatch = false;
             return false;
         }
 
-        _matchAnyColumnFilter = appliedFilterCount > 1;
+        _matchAnyColumnFilter = _pendingColumnFiltersUseAnyMatch && appliedFilterCount > 1;
+        _pendingColumnFiltersUseAnyMatch = false;
+        SyncStateFilters();
         ApplyFilters();
         return true;
+    }
+
+    private void MapPendingColumnNameFilters()
+    {
+        if (_pendingColumnNameFilters.Count == 0 || _headers.Count == 0)
+        {
+            return;
+        }
+
+        foreach ((string columnName, string filter) in _pendingColumnNameFilters)
+        {
+            int columnIndex = _headers.FindIndex(header =>
+                string.Equals(header, columnName, StringComparison.OrdinalIgnoreCase));
+            if (columnIndex >= 0)
+            {
+                _pendingColumnFilters[columnIndex] = filter;
+            }
+        }
     }
 
     private FrameworkElement CreateColumnHeader(string headerText, int columnIndex)
@@ -236,12 +313,13 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
         var filter = new TextBox
         {
-            Height = 22,
+            Height = 24,
             MinWidth = 48,
             FontWeight = FontWeights.Normal,
-            FontSize = 11,
+            FontSize = 10,
             Tag = columnIndex,
-            ToolTip = $"Filter {headerText}"
+            ToolTip = $"Filter {headerText}",
+            VerticalContentAlignment = VerticalAlignment.Center
         };
         filter.TextChanged += FilterTextBox_TextChanged;
 
@@ -279,6 +357,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
         {
             _filters[columnIndex] = filter;
         }
+
+        SyncStateFilters();
 
         if (!_isApplyingColumnFilters)
         {
@@ -363,10 +443,85 @@ public partial class FloatingSpreadsheetWindow : UserControl
     {
         _filters.Clear();
         _pendingColumnFilters.Clear();
+        _pendingColumnNameFilters.Clear();
         _anyMatchFilterColumnIndexes.Clear();
         _matchAnyColumnFilter = false;
+        _pendingColumnFiltersUseAnyMatch = false;
+        SyncStateFilters();
         ClearFilterTextBoxes();
         ApplyFilters();
+    }
+
+    private void CopyFilterReferenceButton_Click(object sender, RoutedEventArgs e)
+    {
+        FilterReferenceCopyRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void FloatingSpreadsheetWindow_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is not true)
+        {
+            return;
+        }
+
+        RestoreFiltersFromStateIfNeeded();
+        RefreshFilterTextBoxes();
+        ApplyFilters();
+    }
+
+    private void RestoreFiltersFromStateIfNeeded()
+    {
+        if (_filters.Count > 0 || State.SpreadsheetFilters.Count == 0)
+        {
+            return;
+        }
+
+        foreach ((int columnIndex, string filter) in State.SpreadsheetFilters)
+        {
+            if (columnIndex >= 0 && !string.IsNullOrWhiteSpace(filter))
+            {
+                _filters[columnIndex] = filter;
+            }
+        }
+    }
+
+    private void SyncStateFilters()
+    {
+        State.SpreadsheetFilters.Clear();
+        foreach ((int columnIndex, string filter) in _filters.OrderBy(pair => pair.Key))
+        {
+            if (columnIndex >= 0 && !string.IsNullOrWhiteSpace(filter))
+            {
+                State.SpreadsheetFilters[columnIndex] = filter;
+            }
+        }
+    }
+
+    private void RefreshFilterTextBoxes()
+    {
+        if (SpreadsheetGrid.Columns.Count == 0)
+        {
+            return;
+        }
+
+        _isApplyingColumnFilters = true;
+        try
+        {
+            List<KeyValuePair<int, string>> filters = _filters.ToList();
+            _filters.Clear();
+            ClearFilterTextBoxes();
+            foreach ((int columnIndex, string filter) in filters)
+            {
+                _filters[columnIndex] = filter;
+                SetFilterTextBoxText(columnIndex, filter);
+            }
+
+            SyncStateFilters();
+        }
+        finally
+        {
+            _isApplyingColumnFilters = false;
+        }
     }
 
     private void ClearFilterTextBoxes()

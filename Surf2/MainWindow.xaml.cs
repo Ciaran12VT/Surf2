@@ -89,7 +89,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private sealed record MetadataLinkTarget(
         string Link,
-        int? LineNumber);
+        int? LineNumber,
+        IReadOnlyDictionary<string, string> ColumnFilters)
+    {
+        public bool HasColumnFilters => ColumnFilters.Count > 0;
+    }
 
     private sealed record PendingPortalPairPlacement(
         string SourceDiagramId,
@@ -1398,11 +1402,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         _openWindows.TryGetValue(tableDocumentPath, out FloatingCodeWindow? tableWindow);
+        string canonicalTableDataDocumentPath = GetCanonicalDatabaseDocumentPath(tableDataDocumentPath);
         await OpenFileAsync(
             tableDataDocumentPath,
             sourceWindow: tableWindow ?? fallbackSourceWindow,
             suppressHistory: true);
-        return tableDataDocumentPath;
+        return canonicalTableDataDocumentPath;
     }
 
     private void ApplyObjectExplorerSpreadsheetFilters(string documentPath, FileSystemNode node)
@@ -6329,10 +6334,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (File.Exists(filePath) || DatabaseDocumentService.IsDatabaseDocumentPath(filePath))
             {
                 EnsureCodeViewVisible();
-                string? tableDataDocumentPath = await OpenFileWithRelatedTableDataAsync(filePath, targetLineNumber: target.LineNumber);
+                string? tableDataDocumentPath = await OpenMetadataFileLinkAsync(filePath, target);
                 if (tableDataDocumentPath != null)
                 {
-                    StatusText = $"Opened metadata link and full table data: {filePath}";
+                    if (target.HasColumnFilters &&
+                        _openSpreadsheetWindows.TryGetValue(tableDataDocumentPath, out FloatingSpreadsheetWindow? spreadsheetWindow))
+                    {
+                        spreadsheetWindow.ApplyColumnFiltersByName(target.ColumnFilters);
+                        SetActiveCodeWindow(null, syncOpenTabsSelection: false);
+                        BringToFront(spreadsheetWindow);
+                        RevealWindow(spreadsheetWindow);
+                        StatusText = $"Opened metadata link and filtered full table data: {filePath}";
+                    }
+                    else
+                    {
+                        StatusText = $"Opened metadata link and full table data: {filePath}";
+                    }
                 }
                 else
                 {
@@ -6354,20 +6371,224 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private async Task<string?> OpenMetadataFileLinkAsync(string filePath, MetadataLinkTarget target)
+    {
+        if (target.HasColumnFilters &&
+            _databaseDocumentService.TryGetTableDocumentPathForTableDataDocument(
+                filePath,
+                _databaseSnapshots,
+                out string backingTableDocumentPath))
+        {
+            return await OpenFileWithRelatedTableDataAsync(
+                backingTableDocumentPath,
+                targetLineNumber: target.LineNumber);
+        }
+
+        string? tableDataDocumentPath = await OpenFileWithRelatedTableDataAsync(
+            filePath,
+            targetLineNumber: target.LineNumber);
+
+        if (tableDataDocumentPath != null)
+        {
+            return tableDataDocumentPath;
+        }
+
+        string canonicalPath = GetCanonicalDatabaseDocumentPath(filePath);
+        return _openSpreadsheetWindows.ContainsKey(canonicalPath)
+            ? canonicalPath
+            : null;
+    }
+
     private static MetadataLinkTarget ParseMetadataLinkTarget(string link)
     {
         string trimmedLink = link.Trim();
+        IReadOnlyDictionary<string, string> filters = ExtractMetadataFilterSuffix(
+            trimmedLink,
+            out trimmedLink);
+
         Match match = MetadataLinkLineSuffixPattern.Match(trimmedLink);
         if (!match.Success ||
             !int.TryParse(match.Groups["line"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out int lineNumber))
         {
-            return new MetadataLinkTarget(trimmedLink, null);
+            return new MetadataLinkTarget(trimmedLink, null, filters);
         }
 
         string targetLink = match.Groups["link"].Value.TrimEnd();
         return string.IsNullOrWhiteSpace(targetLink)
-            ? new MetadataLinkTarget(trimmedLink, null)
-            : new MetadataLinkTarget(targetLink, lineNumber);
+            ? new MetadataLinkTarget(trimmedLink, null, filters)
+            : new MetadataLinkTarget(targetLink, lineNumber, filters);
+    }
+
+    private static IReadOnlyDictionary<string, string> ExtractMetadataFilterSuffix(
+        string link,
+        out string linkWithoutFilters)
+    {
+        linkWithoutFilters = link;
+        var filters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string trimmedLink = link.Trim();
+        if (!trimmedLink.EndsWith("]", StringComparison.Ordinal))
+        {
+            return filters;
+        }
+
+        int suffixStart = trimmedLink.LastIndexOf(":[", StringComparison.Ordinal);
+        if (suffixStart < 0)
+        {
+            return filters;
+        }
+
+        string filterText = trimmedLink[(suffixStart + 2)..^1];
+        if (!TryParseMetadataFilterList(filterText, filters))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        string targetLink = trimmedLink[..suffixStart].TrimEnd();
+        if (string.IsNullOrWhiteSpace(targetLink))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        linkWithoutFilters = targetLink;
+        return filters;
+    }
+
+    private static bool TryParseMetadataFilterList(string filterText, Dictionary<string, string> filters)
+    {
+        int index = 0;
+        while (true)
+        {
+            SkipWhitespace(filterText, ref index);
+            if (index >= filterText.Length)
+            {
+                return true;
+            }
+
+            if (!TryParseMetadataQuotedString(filterText, ref index, out string columnName))
+            {
+                return false;
+            }
+
+            SkipWhitespace(filterText, ref index);
+            if (index >= filterText.Length || filterText[index] != '=')
+            {
+                return false;
+            }
+
+            index++;
+            SkipWhitespace(filterText, ref index);
+            if (!TryParseMetadataQuotedString(filterText, ref index, out string filter))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(columnName))
+            {
+                filters[columnName] = filter;
+            }
+
+            SkipWhitespace(filterText, ref index);
+            if (index >= filterText.Length)
+            {
+                return true;
+            }
+
+            if (filterText[index] != ',')
+            {
+                return false;
+            }
+
+            index++;
+        }
+    }
+
+    private static bool TryParseMetadataQuotedString(string text, ref int index, out string value)
+    {
+        value = string.Empty;
+        if (index >= text.Length || text[index] != '"')
+        {
+            return false;
+        }
+
+        index++;
+        var builder = new StringBuilder();
+        while (index < text.Length)
+        {
+            char current = text[index++];
+            if (current == '"')
+            {
+                value = builder.ToString();
+                return true;
+            }
+
+            if (current != '\\')
+            {
+                builder.Append(current);
+                continue;
+            }
+
+            if (index >= text.Length)
+            {
+                return false;
+            }
+
+            char escaped = text[index++];
+            builder.Append(escaped switch
+            {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                _ => escaped
+            });
+        }
+
+        return false;
+    }
+
+    private static void SkipWhitespace(string text, ref int index)
+    {
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        {
+            index++;
+        }
+    }
+
+    private static string ComposeMetadataLinkTarget(
+        string link,
+        int? lineNumber,
+        IReadOnlyDictionary<string, string> filters)
+    {
+        string result = lineNumber.HasValue
+            ? $"{link}:{lineNumber.Value.ToString(CultureInfo.InvariantCulture)}"
+            : link;
+
+        return filters.Count == 0
+            ? result
+            : $"{result}{FormatMetadataFilterSuffix(filters)}";
+    }
+
+    private static string FormatMetadataFilterSuffix(IReadOnlyDictionary<string, string> filters)
+    {
+        string filterText = string.Join(
+            ",",
+            filters
+                .Where(filter => !string.IsNullOrWhiteSpace(filter.Key) && !string.IsNullOrWhiteSpace(filter.Value))
+                .OrderBy(filter => filter.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(filter => $"\"{EscapeMetadataFilterText(filter.Key)}\"=\"{EscapeMetadataFilterText(filter.Value)}\""));
+
+        return string.IsNullOrWhiteSpace(filterText)
+            ? string.Empty
+            : $":[{filterText}]";
+    }
+
+    private static string EscapeMetadataFilterText(string text)
+    {
+        return text
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("\t", "\\t", StringComparison.Ordinal);
     }
 
     private void MetadataPickResourceButton_Click(object sender, RoutedEventArgs e)
@@ -8160,6 +8381,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ApplyGridBackcolor(GetCodeWindowBackcolor(documentPath));
         window.CloseRequested += SpreadsheetWindow_CloseRequested;
         window.BoundsChanged += FloatingWindow_BoundsChanged;
+        window.FilterReferenceCopyRequested += SpreadsheetWindow_FilterReferenceCopyRequested;
         window.BringToFrontRequested += (_, _) =>
         {
             SetActiveCodeWindow(null, syncOpenTabsSelection: false);
@@ -8297,6 +8519,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseSpreadsheetWindow(FloatingSpreadsheetWindow window)
     {
+        window.FilterReferenceCopyRequested -= SpreadsheetWindow_FilterReferenceCopyRequested;
         RemoveWindowFromCodeView(window);
         _openSpreadsheetWindows.Remove(window.State.FilePath);
         _workspaceState.OpenDocuments.Remove(window.State);
@@ -8599,6 +8822,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ? $"Copied .txt file to clipboard: {Path.GetFileName(e.FilePath)}"
                 : "Copied text to clipboard."
             : $"Could not copy {(e.CopiedAsFile ? ".txt file" : "text")}: {e.ErrorMessage}";
+    }
+
+    private void SpreadsheetWindow_FilterReferenceCopyRequested(object? sender, EventArgs e)
+    {
+        if (sender is not FloatingSpreadsheetWindow window)
+        {
+            return;
+        }
+
+        IReadOnlyDictionary<string, string> filters = window.GetColumnFiltersByName();
+        if (filters.Count == 0)
+        {
+            StatusText = "No table filters to copy.";
+            return;
+        }
+
+        string linkPath = window.State.FilePath;
+        if (_databaseDocumentService.TryGetTableDocumentPathForTableDataDocument(
+                linkPath,
+                _databaseSnapshots,
+                out string tableDocumentPath))
+        {
+            linkPath = tableDocumentPath;
+        }
+
+        DatabaseDocumentService.TryCreateReadableDocumentPath(linkPath, _databaseSnapshots, out linkPath);
+        string filterReference = ComposeMetadataLinkTarget(linkPath, lineNumber: null, filters);
+
+        try
+        {
+            TextClipboardService.CopyText(filterReference);
+            StatusText = $"Copied filter reference: {filterReference}";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            StatusText = $"Could not copy filter reference: {ex.Message}";
+        }
     }
 
     private void CopyReferenceDiagramObject(CodeReferenceDiagramObjectInfo info)
@@ -15580,7 +15840,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Height = NormalizeComparisonDouble(state.Height),
             FontSize = NormalizeComparisonDouble(state.FontSize),
             HorizontalOffset = NormalizeComparisonDouble(state.HorizontalOffset),
-            VerticalOffset = NormalizeComparisonDouble(state.VerticalOffset)
+            VerticalOffset = NormalizeComparisonDouble(state.VerticalOffset),
+            SpreadsheetFilters = state.SpreadsheetFilters
+                .OrderBy(filter => filter.Key)
+                .Select(filter => new
+                {
+                    ColumnIndex = filter.Key,
+                    filter.Value
+                })
+                .ToList()
         };
     }
 
@@ -15961,12 +16229,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string normalizedTarget = target.Link;
         DatabaseDocumentService.TryCreateCanonicalDocumentPath(target.Link, _databaseSnapshots, out normalizedTarget);
 
-        if (target.LineNumber.HasValue)
-        {
-            normalizedTarget = $"{normalizedTarget}:{target.LineNumber.Value.ToString(CultureInfo.InvariantCulture)}";
-        }
-
-        return normalizedTarget;
+        return ComposeMetadataLinkTarget(normalizedTarget, target.LineNumber, target.ColumnFilters);
     }
 
     private string GetReadableDatabaseMetadataLink(string link)
@@ -15980,12 +16243,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string readableTarget = target.Link;
         DatabaseDocumentService.TryCreateReadableDocumentPath(target.Link, _databaseSnapshots, out readableTarget);
 
-        if (target.LineNumber.HasValue)
-        {
-            readableTarget = $"{readableTarget}:{target.LineNumber.Value.ToString(CultureInfo.InvariantCulture)}";
-        }
-
-        return readableTarget;
+        return ComposeMetadataLinkTarget(readableTarget, target.LineNumber, target.ColumnFilters);
     }
 
     private static DateTimeOffset GetWorkbenchUpdatedAtUtc(WorkbenchState workbench)
@@ -16108,7 +16366,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Height = state.Height,
             FontSize = state.FontSize,
             HorizontalOffset = state.HorizontalOffset,
-            VerticalOffset = state.VerticalOffset
+            VerticalOffset = state.VerticalOffset,
+            SpreadsheetFilters = state.SpreadsheetFilters
+                .Where(filter => filter.Key >= 0 && !string.IsNullOrWhiteSpace(filter.Value))
+                .ToDictionary(filter => filter.Key, filter => filter.Value)
         };
     }
 

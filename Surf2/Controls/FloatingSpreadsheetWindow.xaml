@@ -99,7 +99,8 @@
                     Background="#F8FAFC"
                     BorderBrush="#D1D5DB"
                     BorderThickness="0,1,0,0">
-                <DockPanel Margin="8,0">
+                <DockPanel Margin="8,0"
+                           LastChildFill="False">
                     <TextBlock x:Name="StatusText"
                                VerticalAlignment="Center"
                                FontSize="11"
@@ -110,6 +111,13 @@
                             Margin="8,2,0,2"
                             Click="ClearFiltersButton_Click"
                             Content="Clear Filters"
+                            FontSize="10" />
+                    <Button DockPanel.Dock="Right"
+                            Width="126"
+                            Height="18"
+                            Margin="8,2,0,2"
+                            Click="CopyFilterReferenceButton_Click"
+                            Content="Copy Filter Reference"
                             FontSize="10" />
                 </DockPanel>
             </Border>

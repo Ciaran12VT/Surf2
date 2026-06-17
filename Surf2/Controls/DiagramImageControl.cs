@@ -76,7 +76,10 @@ public sealed class DiagramImageControl : UserControl
             BorderBrush = Brushes.Gray,
             BorderThickness = new Thickness(1),
             Background = Brushes.White,
+            FontSize = 12,
+            Padding = new Thickness(2, 0, 2, 0),
             TextAlignment = TextAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed
         };
         _labelTextBox.LostKeyboardFocus += LabelTextBox_LostKeyboardFocus;

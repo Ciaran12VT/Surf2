@@ -30,6 +30,7 @@
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -129,6 +130,7 @@
                                 CornerRadius="9">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -165,6 +167,7 @@
                                 CornerRadius="4">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -198,6 +201,7 @@
                                 CornerRadius="16">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -234,6 +238,7 @@
                                 CornerRadius="16">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -261,6 +266,7 @@
                     <ControlTemplate TargetType="{x:Type ToggleButton}">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"
                                           RecognizesAccessKey="True" />
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -289,6 +295,7 @@
                     <ControlTemplate TargetType="{x:Type ToggleButton}">
                         <ContentPresenter HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
+                                          TextElement.Foreground="{TemplateBinding Foreground}"
                                           RecognizesAccessKey="True" />
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -321,6 +328,7 @@
                                 CornerRadius="9">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -355,6 +363,7 @@
                                 CornerRadius="9">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -389,6 +398,7 @@
                                 CornerRadius="8">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -421,6 +431,7 @@
                             <ContentPresenter x:Name="ButtonContent"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -640,8 +651,10 @@
                             <TextBox x:Name="ObjectExplorerSearchTextBox"
                                      Grid.Column="1"
                                      AllowDrop="True"
+                                     FontSize="12"
                                      Height="24"
                                      Margin="6,0,6,0"
+                                     VerticalContentAlignment="Center"
                                      DataObject.Pasting="ObjectExplorerSearchTextBox_Pasting"
                                      KeyDown="ObjectExplorerSearchTextBox_KeyDown"
                                      PreviewDragOver="ObjectExplorerSearchTextBox_PreviewDragOver"

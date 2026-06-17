@@ -19,4 +19,6 @@ public sealed class OpenDocumentState
     public double HorizontalOffset { get; set; }
 
     public double VerticalOffset { get; set; }
+
+    public Dictionary<int, string> SpreadsheetFilters { get; set; } = [];
 }

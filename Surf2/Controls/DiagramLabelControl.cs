@@ -85,6 +85,8 @@ public sealed class DiagramLabelControl : UserControl
             AcceptsReturn = false,
             BorderThickness = new Thickness(0),
             Background = Brushes.Transparent,
+            FontSize = 12,
+            Padding = new Thickness(2, 0, 2, 0),
             TextAlignment = TextAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed

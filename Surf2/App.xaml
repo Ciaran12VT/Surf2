@@ -111,7 +111,7 @@
             <Setter Property="BorderBrush" Value="{DynamicResource Theme.StrongBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Foreground" Value="{DynamicResource Theme.InputTextBrush}" />
-            <Setter Property="Padding" Value="6,3" />
+            <Setter Property="Padding" Value="6,1" />
             <Setter Property="SelectionBrush" Value="{DynamicResource Theme.SelectionBrush}" />
             <Setter Property="SelectionTextBrush" Value="{DynamicResource Theme.SelectionTextBrush}" />
             <Setter Property="SnapsToDevicePixels" Value="True" />
@@ -137,6 +137,12 @@
                                 <Setter TargetName="TextBoxChrome"
                                         Property="BorderBrush"
                                         Value="{DynamicResource Theme.AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="AcceptsReturn"
+                                     Value="False">
+                                <Setter TargetName="PART_ContentHost"
+                                        Property="VerticalAlignment"
+                                        Value="Center" />
                             </Trigger>
                             <Trigger Property="IsEnabled"
                                      Value="False">
@@ -751,6 +757,7 @@
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>

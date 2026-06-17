@@ -266,6 +266,35 @@ public sealed class DatabaseDocumentService
         return true;
     }
 
+    public bool TryGetTableDocumentPathForTableDataDocument(
+        string tableDataDocumentPath,
+        DatabaseSnapshotLibrary snapshotLibrary,
+        out string tableDocumentPath)
+    {
+        tableDocumentPath = string.Empty;
+
+        if (!TryParsePath(tableDataDocumentPath, out string snapshotKey, out string documentType, out _, out string fullName) ||
+            !string.Equals(documentType, "table-data", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!TryResolveSnapshot(snapshotLibrary, snapshotKey, out DatabaseMetadataSnapshot snapshot))
+        {
+            return false;
+        }
+
+        SqlTable? table = snapshot.Tables.FirstOrDefault(candidate =>
+            string.Equals(SqlName.FormatPlainMultipartName(candidate.SchemaName, candidate.TableName), fullName, StringComparison.OrdinalIgnoreCase));
+        if (table == null)
+        {
+            return false;
+        }
+
+        tableDocumentPath = CreateTableDocumentPath(snapshot, table);
+        return true;
+    }
+
     public bool TryGetDocument(
         string documentPath,
         DatabaseSnapshotLibrary snapshotLibrary,
