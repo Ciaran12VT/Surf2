@@ -14,6 +14,15 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        bool hasExternalOpenArgument = e.Args.Any(IsExternalOpenArgument);
+        if (hasExternalOpenArgument)
+        {
+            InternalLogService.Initialize();
+            InternalLogService.Info(
+                "Surf2 started with external-open arguments.",
+                ("ArgumentCount", e.Args.Length));
+        }
+
         DispatcherUnhandledException += App_DispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
         AppDomain.CurrentDomain.ProcessExit += CurrentDomain_ProcessExit;
@@ -24,7 +33,20 @@ public partial class App : Application
             new RoutedEventHandler(Window_Loaded));
 
         ExternalOpenRequest? externalOpenRequest = null;
-        if (ExternalOpenCommandLine.TryParse(e.Args, out ExternalOpenRequest parsedExternalOpenRequest))
+        bool parsedExternalOpen = ExternalOpenCommandLine.TryParse(e.Args, out ExternalOpenRequest parsedExternalOpenRequest);
+        if (hasExternalOpenArgument)
+        {
+            InternalLogService.Info(
+                "External-open command line parse completed.",
+                ("Parsed", parsedExternalOpen),
+                ("HasTarget", parsedExternalOpenRequest.HasTarget),
+                ("ScopeId", parsedExternalOpenRequest.ScopeId),
+                ("ScopeName", parsedExternalOpenRequest.ScopeName),
+                ("ResourcePath", parsedExternalOpenRequest.ResourcePath),
+                ("ResourceKind", parsedExternalOpenRequest.ResourceKind));
+        }
+
+        if (parsedExternalOpen)
         {
             externalOpenRequest = parsedExternalOpenRequest;
             if (!string.IsNullOrWhiteSpace(externalOpenRequest.ConnectionString))
@@ -44,7 +66,7 @@ public partial class App : Application
                 {
                     if (response.Success || response.WasCancelled)
                     {
-                        Shutdown(response.Success ? 0 : 2);
+                        ExitForwarderProcess(response.Success ? 0 : 2);
                         return;
                     }
 
@@ -67,6 +89,20 @@ public partial class App : Application
 
         base.OnStartup(e);
         ShowMainWindowWithSplash(externalOpenRequest);
+    }
+
+    private static bool IsExternalOpenArgument(string arg)
+    {
+        return string.Equals(arg, "--surf2-open", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(arg, "--open-surf-resource", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(arg, "--external-open", StringComparison.OrdinalIgnoreCase) ||
+               arg.StartsWith("--surf2-open-json", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ExitForwarderProcess(int exitCode)
+    {
+        Shutdown(exitCode);
+        Environment.Exit(exitCode);
     }
 
     protected override void OnExit(ExitEventArgs e)

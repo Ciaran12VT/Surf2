@@ -46,7 +46,7 @@ public sealed class ExternalOpenPipeServer : IDisposable
             {
                 await using var pipe = new NamedPipeServerStream(
                     _pipeName,
-                    PipeDirection.InOut,
+                    PipeDirection.In,
                     NamedPipeServerStream.MaxAllowedServerInstances,
                     PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous);
@@ -71,30 +71,35 @@ public sealed class ExternalOpenPipeServer : IDisposable
     private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
     {
         using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
-        await using var writer = new StreamWriter(pipe, Encoding.UTF8, leaveOpen: true)
-        {
-            AutoFlush = true
-        };
 
         string? requestJson = await reader.ReadLineAsync(cancellationToken);
-        ExternalOpenResponse response;
         try
         {
             ExternalOpenRequest? request = string.IsNullOrWhiteSpace(requestJson)
                 ? null
                 : JsonSerializer.Deserialize<ExternalOpenRequest>(requestJson, JsonOptions);
-            response = request == null
-                ? ExternalOpenResponse.Fail("External-open request was empty or invalid.")
-                : await _handler(request);
+            if (request == null)
+            {
+                InternalLogService.Warning("External-open request was empty or invalid.");
+                return;
+            }
+
+            ExternalOpenResponse response = await _handler(request);
+            if (!response.Success && !response.WasCancelled)
+            {
+                InternalLogService.Warning(
+                    "External-open request was rejected by the running Surf2 instance.",
+                    ("Message", response.Message),
+                    ("ScopeId", request.ScopeId),
+                    ("ScopeName", request.ScopeName),
+                    ("ResourcePath", request.ResourcePath),
+                    ("ResourceKind", request.ResourceKind));
+            }
         }
         catch (Exception ex)
         {
             InternalLogService.Error(ex, "External-open request failed.");
-            response = ExternalOpenResponse.Fail(ex.Message);
         }
-
-        string responseJson = JsonSerializer.Serialize(response, JsonOptions);
-        await writer.WriteLineAsync(responseJson);
     }
 }
 
@@ -105,55 +110,78 @@ public static class ExternalOpenPipeClient
         PropertyNameCaseInsensitive = true
     };
 
-    public static async Task<ExternalOpenResponse?> TrySendAsync(
+    public static Task<ExternalOpenResponse?> TrySendAsync(
         ExternalOpenRequest request,
         TimeSpan connectTimeout)
     {
         string connectionString = ResolveConnectionString(request.ConnectionString);
         string pipeName = ExternalOpenPipeNames.Create(connectionString);
+        InternalLogService.Info(
+            "Attempting to forward external-open request to running Surf2 instance.",
+            ("PipeName", pipeName),
+            ("ConnectTimeoutMs", connectTimeout.TotalMilliseconds),
+            ("ScopeId", request.ScopeId),
+            ("ScopeName", request.ScopeName),
+            ("ResourcePath", request.ResourcePath),
+            ("ResourceKind", request.ResourceKind));
 
-        using var cancellation = new CancellationTokenSource(connectTimeout);
-        await using var pipe = new NamedPipeClientStream(
+        using var pipe = new NamedPipeClientStream(
             ".",
             pipeName,
-            PipeDirection.InOut,
+            PipeDirection.Out,
             PipeOptions.Asynchronous);
 
         try
         {
-            await pipe.ConnectAsync(cancellation.Token);
+            pipe.Connect(ToTimeoutMilliseconds(connectTimeout));
 
-            await using var writer = new StreamWriter(pipe, Encoding.UTF8, leaveOpen: true)
+            using var writer = new StreamWriter(pipe, Encoding.UTF8, leaveOpen: true)
             {
                 AutoFlush = true
             };
-            using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
 
             string requestJson = JsonSerializer.Serialize(request, JsonOptions);
-            await writer.WriteLineAsync(requestJson);
-            string? responseJson = await reader.ReadLineAsync();
-            if (string.IsNullOrWhiteSpace(responseJson))
-            {
-                return ExternalOpenResponse.Fail("Surf2 did not return an external-open response.");
-            }
-
-            ExternalOpenResponse? response = JsonSerializer.Deserialize<ExternalOpenResponse>(responseJson, JsonOptions);
-            return response == null
-                ? ExternalOpenResponse.Fail("Surf2 did not return an external-open response.")
-                : response;
+            writer.WriteLine(requestJson);
+            InternalLogService.Info(
+                "External-open request was forwarded to a running Surf2 instance.",
+                ("PipeName", pipeName));
+            return Task.FromResult<ExternalOpenResponse?>(
+                ExternalOpenResponse.Ok("External-open request was forwarded to an existing Surf2 instance."));
         }
         catch (OperationCanceledException)
         {
-            return null;
+            InternalLogService.Warning(
+                "Timed out while forwarding external-open request to running Surf2 instance.",
+                ("PipeName", pipeName));
+            return Task.FromResult<ExternalOpenResponse?>(null);
         }
         catch (TimeoutException)
         {
-            return null;
+            InternalLogService.Warning(
+                "Timed out while forwarding external-open request to running Surf2 instance.",
+                ("PipeName", pipeName));
+            return Task.FromResult<ExternalOpenResponse?>(null);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null;
+            InternalLogService.Warning(
+                "Could not forward external-open request to running Surf2 instance.",
+                ("PipeName", pipeName),
+                ("Error", ex.Message));
+            return Task.FromResult<ExternalOpenResponse?>(null);
         }
+    }
+
+    private static int ToTimeoutMilliseconds(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            return 0;
+        }
+
+        return timeout.TotalMilliseconds >= int.MaxValue
+            ? int.MaxValue
+            : Math.Max(1, (int)Math.Ceiling(timeout.TotalMilliseconds));
     }
 
     private static string ResolveConnectionString(string connectionString)
