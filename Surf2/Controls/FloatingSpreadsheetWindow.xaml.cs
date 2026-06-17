@@ -31,6 +31,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private bool _isApplyingColumnFilters;
     private bool _ignoreFilterTextChanges;
     private bool _isDetachedFromVisualTree;
+    private bool _isCsvLoaded;
     private bool _matchAnyColumnFilter;
     private bool _pendingColumnFiltersUseAnyMatch;
     private Point _dragStartPoint;
@@ -67,7 +68,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
         Loaded += FloatingSpreadsheetWindow_Loaded;
         Unloaded += FloatingSpreadsheetWindow_Unloaded;
         ApplyColumnFilters(State.SpreadsheetFilters, useAnyMatch: false);
-        Loaded += async (_, _) => await LoadCsvAsync(content);
+        Loaded += async (_, _) => await LoadCsvOnceAsync(content);
     }
 
     public event EventHandler? CloseRequested;
@@ -173,6 +174,20 @@ public partial class FloatingSpreadsheetWindow : UserControl
         return filters;
     }
 
+    private async Task LoadCsvOnceAsync(string content)
+    {
+        if (_isCsvLoaded)
+        {
+            RestoreFiltersFromStateIfNeeded();
+            RefreshFilterTextBoxes();
+            ApplyFilters();
+            return;
+        }
+
+        _isCsvLoaded = true;
+        await LoadCsvAsync(content);
+    }
+
     private async Task LoadCsvAsync(string content)
     {
         LoadingOverlay.Visibility = Visibility.Visible;
@@ -192,6 +207,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
             BuildColumns(document.Headers);
             if (!ApplyPendingColumnFilters())
             {
+                RestoreFiltersFromStateIfNeeded();
+                RefreshFilterTextBoxes();
                 ApplyFilters();
             }
 
