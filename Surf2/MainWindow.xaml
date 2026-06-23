@@ -881,8 +881,11 @@
                                 </Border>
                                 <ListBox x:Name="OpenTabsList"
                                          Grid.Row="1"
+                                         AllowDrop="True"
                                          BorderThickness="0"
                                          ItemsSource="{Binding OpenTabs}"
+                                         DragOver="OpenTabsList_DragOver"
+                                         Drop="OpenTabsList_Drop"
                                          MouseMove="OpenTabsList_MouseMove"
                                          PreviewMouseLeftButtonDown="OpenTabsList_PreviewMouseLeftButtonDown"
                                          PreviewMouseLeftButtonUp="OpenTabsList_PreviewMouseLeftButtonUp"

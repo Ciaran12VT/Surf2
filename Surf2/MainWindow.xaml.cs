@@ -16461,7 +16461,119 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OpenWindowItem draggedItem = _pendingOpenTabsDragItem;
         _pendingOpenTabsDragItem = null;
         var dataObject = new DataObject(OpenTabDragDataFormat, draggedItem);
-        DragDrop.DoDragDrop(OpenTabsList, dataObject, DragDropEffects.Copy);
+        DragDrop.DoDragDrop(OpenTabsList, dataObject, DragDropEffects.Copy | DragDropEffects.Move);
+    }
+
+    private void OpenTabsList_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = IsOpenTabsListMove(e.Data)
+            ? DragDropEffects.Move
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void OpenTabsList_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+
+        if (!IsOpenTabsListMove(e.Data) ||
+            e.Data.GetData(OpenTabDragDataFormat) is not OpenWindowItem draggedItem)
+        {
+            e.Effects = DragDropEffects.None;
+            return;
+        }
+
+        int oldIndex = OpenTabs.IndexOf(draggedItem);
+        int insertIndex = GetOpenTabsDropIndex(e.GetPosition(OpenTabsList));
+        int newIndex = oldIndex < insertIndex ? insertIndex - 1 : insertIndex;
+        newIndex = Math.Clamp(newIndex, 0, OpenTabs.Count - 1);
+
+        if (newIndex != oldIndex)
+        {
+            OpenTabs.Move(oldIndex, newIndex);
+            SyncOpenDocumentOrderFromOpenTabs();
+            MoveCodeDocumentTab(draggedItem.FilePath, newIndex);
+            SelectOpenTabItem(draggedItem);
+            StatusText = $"Moved {draggedItem.FileName} tab.";
+            await SaveWorkspaceStateAsync();
+        }
+
+        e.Effects = DragDropEffects.Move;
+    }
+
+    private bool IsOpenTabsListMove(IDataObject data)
+    {
+        return data.GetDataPresent(OpenTabDragDataFormat, autoConvert: false) &&
+            data.GetData(OpenTabDragDataFormat) is OpenWindowItem openTab &&
+            OpenTabs.Contains(openTab);
+    }
+
+    private int GetOpenTabsDropIndex(Point listPosition)
+    {
+        int fallbackIndex = OpenTabs.Count;
+
+        for (int index = 0; index < OpenTabs.Count; index++)
+        {
+            if (OpenTabsList.ItemContainerGenerator.ContainerFromIndex(index) is not ListBoxItem item ||
+                !item.IsVisible)
+            {
+                continue;
+            }
+
+            Point itemTopLeft = item.TranslatePoint(new Point(), OpenTabsList);
+            double itemBottom = itemTopLeft.Y + item.ActualHeight;
+            if (listPosition.Y <= itemBottom)
+            {
+                return listPosition.Y < itemTopLeft.Y + (item.ActualHeight / 2)
+                    ? index
+                    : index + 1;
+            }
+
+            fallbackIndex = index + 1;
+        }
+
+        return fallbackIndex;
+    }
+
+    private void SyncOpenDocumentOrderFromOpenTabs()
+    {
+        SyncOpenDocumentStatesFromWindows();
+        _workspaceState.OpenDocuments.Clear();
+
+        foreach (OpenWindowItem item in OpenTabs)
+        {
+            _workspaceState.OpenDocuments.Add(item.State);
+        }
+    }
+
+    private void MoveCodeDocumentTab(string filePath, int targetIndex)
+    {
+        if (_codeViewMode != CodeViewMode.Tabs)
+        {
+            return;
+        }
+
+        TabItem? tabItem = FindCodeDocumentTab(filePath);
+        if (tabItem == null)
+        {
+            return;
+        }
+
+        int currentIndex = CodeDocumentsTabControl.Items.IndexOf(tabItem);
+        if (currentIndex < 0)
+        {
+            return;
+        }
+
+        object? selectedItem = CodeDocumentsTabControl.SelectedItem;
+        CodeDocumentsTabControl.Items.Remove(tabItem);
+        int clampedTargetIndex = Math.Clamp(targetIndex, 0, CodeDocumentsTabControl.Items.Count);
+        CodeDocumentsTabControl.Items.Insert(clampedTargetIndex, tabItem);
+
+        if (selectedItem != null && CodeDocumentsTabControl.Items.Contains(selectedItem))
+        {
+            CodeDocumentsTabControl.SelectedItem = selectedItem;
+        }
     }
 
     private void OpenTabsList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)

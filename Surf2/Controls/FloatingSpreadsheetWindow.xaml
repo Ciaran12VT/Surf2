@@ -99,27 +99,44 @@
                     Background="#F8FAFC"
                     BorderBrush="#D1D5DB"
                     BorderThickness="0,1,0,0">
-                <DockPanel Margin="8,0"
-                           LastChildFill="False">
+                <Grid Margin="8,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
                     <TextBlock x:Name="StatusText"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="#4B5563" />
-                    <Button DockPanel.Dock="Right"
-                            Width="82"
+                               Foreground="#4B5563"
+                               TextTrimming="CharacterEllipsis" />
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal">
+                        <Button Width="52"
                             Height="18"
-                            Margin="8,2,0,2"
+                            Margin="0,2,0,2"
+                            Click="CopyVisibleContentButton_Click"
+                            Content="Copy"
+                            FontSize="10" />
+                        <Button Width="58"
+                            Height="18"
+                            Margin="6,2,0,2"
+                            Click="ExportVisibleContentButton_Click"
+                            Content="Export"
+                            FontSize="10" />
+                        <Button Width="82"
+                            Height="18"
+                            Margin="6,2,0,2"
                             Click="ClearFiltersButton_Click"
                             Content="Clear Filters"
                             FontSize="10" />
-                    <Button DockPanel.Dock="Right"
-                            Width="126"
+                        <Button Width="126"
                             Height="18"
-                            Margin="8,2,0,2"
+                            Margin="6,2,0,2"
                             Click="CopyFilterReferenceButton_Click"
                             Content="Copy Filter Reference"
                             FontSize="10" />
-                </DockPanel>
+                    </StackPanel>
+                </Grid>
             </Border>
 
             <primitives:Thumb Grid.RowSpan="3"

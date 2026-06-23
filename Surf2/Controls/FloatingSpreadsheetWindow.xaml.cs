@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -8,6 +9,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using Surf2.Models;
 using Surf2.Services;
 
@@ -322,7 +324,10 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private FrameworkElement CreateColumnHeader(string headerText, int columnIndex)
     {
-        var panel = new Grid();
+        var panel = new Grid
+        {
+            Tag = columnIndex
+        };
         panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
@@ -489,9 +494,213 @@ public partial class FloatingSpreadsheetWindow : UserControl
         ApplyFilters();
     }
 
+    private void CopyVisibleContentButton_Click(object sender, RoutedEventArgs e)
+    {
+        ApplyCurrentFilters();
+
+        if (!TryBuildVisibleContent('\t', out string clipboardText, out int rowCount, out int columnCount))
+        {
+            StatusText.Text = "No table data is loaded yet.";
+            return;
+        }
+
+        try
+        {
+            TextClipboardService.CopyText(clipboardText);
+            StatusText.Text = $"Copied {rowCount} visible row(s) and {columnCount} column(s).";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Copy failed: {ex.Message}";
+        }
+    }
+
+    private void ExportVisibleContentButton_Click(object sender, RoutedEventArgs e)
+    {
+        ApplyCurrentFilters();
+
+        if (!TryBuildVisibleContent(',', out string csv, out int rowCount, out int columnCount))
+        {
+            StatusText.Text = "No table data is loaded yet.";
+            return;
+        }
+
+        var dialog = new SaveFileDialog
+        {
+            Title = "Export Table Data",
+            DefaultExt = ".csv",
+            FileName = CreateCsvExportFileName(),
+            Filter = "CSV file (*.csv)|*.csv|All files (*.*)|*.*"
+        };
+
+        if (dialog.ShowDialog(Window.GetWindow(this)) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            string? directoryPath = Path.GetDirectoryName(dialog.FileName);
+            if (!string.IsNullOrWhiteSpace(directoryPath))
+            {
+                Directory.CreateDirectory(directoryPath);
+            }
+
+            File.WriteAllText(dialog.FileName, csv, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            StatusText.Text = $"Exported {rowCount} visible row(s) and {columnCount} column(s) to {dialog.FileName}.";
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"Export failed: {ex.Message}";
+        }
+    }
+
     private void CopyFilterReferenceButton_Click(object sender, RoutedEventArgs e)
     {
         FilterReferenceCopyRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ApplyCurrentFilters()
+    {
+        _filterDebounceTimer.Stop();
+        ApplyFilters();
+    }
+
+    private bool TryBuildVisibleContent(char delimiter, out string content, out int rowCount, out int columnCount)
+    {
+        content = string.Empty;
+        rowCount = 0;
+
+        List<(int ColumnIndex, string Header)> columns = GetVisibleColumnDescriptors();
+        columnCount = columns.Count;
+        if (columnCount == 0)
+        {
+            return false;
+        }
+
+        var builder = new StringBuilder();
+        AppendDelimitedRow(builder, columns.Select(column => column.Header), delimiter);
+
+        foreach (CsvGridRow row in GetVisibleRows())
+        {
+            AppendDelimitedRow(builder, columns.Select(column => row[column.ColumnIndex]), delimiter);
+            rowCount++;
+        }
+
+        content = builder.ToString();
+        return true;
+    }
+
+    private List<(int ColumnIndex, string Header)> GetVisibleColumnDescriptors()
+    {
+        var columns = new List<(int ColumnIndex, string Header)>();
+
+        foreach (DataGridColumn column in SpreadsheetGrid.Columns
+                     .Where(column => column.Visibility == Visibility.Visible)
+                     .OrderBy(column => column.DisplayIndex))
+        {
+            int columnIndex = GetColumnIndex(column);
+            if (columnIndex < 0)
+            {
+                continue;
+            }
+
+            string header = columnIndex < _headers.Count && !string.IsNullOrWhiteSpace(_headers[columnIndex])
+                ? _headers[columnIndex]
+                : $"Column {columnIndex + 1}";
+            columns.Add((columnIndex, header));
+        }
+
+        return columns;
+    }
+
+    private static int GetColumnIndex(DataGridColumn column)
+    {
+        if (column.Header is FrameworkElement { Tag: int columnIndex })
+        {
+            return columnIndex;
+        }
+
+        if (column.Header is DependencyObject header)
+        {
+            foreach (TextBox textBox in FindVisualChildren<TextBox>(header))
+            {
+                if (textBox.Tag is int tag)
+                {
+                    return tag;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    private IEnumerable<CsvGridRow> GetVisibleRows()
+    {
+        ICollectionView view = CollectionViewSource.GetDefaultView(_rows);
+        return view.Cast<object>().OfType<CsvGridRow>();
+    }
+
+    private static void AppendDelimitedRow(StringBuilder builder, IEnumerable<string> values, char delimiter)
+    {
+        bool isFirstValue = true;
+        foreach (string value in values)
+        {
+            if (!isFirstValue)
+            {
+                builder.Append(delimiter);
+            }
+
+            builder.Append(EscapeDelimitedValue(value, delimiter));
+            isFirstValue = false;
+        }
+
+        builder.AppendLine();
+    }
+
+    private static string EscapeDelimitedValue(string? value, char delimiter)
+    {
+        string text = value ?? string.Empty;
+        return text.Contains('"') ||
+               text.Contains(delimiter) ||
+               text.Contains('\r') ||
+               text.Contains('\n')
+            ? $"\"{text.Replace("\"", "\"\"")}\""
+            : text;
+    }
+
+    private string CreateCsvExportFileName()
+    {
+        string sourceName = !string.IsNullOrWhiteSpace(State.DisplayName)
+            ? State.DisplayName
+            : Path.GetFileNameWithoutExtension(State.FilePath);
+
+        return $"{CreateSafeFileName(Path.GetFileNameWithoutExtension(sourceName))}.csv";
+    }
+
+    private static string CreateSafeFileName(string? fileNameSeed)
+    {
+        string fileName = string.IsNullOrWhiteSpace(fileNameSeed)
+            ? "table-data"
+            : fileNameSeed.Trim();
+
+        foreach (char invalidChar in Path.GetInvalidFileNameChars())
+        {
+            fileName = fileName.Replace(invalidChar, '_');
+        }
+
+        fileName = fileName.Trim('.', ' ');
+        if (fileName.Length == 0)
+        {
+            fileName = "table-data";
+        }
+
+        if (fileName.Length > 120)
+        {
+            fileName = fileName[..120].Trim('.', ' ');
+        }
+
+        return fileName.Length == 0 ? "table-data" : fileName;
     }
 
     private void FloatingSpreadsheetWindow_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
