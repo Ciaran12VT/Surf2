@@ -13,6 +13,15 @@ using Surf2.Storage.Relational.Access.State;
 using Surf2.Services.RelationalExplorer;
 
 int passed = 0;
+if (args.Contains("--migration-progress", StringComparer.Ordinal))
+{
+    StorageRegressionSuite.RunMigrationProgressChecks(Check);
+    if (args.Length == 1)
+    {
+        Console.WriteLine($"Passed {passed} migration progress checks.");
+        return;
+    }
+}
 foreach (string name in SnapshotContractChecks.Run()) Check(true, name);
 foreach (string name in await SnapshotContractChecks.RunHistoryAsync()) Check(true, name);
 foreach (string name in await IndexContractChecks.RunAsync()) Check(true, name);
@@ -159,6 +168,17 @@ if (args.Contains("--package-export", StringComparer.Ordinal))
 if (args.Contains("--legacy-package", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunLegacyPackageMigrationChecksAsync(Check);
+}
+
+if (args.Contains("--migration-validation", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunMigrationValidationChecksAsync(Check);
+}
+
+if (args.Contains("--migration-mapping", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunMigrationMappingChecksAsync(Check);
+    await StorageRegressionSuite.RunMigrationMappingSqlChecksAsync(Check);
 }
 
 if (args.Contains("--bootstrap", StringComparer.Ordinal))

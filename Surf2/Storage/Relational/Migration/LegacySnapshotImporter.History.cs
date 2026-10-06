@@ -113,7 +113,7 @@ public sealed partial class LegacySnapshotImporter
                     var header = await LegacyProjectionReader.HeaderAsync<SqlTableDataSet>(FilePath, dataOffset, ["Rows"], token);
                     long revision = await Write(path, "PreviousDataRevision", ordinal, (writer, inner) =>
                         writer.InsertTableDataRevisionAsync(resource, header.SchemaName, header.TableName, payload.Table, inner), token);
-                    await new LegacyCaptureImporter(session).ImportAsync(revision, FilePath, dataOffset,
+                    await new LegacyCaptureImporter(session) { Progress = Progress }.ImportAsync(revision, FilePath, dataOffset,
                         Array.Empty<CaptureColumnDefinition>(), token);
                     await Write(path + "/seal", "SealedPreviousData", ordinal, async (writer, inner) =>
                     { await writer.SealRevisionAsync(revision, inner); return revision; }, token);

@@ -10,6 +10,7 @@ namespace Surf2.Storage.Relational.Migration;
 public sealed partial class LegacySnapshotImporter(RelationalSession session, MigrationJournal journal,
     LegacySourceStage source)
 {
+    internal MigrationProgressReporter? Progress { get; init; }
     private const string Document = "database-snapshots";
     private const int MetadataLimit = 100_000;
     private readonly RelationalContentStore _content = new();
@@ -112,7 +113,7 @@ public sealed partial class LegacySnapshotImporter(RelationalSession session, Mi
                     data.SchemaName, data.TableName, SnapshotIdentity.LegacyResourceKey(DatabaseVersionedResourceKind.TableData, data.SchemaName, data.TableName), index, inner);
                 return await writer.InsertTableDataRevisionAsync(resource, data.SchemaName, data.TableName, ct: inner);
             }, token);
-            await new LegacyCaptureImporter(session).ImportAsync(revision, FilePath, dataOffset,
+            await new LegacyCaptureImporter(session) { Progress = Progress }.ImportAsync(revision, FilePath, dataOffset,
                 await CaptureColumnsAsync(key, data.SchemaName, data.TableName, token), token);
             await Write(path + "/seal", "CurrentDataRevision", ordinal, async (writer, inner) =>
             {

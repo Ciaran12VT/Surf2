@@ -13,6 +13,7 @@ namespace Surf2.Storage.Relational.Migration;
 /// </summary>
 public sealed class LegacyCaptureImporter
 {
+    internal MigrationProgressReporter? Progress { get; init; }
     private readonly RelationalCaptureStore _capture;
     private readonly CaptureLimits _limits = new();
 
@@ -50,6 +51,7 @@ public sealed class LegacyCaptureImporter
         bool infer = selectedColumns.Length == 0;
         var layout = new CaptureLayout(selectedColumns);
         long actualRowCount = 0;
+        Progress?.SetDetail($"Counting captured rows for revision {revisionKey}");
         await foreach (var row in LegacyProjectionReader.RowsAsync(path, dataSetObjectOffset,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
@@ -62,6 +64,7 @@ public sealed class LegacyCaptureImporter
             // Only one bounded row and the fixed first-row/header layout are resident.
             _ = CaptureRowCodec.Encode(layout, row, _limits);
             actualRowCount = checked(actualRowCount + 1);
+            if ((actualRowCount & 255) == 0) Progress?.SetDetail($"Counting captured rows for revision {revisionKey}: {actualRowCount:N0}");
         }
         var frozenColumns = Array.AsReadOnly(layout.Columns);
         var existing = await _capture.FindForRevisionForImportAsync(revisionKey, cancellationToken);
@@ -72,8 +75,10 @@ public sealed class LegacyCaptureImporter
             VerifyExisting(existing, revisionKey, header, frozenColumns, actualRowCount);
             if (existing.Summary.State == "Ready")
             {
+                Progress?.SetDetail($"Rechecking completed captured rows for revision {revisionKey}: {actualRowCount:N0} rows");
                 await _capture.ValidateImportRowsAsync(existing.Handle,
-                    LegacyProjectionReader.RowsAsync(path, dataSetObjectOffset, cancellationToken: cancellationToken), cancellationToken);
+                    ValidationRowsAsync(cancellationToken), cancellationToken);
+                Progress?.SetDetail($"Reused and verified completed capture for revision {revisionKey}: {actualRowCount:N0} rows");
                 return existing.Summary;
             }
             handle = existing.Handle;
@@ -87,13 +92,15 @@ public sealed class LegacyCaptureImporter
         }
 
         long streamedRowCount = committedRows;
+        Progress?.SetDetail($"Importing captured rows for revision {revisionKey}: {committedRows:N0} / {actualRowCount:N0} already committed");
         long next = await _capture.AppendRowsAsync(handle, RemainingRowsAsync(cancellationToken),
             committedRows, cancellationToken);
         if (next != streamedRowCount || streamedRowCount != actualRowCount)
             throw new InvalidDataException("The source row stream does not agree with its validated count and committed ordinal.");
         var completed = await _capture.CompleteDataSetAsync(handle, streamedRowCount, cancellationToken);
         await _capture.ValidateImportRowsAsync(handle,
-            LegacyProjectionReader.RowsAsync(path, dataSetObjectOffset, cancellationToken: cancellationToken), cancellationToken);
+            ValidationRowsAsync(cancellationToken), cancellationToken);
+        Progress?.SetDetail($"Imported and verified capture for revision {revisionKey}: {actualRowCount:N0} rows");
         return completed;
 
         async IAsyncEnumerable<JsonElement> RemainingRowsAsync([EnumeratorCancellation] CancellationToken ct)
@@ -102,7 +109,20 @@ public sealed class LegacyCaptureImporter
                 .ConfigureAwait(false))
             {
                 streamedRowCount = checked(streamedRowCount + 1);
+                if ((streamedRowCount & 255) == 0) Progress?.SetDetail($"Streaming captured rows for revision {revisionKey}: {streamedRowCount:N0} / {actualRowCount:N0}");
                 yield return row;
+            }
+        }
+
+        async IAsyncEnumerable<JsonElement> ValidationRowsAsync([EnumeratorCancellation] CancellationToken ct)
+        {
+            long checkedRows = 0;
+            Progress?.SetDetail($"Checking captured row fidelity for revision {revisionKey}: 0 / {actualRowCount:N0}");
+            await foreach (var row in LegacyProjectionReader.RowsAsync(path, dataSetObjectOffset, cancellationToken: ct))
+            {
+                yield return row;
+                checkedRows++;
+                if ((checkedRows & 255) == 0) Progress?.SetDetail($"Checking captured row fidelity for revision {revisionKey}: {checkedRows:N0} / {actualRowCount:N0}");
             }
         }
     }

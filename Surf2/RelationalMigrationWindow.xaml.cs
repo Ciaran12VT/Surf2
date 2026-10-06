@@ -15,6 +15,8 @@ public partial class RelationalMigrationWindow : Window
     private CancellationTokenSource? _cancellation;
     private Task? _cancellationCallbacks;
     private bool _completed;
+    private bool _running;
+    private long _attempt;
     public string? DestinationConnectionString { get; private set; }
     public RelationalMigrationResult? Result { get; private set; }
 
@@ -42,6 +44,7 @@ public partial class RelationalMigrationWindow : Window
 
     private async void Convert_Click(object sender, RoutedEventArgs e)
     {
+        if (_cancellation != null || _completed) return;
         string name = DestinationName.Text.Trim();
         if (name.Length is < 1 or > 128 || name.Any(char.IsControl))
         { Status.Text = "Enter a valid destination database name."; return; }
@@ -54,26 +57,47 @@ public partial class RelationalMigrationWindow : Window
         var cancellation = new CancellationTokenSource();
         _cancellation = cancellation;
         _cancellationCallbacks = null;
+        long attempt = ++_attempt;
+        Status.Text = "Starting migration...";
+        ProgressSummary.Visibility = Visibility.Collapsed;
+        ProgressLogPanel.Visibility = Visibility.Collapsed;
+        ProgressLogPath.Text = "";
+        Progress.IsIndeterminate = true;
+        Progress.Value = 0;
         SetRunning(true);
         string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Surf2");
         var request = new RelationalMigrationRequest(_source, builder.ConnectionString, appData,
             Path.Combine(appData, "Migrations"), Operation.SelectedIndex == 0, resume);
         var progress = new Progress<string>(message =>
         {
-            if (_cancellation != null && !_completed) Status.Text = message;
+            if (AcceptProgress(attempt, cancellation)) Status.Text = BoundedStatus(message);
+        });
+        var detailedProgress = new Progress<MigrationProgressUpdate>(update =>
+        {
+            if (AcceptProgress(attempt, cancellation)) PresentProgress(update);
         });
         try
         {
             // Token validation and row encoding are CPU work; SQL/file operations inside remain genuinely asynchronous.
-            Result = await Task.Run(() => new RelationalMigrator().ConvertAsync(request, progress, cancellation.Token));
+            Result = await Task.Run(() => new RelationalMigrator().ConvertAsync(request, progress, cancellation.Token,
+                detailedProgress: detailedProgress));
+            SetRunning(false);
             DestinationConnectionString = builder.ConnectionString;
             _completed = true;
-            Status.Text = "Migration validated. Original database preserved. Recovery staging: " + Result.StageDirectory;
+            Status.Text = BoundedStatus("Migration validated. Original database preserved. Recovery staging: " + Result.StageDirectory);
             ConvertButton.Visibility = Visibility.Collapsed;
             CloseButton.Content = "Done";
         }
-        catch (OperationCanceledException) { Status.AppendText(Environment.NewLine + "Cancelled. The destination has not been activated."); }
-        catch (Exception ex) { Status.Text = ex.Message + (ex.InnerException == null ? "" : Environment.NewLine + ex.InnerException.Message); }
+        catch (OperationCanceledException)
+        {
+            SetRunning(false);
+            Status.Text = "Cancelled. The destination has not been activated.";
+        }
+        catch (Exception ex)
+        {
+            SetRunning(false);
+            Status.Text = BoundedStatus(ex.Message + (ex.InnerException == null ? "" : Environment.NewLine + ex.InnerException.Message));
+        }
         finally
         {
             if (_cancellationCallbacks != null)
@@ -89,10 +113,46 @@ public partial class RelationalMigrationWindow : Window
 
     private void SetRunning(bool running)
     {
-        ConvertButton.IsEnabled = DestinationName.IsEnabled = Operation.IsEnabled = RecoveryPanel.IsEnabled = !running;
+        _running = running;
+        ConvertButton.IsEnabled = DestinationName.IsEnabled = Operation.IsEnabled = RecoveryPanel.IsEnabled = !running && _cancellation == null;
         Progress.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
-        CloseButton.IsEnabled = true;
+        CloseButton.IsEnabled = running || _cancellation == null;
     }
+
+    private bool AcceptProgress(long attempt, CancellationTokenSource cancellation) =>
+        _running && !_completed && _attempt == attempt && ReferenceEquals(_cancellation, cancellation)
+        && !cancellation.IsCancellationRequested;
+
+    private void PresentProgress(MigrationProgressUpdate update)
+    {
+        ProgressSummary.Visibility = Visibility.Visible;
+        PhaseText.Text = update.Phase;
+        PhaseText.ToolTip = update.Phase;
+        CountText.Text = update.Total is long total
+            ? $"{update.Completed:N0} / {total:N0} {update.UnitName}"
+            : $"{update.Completed:N0} {update.UnitName} / total unknown";
+        CountText.ToolTip = CountText.Text;
+        Progress.IsIndeterminate = update.Total == null;
+        Progress.Value = update.Total is > 0 ? Math.Clamp(100.0 * update.Completed / update.Total.Value, 0, 100)
+            : update.Total == 0 ? 100 : 0;
+        ElapsedText.Text = $"Elapsed: {Duration(update.Elapsed)} / phase: {Duration(update.PhaseElapsed)}";
+        EtaText.Text = update.EstimatedRemaining is TimeSpan remaining
+            ? $"Phase remaining: about {Duration(remaining)}"
+            : update.Total == null ? "Phase remaining: unavailable" : "Phase remaining: measuring";
+        ActivityText.Text = $"Last activity: {Duration(update.LastActivityElapsed)} ago";
+        if (update.LogPath != null)
+        {
+            ProgressLogPanel.Visibility = Visibility.Visible;
+            ProgressLogPath.Text = update.LogPath;
+            ProgressLogPath.ToolTip = update.LogPath;
+        }
+        if (update.Detail.Length != 0) Status.Text = BoundedStatus(update.Detail);
+    }
+
+    private static string Duration(TimeSpan value) => value.TotalDays >= 1
+        ? $"{value.Days}d {value:hh\\:mm\\:ss}" : value.ToString(@"hh\:mm\:ss");
+
+    private static string BoundedStatus(string text) => text.Length <= 4096 ? text : text[..4096];
     private void Close_Click(object sender, RoutedEventArgs e)
     {
         if (_cancellation != null) { RequestCancellation(); CloseButton.IsEnabled = false; return; }
@@ -108,6 +168,10 @@ public partial class RelationalMigrationWindow : Window
 
     private void RequestCancellation()
     {
-        if (_cancellation != null) _cancellationCallbacks ??= _cancellation.CancelAsync();
+        if (_running && _cancellation != null)
+        {
+            _cancellationCallbacks ??= _cancellation.CancelAsync();
+            Status.Text = "Cancelling migration...";
+        }
     }
 }

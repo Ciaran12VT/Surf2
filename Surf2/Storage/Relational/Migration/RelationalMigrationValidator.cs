@@ -24,11 +24,17 @@ public sealed class RelationalMigrationValidator
     private const string Snapshots = "database-snapshots";
     private const int MetadataLimit = 100_000;
     private const long MetadataBytes = 64L * 1024 * 1024;
+    private const int ValidationPageSize = 256;
+    private const long HistoricalRowBytes = 2L * StreamingJsonCursor.MaximumValueBytes + 1024;
     private readonly RelationalSession _session;
     private readonly LegacySourceStage _source;
     private readonly RelationalSnapshotStore _snapshots;
     private readonly RelationalStateStore _state;
     private readonly RelationalCaptureStore _capture;
+    private MigrationMappingReader _mappings;
+    private readonly Dictionary<string, Dictionary<long, ChildOwner>> _childOwners = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, RevisionOwner> _revisionOwners = [];
+    internal MigrationProgressReporter? Progress { get; init; }
     private readonly Dictionary<string, long> _units = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _lastOrdinals = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _rows = new(StringComparer.Ordinal);
@@ -49,6 +55,7 @@ public sealed class RelationalMigrationValidator
         _snapshots = new(_session, new RelationalContentStore(), new SnapshotReadLimits { SelectedDefinitionBytes = 128L * 1024 * 1024 });
         _state = new(_session);
         _capture = new(_session);
+        _mappings = new(_session, _source.MigrationIdentity);
     }
 
     internal async Task<MigrationValidationReceipt> ValidateAsync(CancellationToken ct = default)
@@ -60,6 +67,8 @@ public sealed class RelationalMigrationValidator
         {
             _units.Clear(); _lastOrdinals.Clear(); _rows.Clear(); _assets.Clear(); _usedAssets.Clear(); _usedMissingAssets.Clear(); _sourceTargets.Clear();
             _pastedDirectory = null; _assetMetadataBytes = 0; _actualDataRows = 0;
+            _childOwners.Clear(); _revisionOwners.Clear();
+            _mappings = new(_session, _source.MigrationIdentity);
             _source.ValidateSourceOrigin();
             _source.RequirePastedImagesFrozen();
             await _source.VerifyFrozenPastedImagesAsync(ct);
@@ -68,6 +77,7 @@ public sealed class RelationalMigrationValidator
             Check(_source.StagedDocuments.Count == 6 && LegacySourceStage.Documents.Keys.All(_source.StagedDocuments.ContainsKey),
                 "stage", "six authoritative document roots");
             long expectedDataRows = 0;
+            Progress?.StartPhase("Validating staged source files", _source.StagedDocuments.Values.Sum(d => d.ByteCount), "bytes");
             foreach (string document in LegacySourceStage.Documents.Keys)
             {
                 var staged = _source.StagedDocuments[document];
@@ -75,9 +85,17 @@ public sealed class RelationalMigrationValidator
                     staged.SourceHash.Length == 32 && staged.StagingHash.Length == 32 && WithinStage(staged.FilePath),
                     document, "staged identity/hash");
                 pins.Add(Pin(staged.FilePath));
+                Progress?.SetDetail("Checking source hash: " + document);
                 await VerifyStagedAsync(staged, ct);
                 await using var cursor = _source.OpenDocument(document);
-                var inventory = await new LegacySchemaInspector().InspectAsync(document, cursor, ct);
+                long scanned = 0;
+                var inventory = await new LegacySchemaInspector().InspectAsync(document, cursor, ct, position =>
+                {
+                    long next = Math.Clamp(position, scanned, staged.ByteCount);
+                    Progress?.Advance("Checking source fields: " + document, next - scanned);
+                    scanned = next;
+                });
+                Progress?.Advance("Checked source fields: " + document, staged.ByteCount - scanned);
                 expectedDataRows = checked(expectedDataRows + inventory.DataRows);
                 await ValidateProvenanceAsync(staged, inventory, ct);
             }
@@ -85,10 +103,14 @@ public sealed class RelationalMigrationValidator
             string manifest = Path.Combine(_source.DirectoryPath, "manifest.json");
             pins.Add(Pin(manifest));
             await ReadManifestAsync(manifest, ct);
+            long expectedUnits = await ScalarAsync("SELECT COALESCE(SUM(RecordCount),0) FROM surf.MigrationCheckpoint WHERE MigrationIdentity=@Migration;", ct, Migration());
+            Progress?.StartPhase("Validating migrated content and reverse history", expectedUnits, "mapped units checked");
+            Progress?.SetDetail("Resolving source target identities");
             await ReadSourceTargetsAsync(ct);
             await ValidateSnapshotsAsync(ct);
             await ValidateHistoriesAsync(ct);
             await ValidateStateAsync(ct);
+            Progress?.StartPhase("Checking relational coverage and ownership");
             await ValidateCountsAsync(ct);
             Check(_actualDataRows == expectedDataRows, Snapshots, "Capture/source row coverage (not row fidelity)");
             // A package inventories all safe PNG inputs, including unreferenced legacy cache files.
@@ -96,10 +118,20 @@ public sealed class RelationalMigrationValidator
                 "manifest", "every non-package staged PNG has an authoritative owner");
             Check(_usedMissingAssets.Count == _source.StagedPastedImageReferences.Count(reference => reference.IsMissing),
                 "manifest", "every frozen-absent PNG has an authoritative owner");
+            Progress?.StartPhase("Rechecking source files and image hashes", _assets.Count + (long)_source.StagedDocuments.Count + 1, "checks");
             foreach (var asset in _assets.Values)
+            {
                 Check(Bytes(await LegacySourceStage.HashFileAsync(asset.FilePath, ct), asset.Hash), "manifest", "staged PNG hash");
-            foreach (var staged in _source.StagedDocuments.Values) await VerifyStagedAsync(staged, ct);
+                Progress?.Advance("Rechecked staged image hash");
+            }
+            foreach (var staged in _source.StagedDocuments.Values)
+            {
+                Progress?.SetDetail("Rechecking source hash: " + staged.Key);
+                await VerifyStagedAsync(staged, ct);
+                Progress?.Advance("Rechecked source hash: " + staged.Key);
+            }
             await _source.VerifyFrozenPastedImagesAsync(ct);
+            Progress?.Advance("Rechecked frozen image origins");
             Guid finalIdentity = await RequireConvertingAsync(ct);
             Check(finalIdentity == databaseIdentity, "migration", "unchanged destination database identity");
             return new(_source.MigrationIdentity, _source.Fingerprint, _actualDataRows, finalIdentity, _session.Epoch);
@@ -108,6 +140,7 @@ public sealed class RelationalMigrationValidator
         {
             foreach (var pin in pins) await pin.DisposeAsync();
             _sourceTargets.Clear(); _assets.Clear(); _usedAssets.Clear(); _usedMissingAssets.Clear();
+            _childOwners.Clear(); _revisionOwners.Clear();
             Volatile.Write(ref _running, 0);
         }
     }
@@ -153,26 +186,20 @@ FROM surf.SourceProvenance WHERE MigrationIdentity=@Migration AND DocumentKey=@D
         bool count = true, bool optional = false)
     {
         string identity = FormattableString.Invariant($"{document.Length}:{document}{path.Length}:{path}");
-        await using var connection = await _session.OpenAsync(ct);
-        await using var command = Command(connection, """
-SELECT SourceIdentity,EntityKind,DestinationKey FROM surf.MigrationIdentityMap
-WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
-""", Migration(), RelationalSession.Parameter("@Hash", SqlDbType.Binary, SHA256.HashData(Encoding.UTF8.GetBytes(identity)), 32));
-        using var cancel = RelationalSession.CancelCommand(command, ct);
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct))
+        var mapping = await _mappings.FindAsync(document, path, ct);
+        if (mapping == null)
         {
             if (optional) return null;
             throw Failure(document + ":" + path, "required journal mapping");
         }
-        Check(reader.GetString(0) == identity && reader.GetString(1) == kind && reader.GetInt64(2) > 0,
+        Check(mapping.SourceIdentity == identity && mapping.EntityKind == kind && mapping.DestinationKey > 0,
             document + ":" + path, "journal identity/kind/key");
-        long key = reader.GetInt64(2);
-        Check(!await reader.ReadAsync(ct), document + ":" + path, "unique journal mapping");
+        long key = mapping.DestinationKey;
         if (count)
         {
             _units[document] = checked(_units.GetValueOrDefault(document) + 1);
             _lastOrdinals[document] = Math.Max(_lastOrdinals.GetValueOrDefault(document), ordinal);
+            Progress?.Advance(document + ":" + path);
         }
         return key;
     }
@@ -184,7 +211,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
     {
         _ = await LegacyProjectionReader.HeaderAsync<DatabaseSnapshotLibrary>(File(Snapshots), 0, ["Snapshots", "Histories"], ct);
         Check(await MapAsync(Snapshots, "header", "SnapshotLibrary", 0, ct) == 1, Snapshots, "root wrapper mapping");
-        await using var catalogue = SnapshotItems(c => _snapshots.ListSnapshotsAsync(pageSize: 1, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
+        await using var catalogue = SnapshotItems(c => _snapshots.ListSnapshotsAsync(pageSize: ValidationPageSize, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
         await LegacyProjectionReader.ArrayPropertyAsync(File(Snapshots), 0, "Snapshots", async (ordinal, cursor, token) =>
         {
             string path = P($"snapshots/{ordinal}");
@@ -210,7 +237,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
     private async Task ValidateCurrentAsync(long snapshot, long snapshotOrdinal, long offset, CancellationToken ct)
     {
         string path = P($"snapshots/{snapshotOrdinal}");
-        await using var objects = SnapshotItems(c => _snapshots.ListObjectsAsync(snapshot, pageSize: 1, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
+        await using var objects = SnapshotItems(c => _snapshots.ListObjectsAsync(snapshot, pageSize: ValidationPageSize, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
         await SourceArrayAsync<SqlDatabaseObject>(offset, "Objects", async (i, value, token) =>
         {
             string item = path + P($"/objects/{i}");
@@ -226,7 +253,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
 
         var tables = new List<TableOwner>();
         long tableBytes = 0;
-        await using var tablePage = SnapshotItems(c => _snapshots.ListTablesAsync(snapshot, pageSize: 1, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
+        await using var tablePage = SnapshotItems(c => _snapshots.ListTablesAsync(snapshot, pageSize: ValidationPageSize, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
         await SourceArrayAsync<SqlTable>(offset, "Tables", async (i, value, token) =>
         {
             string item = path + P($"/tables/{i}");
@@ -248,7 +275,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
         }, ct);
         await EndAsync(tablePage, path + "/Tables");
 
-        await using var columns = SnapshotItems(c => _snapshots.ListCurrentColumnsAsync(snapshot, 1, c, ct), ct).GetAsyncEnumerator(ct);
+        await using var columns = SnapshotItems(c => _snapshots.ListCurrentColumnsAsync(snapshot, ValidationPageSize, c, ct), ct).GetAsyncEnumerator(ct);
         await SourceArrayAsync<SqlColumn>(offset, "Columns", async (i, value, token) =>
         {
             string item = path + P($"/columns/{i}");
@@ -261,7 +288,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
             Add("TableColumnRevision"); Add("SnapshotCurrentColumn");
         }, ct);
         await EndAsync(columns, path + "/Columns");
-        await using var keys = SnapshotItems(c => _snapshots.ListCurrentPrimaryKeysAsync(snapshot, 1, c, ct), ct).GetAsyncEnumerator(ct);
+        await using var keys = SnapshotItems(c => _snapshots.ListCurrentPrimaryKeysAsync(snapshot, ValidationPageSize, c, ct), ct).GetAsyncEnumerator(ct);
         await SourceArrayAsync<SqlPrimaryKeyColumn>(offset, "PrimaryKeys", async (i, value, token) =>
         {
             string item = path + P($"/keys/{i}");
@@ -274,7 +301,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
             Add("PrimaryKeyColumn"); Add("SnapshotCurrentPrimaryKey");
         }, ct);
         await EndAsync(keys, path + "/PrimaryKeys");
-        await using var selections = SnapshotItems(c => _snapshots.ListFullDataSelectionsAsync(snapshot, 1, c, ct), ct).GetAsyncEnumerator(ct);
+        await using var selections = SnapshotItems(c => _snapshots.ListFullDataSelectionsAsync(snapshot, ValidationPageSize, c, ct), ct).GetAsyncEnumerator(ct);
         await LegacyProjectionReader.ArrayPropertyAsync(File(Snapshots), offset, "FullDataTableNames", async (i, cursor, token) =>
         {
             string item = path + P($"/selections/{i}");
@@ -285,7 +312,7 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
         }, ct);
         await EndAsync(selections, path + "/FullDataTableNames");
         await using var dataPage = SnapshotItems(c => _snapshots.ListResourcesAsync(snapshot, DatabaseVersionedResourceKind.TableData,
-            pageSize: 1, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
+            pageSize: ValidationPageSize, cursor: c, ct: ct), ct).GetAsyncEnumerator(ct);
         await LegacyProjectionReader.ArrayPropertyAsync(File(Snapshots), offset, "TableDataSets", async (i, cursor, token) =>
         {
             string item = path + P($"/datasets/{i}");
@@ -341,7 +368,7 @@ SELECT SnapshotKey,Kind,SchemaName,ObjectName,OriginalResourceKey,CurrentRevisio
             long resourceBytes = resources.Sum(r => 64 + r.Original.Length * 2L);
             long? latest = null;
             int? latestNumber = null;
-            await using var versions = SnapshotItems(c => _snapshots.ListHistoryVersionsAsync(snapshot, key, 1, c, token), token).GetAsyncEnumerator(token);
+            await using var versions = SnapshotItems(c => _snapshots.ListHistoryVersionsAsync(snapshot, key, ValidationPageSize, c, token), token).GetAsyncEnumerator(token);
             await LegacyProjectionReader.ArrayPropertyAsync(File(Snapshots), offset, "Versions", async (i, versionCursor, versionToken) =>
             {
                 string versionPath = path + P($"/versions/{i}");
@@ -356,7 +383,7 @@ SELECT SnapshotKey,Kind,SchemaName,ObjectName,OriginalResourceKey,CurrentRevisio
                 if (latestNumber == null || version.VersionNumber > latestNumber) { latest = versionKey; latestNumber = version.VersionNumber; }
                 Add("SnapshotVersion");
                 long changes = 0;
-                await using var changePage = SnapshotItems(c => _snapshots.ListChangesAsync(snapshot, versionKey, 1, c, versionToken), versionToken).GetAsyncEnumerator(versionToken);
+                await using var changePage = SnapshotItems(c => _snapshots.ListChangesAsync(snapshot, versionKey, ValidationPageSize, c, versionToken), versionToken).GetAsyncEnumerator(versionToken);
                 await LegacyProjectionReader.ArrayPropertyAsync(File(Snapshots), versionCursor.TokenOffset, "Changes", async (j, changeCursor, changeToken) =>
                 {
                     string changePath = versionPath + P($"/changes/{j}");
@@ -497,42 +524,35 @@ ORDER BY CurrentSortOrdinal,ResourceKey;
 
     private async Task HistoricalColumnsAsync(long snapshot, long revision, long offset, string path, CancellationToken ct)
     {
-        long columns = 0;
+        await using var columns = HistoricalItems("TableColumnRevision", "ColumnRevisionKey", revision,
+            "SchemaName,TableName,ColumnName,DataType,MaxLength,NumericPrecision,NumericScale,IsNullable,IsIdentity,SourceOrdinal",
+            "DATALENGTH(SchemaName)+DATALENGTH(TableName)+DATALENGTH(ColumnName)+DATALENGTH(DataType)",
+            r => new SqlColumn { SchemaName = r.GetString(4), TableName = r.GetString(5), ColumnName = r.GetString(6),
+                DataType = r.GetString(7), MaxLength = r.GetInt32(8), NumericPrecision = r.GetByte(9), NumericScale = r.GetInt32(10),
+                IsNullable = r.GetBoolean(11), IsIdentity = r.GetBoolean(12), Ordinal = r.GetInt32(13) }, ct).GetAsyncEnumerator(ct);
         await SourceArrayAsync<SqlColumn>(offset, "Columns", async (i, value, token) =>
         {
-            var actual = await OneAsync("""
-SELECT ColumnRevisionKey,SnapshotKey,SortOrdinal,SchemaName,TableName,ColumnName,DataType,MaxLength,
- NumericPrecision,NumericScale,IsNullable,IsIdentity,SourceOrdinal
-FROM surf.TableColumnRevision WHERE TableMetadataRevisionKey=@Key AND SortOrdinal=@Ordinal;
-""", r =>
-            {
-                Check(r.GetInt64(1) == snapshot && r.GetInt64(2) == i, path, "historical column owner/order");
-                return new SqlColumn { SchemaName = r.GetString(3), TableName = r.GetString(4), ColumnName = r.GetString(5),
-                    DataType = r.GetString(6), MaxLength = r.GetInt32(7), NumericPrecision = r.GetByte(8), NumericScale = r.GetInt32(9),
-                    IsNullable = r.GetBoolean(10), IsIdentity = r.GetBoolean(11), Ordinal = r.GetInt32(12) };
-            }, path, token, Key(revision), Key(i, "@Ordinal"));
-            EqualModel(value, actual, path + P($"/Columns/{i}"), token);
-            columns++; Add("TableColumnRevision");
+            var actual = await NextAsync(columns, path);
+            Check(actual.Snapshot == snapshot && actual.Order == i, path, "historical column owner/order");
+            EqualModel(value, actual.Value, path + P($"/Columns/{i}"), token);
+            Add("TableColumnRevision");
+            Progress?.SetDetail(path + P($"/Columns/{i}"));
         }, ct);
-        Check(await ScalarAsync("SELECT COUNT_BIG(*) FROM surf.TableColumnRevision WHERE TableMetadataRevisionKey=@Key;", ct, Key(revision)) == columns,
-            path, "historical column coverage");
-        long keys = 0;
+        await EndAsync(columns, path + "/Columns");
+        await using var keys = HistoricalItems("PrimaryKeyColumn", "KeyColumnKey", revision,
+            "SchemaName,TableName,ConstraintName,ColumnName,KeyOrdinal",
+            "DATALENGTH(SchemaName)+DATALENGTH(TableName)+DATALENGTH(ConstraintName)+DATALENGTH(ColumnName)",
+            r => new SqlPrimaryKeyColumn { SchemaName = r.GetString(4), TableName = r.GetString(5), ConstraintName = r.GetString(6),
+                ColumnName = r.GetString(7), KeyOrdinal = r.GetInt32(8) }, ct).GetAsyncEnumerator(ct);
         await SourceArrayAsync<SqlPrimaryKeyColumn>(offset, "PrimaryKeys", async (i, value, token) =>
         {
-            var actual = await OneAsync("""
-SELECT SnapshotKey,SortOrdinal,SchemaName,TableName,ConstraintName,ColumnName,KeyOrdinal
-FROM surf.PrimaryKeyColumn WHERE TableMetadataRevisionKey=@Key AND SortOrdinal=@Ordinal;
-""", r =>
-            {
-                Check(r.GetInt64(0) == snapshot && r.GetInt64(1) == i, path, "historical key owner/order");
-                return new SqlPrimaryKeyColumn { SchemaName = r.GetString(2), TableName = r.GetString(3), ConstraintName = r.GetString(4),
-                    ColumnName = r.GetString(5), KeyOrdinal = r.GetInt32(6) };
-            }, path, token, Key(revision), Key(i, "@Ordinal"));
-            EqualModel(value, actual, path + P($"/PrimaryKeys/{i}"), token);
-            keys++; Add("PrimaryKeyColumn");
+            var actual = await NextAsync(keys, path);
+            Check(actual.Snapshot == snapshot && actual.Order == i, path, "historical key owner/order");
+            EqualModel(value, actual.Value, path + P($"/PrimaryKeys/{i}"), token);
+            Add("PrimaryKeyColumn");
+            Progress?.SetDetail(path + P($"/PrimaryKeys/{i}"));
         }, ct);
-        Check(await ScalarAsync("SELECT COUNT_BIG(*) FROM surf.PrimaryKeyColumn WHERE TableMetadataRevisionKey=@Key;", ct, Key(revision)) == keys,
-            path, "historical key coverage");
+        await EndAsync(keys, path + "/PrimaryKeys");
     }
 
     private async Task ValidateDataAsync(long revision, SqlTableDataSet header, SqlTable? table, long offset,
@@ -565,6 +585,7 @@ FROM surf.PrimaryKeyColumn WHERE TableMetadataRevisionKey=@Key AND SortOrdinal=@
                 expectedColumns = CaptureColumns.FromFirstRow(await row.ReadValueAsync(token));
             else await row.SkipValueAsync(token);
             sourceRows = checked(sourceRows + 1);
+            if ((sourceRows & 255) == 0) Progress?.SetDetail(path + $": checked {sourceRows:N0} source captured rows");
         }, ct);
         Check(data.Summary.ActualRowCount == sourceRows && data.Summary.DisplayFormatVersion == CaptureDisplay.FormatVersion &&
             data.Columns.SequenceEqual(expectedColumns), path, "per-dataset source count and exact column layout");
@@ -623,9 +644,25 @@ FROM surf.SnapshotResource WHERE ResourceKey=@Key;
             return true;
         }, path, ct, Key(key));
 
-    private async Task RevisionAsync(long revision, long snapshot, long resource, string path, CancellationToken ct) =>
-        _ = await OneAsync("SELECT SnapshotKey,ResourceKey,IsSealed FROM surf.SnapshotResourceRevision WHERE RevisionKey=@Key;", r =>
-        { Check(r.GetInt64(0) == snapshot && r.GetInt64(1) == resource && r.GetBoolean(2), path, "sealed revision typed owner"); return true; }, path, ct, Key(revision));
+    private async Task RevisionAsync(long revision, long snapshot, long resource, string path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!_revisionOwners.TryGetValue(revision, out var actual))
+        {
+            _revisionOwners.Clear();
+            await using var connection = await _session.OpenAsync(ct);
+            await using var command = Command(connection, """
+SELECT TOP (@Take) RevisionKey,SnapshotKey,ResourceKey,IsSealed
+FROM surf.SnapshotResourceRevision WHERE RevisionKey>=@Key ORDER BY RevisionKey;
+""", Key(revision), RelationalSession.Parameter("@Take", SqlDbType.Int, ValidationPageSize));
+            using var cancel = RelationalSession.CancelCommand(command, ct);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                _revisionOwners.Add(reader.GetInt64(0), new(reader.GetInt64(1), reader.GetInt64(2), reader.GetBoolean(3)));
+            Check(_revisionOwners.TryGetValue(revision, out actual), path, "selected revision owner");
+        }
+        Check(actual!.Snapshot == snapshot && actual.Resource == resource && actual.Sealed, path, "sealed revision typed owner");
+    }
 
     private Task<SqlTable> ReadTableAsync(long revision, string path, CancellationToken ct) => OneAsync("""
 SELECT SchemaName,TableName,HasFullData,FullDataRowCount,FullDataImportedAtUtc FROM surf.TableMetadataRevision WHERE RevisionKey=@Key;
@@ -634,9 +671,25 @@ SELECT SchemaName,TableName,HasFullData,FullDataRowCount,FullDataImportedAtUtc F
 
     // SQL fills the missing public single-child/scalar revision APIs; never hydrates revision child lists.
     private async Task ChildOwnerAsync(string table, string keyColumn, long key, long snapshot, long? revision, long ordinal,
-        string path, CancellationToken ct) => _ = await OneAsync(
-            $"SELECT SnapshotKey,TableMetadataRevisionKey,SortOrdinal FROM surf.[{table}] WHERE [{keyColumn}]=@Key;", r =>
-            { Check(r.GetInt64(0) == snapshot && NullableLong(r, 1) == revision && r.GetInt64(2) == ordinal, path, "child typed owner/order"); return true; }, path, ct, Key(key));
+        string path, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!_childOwners.TryGetValue(table, out var owners)) _childOwners.Add(table, owners = []);
+        if (!owners.TryGetValue(key, out var actual))
+        {
+            owners.Clear();
+            await using var connection = await _session.OpenAsync(ct);
+            await using var command = Command(connection,
+                $"SELECT TOP (@Take) [{keyColumn}],SnapshotKey,TableMetadataRevisionKey,SortOrdinal FROM surf.[{table}] WHERE [{keyColumn}]>=@Key ORDER BY [{keyColumn}];",
+                Key(key), RelationalSession.Parameter("@Take", SqlDbType.Int, ValidationPageSize));
+            using var cancel = RelationalSession.CancelCommand(command, ct);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                owners.Add(reader.GetInt64(0), new(reader.GetInt64(1), NullableLong(reader, 2), reader.GetInt64(3)));
+            Check(owners.TryGetValue(key, out actual), path, "selected child owner");
+        }
+        Check(actual!.Snapshot == snapshot && actual.Revision == revision && actual.Order == ordinal, path, "child typed owner/order");
+    }
 
     private async Task ValidateStateAsync(CancellationToken ct)
     {
@@ -660,7 +713,7 @@ SELECT SchemaName,TableName,HasFullData,FullDataRowCount,FullDataImportedAtUtc F
             actualSelection.Value.SchemaVersion == selection.SchemaVersion && actualSelection.Value.LastActiveScopeId == selection.LastActiveScopeId,
             "scope-library:$", "scope wrapper fields/mapping");
         Add("ScopeCatalogueState");
-        await using var scopes = StateItems(c => _state.ListScopesAsync(1, c, ct), ct).GetAsyncEnumerator(ct);
+        await using var scopes = StateItems(c => _state.ListScopesAsync(ValidationPageSize, c, ct), ct).GetAsyncEnumerator(ct);
         await StateArrayAsync<Scope>("scope-library", "Scopes", async (i, value, path, token) =>
         {
             long key = await MapAsync("scope-library", path, "Scope", i, token);
@@ -678,7 +731,7 @@ SELECT SchemaName,TableName,HasFullData,FullDataRowCount,FullDataImportedAtUtc F
         await EndAsync(scopes, "scope-library");
         _ = await LegacyProjectionReader.HeaderAsync<DiagramLibrary>(File("diagram-library"), 0, ["Diagrams"], ct);
         Check(await MapAsync("diagram-library", "$", "DiagramLibraryHeader", 0, ct) == 1, "diagram-library", "diagram wrapper mapping");
-        await using var diagrams = StateItems(c => _state.ListDiagramsAsync(1, c, ct), ct).GetAsyncEnumerator(ct);
+        await using var diagrams = StateItems(c => _state.ListDiagramsAsync(ValidationPageSize, c, ct), ct).GetAsyncEnumerator(ct);
         await StateArrayAsync<DiagramDocument>("diagram-library", "Diagrams", async (i, value, path, token) =>
         {
             long key = await MapAsync("diagram-library", path, "Diagram", i, token);
@@ -699,7 +752,7 @@ SELECT SchemaName,TableName,HasFullData,FullDataRowCount,FullDataImportedAtUtc F
         await EndAsync(diagrams, "diagram-library");
         _ = await LegacyProjectionReader.HeaderAsync<WorkbenchLibrary>(File("workbench-library"), 0, ["Workbenches"], ct);
         Check(await MapAsync("workbench-library", "$", "WorkbenchLibraryHeader", 0, ct) == 1, "workbench-library", "workbench wrapper mapping");
-        await using var workbenches = StateItems(c => _state.ListWorkbenchesAsync(1, c, ct), ct).GetAsyncEnumerator(ct);
+        await using var workbenches = StateItems(c => _state.ListWorkbenchesAsync(ValidationPageSize, c, ct), ct).GetAsyncEnumerator(ct);
         await StateArrayAsync<WorkbenchState>("workbench-library", "Workbenches", async (i, value, path, token) =>
         {
             long key = await MapAsync("workbench-library", path, "Workbench", i, token);
@@ -1052,7 +1105,9 @@ AND LEFT(SourceIdentity,LEN(@Prefix)) COLLATE Latin1_General_100_BIN2=@Prefix CO
         foreach (string table in tables)
         {
             string identifier = "surf.[" + table + "]";
+            Progress?.SetDetail("Checking row coverage: " + table);
             Check(await ScalarAsync("SELECT COUNT_BIG(*) FROM " + identifier + ";", ct) == _rows.GetValueOrDefault(table), table, "authoritative mapped row coverage");
+            Progress?.Advance("Checked row coverage: " + table);
         }
         Check(await ScalarAsync("""
 SELECT COUNT_BIG(*) FROM surf.PrimaryKeyConstraint k WHERE
@@ -1110,6 +1165,49 @@ SELECT COUNT_BIG(*) FROM (SELECT {owners} FROM surf.[{table}] GROUP BY {owners}
     private Task RequireEmptyArrayAsync(long offset, string property, string path, CancellationToken ct) =>
         LegacyProjectionReader.ArrayPropertyAsync(File(Snapshots), offset, property, (_, _, _) => throw Failure(path, "empty " + property), ct);
 
+    private async IAsyncEnumerable<(long Snapshot, long Order, T Value)> HistoricalItems<T>(string table, string keyColumn,
+        long revision, string fields, string byteSizes, Func<SqlDataReader, T> read, [EnumeratorCancellation] CancellationToken ct)
+    {
+        long afterOrder = -1, afterKey = 0;
+        bool more;
+        do
+        {
+            var page = new List<(long Key, long Snapshot, long Order, T Value)>(ValidationPageSize);
+            more = false;
+            long bytes = 0;
+            await using (var connection = await _session.OpenAsync(ct))
+            await using (var command = Command(connection, $"""
+SELECT TOP (@Take) CONVERT(bigint,256)+{byteSizes},[{keyColumn}],SnapshotKey,SortOrdinal,{fields}
+FROM surf.[{table}] WHERE TableMetadataRevisionKey=@Key
+AND (SortOrdinal>@AfterOrder OR SortOrdinal=@AfterOrder AND [{keyColumn}]>@AfterKey)
+ORDER BY SortOrdinal,[{keyColumn}];
+""", Key(revision), Key(afterOrder, "@AfterOrder"), Key(afterKey, "@AfterKey"),
+                RelationalSession.Parameter("@Take", SqlDbType.Int, ValidationPageSize + 1)))
+            {
+                using var cancel = RelationalSession.CancelCommand(command, ct);
+                await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    if (page.Count == ValidationPageSize) { more = true; SnapshotReadGuard.StopReading(command); break; }
+                    long rowBytes = reader.GetInt64(0);
+                    // Legacy validation allowed a selected historical row larger than the catalogue page budget.
+                    Check(rowBytes >= 0 && rowBytes <= HistoricalRowBytes, table, "bounded historical metadata row");
+                    if (page.Count > 0 && rowBytes > RelationalSnapshotStore.MaximumMetadataPageBytes - bytes)
+                    { more = true; SnapshotReadGuard.StopReading(command); break; }
+                    bytes += rowBytes;
+                    page.Add((reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), read(reader)));
+                }
+            }
+            Check(!more || page.Count > 0, table, "progressing historical metadata page");
+            foreach (var item in page)
+            {
+                ct.ThrowIfCancellationRequested();
+                yield return (item.Snapshot, item.Order, item.Value);
+            }
+            if (page.Count > 0) (afterOrder, afterKey) = (page[^1].Order, page[^1].Key);
+        } while (more);
+    }
+
     private static async IAsyncEnumerable<T> SnapshotItems<T>(Func<SnapshotCursor?, Task<SnapshotPage<T>>> read,
         [EnumeratorCancellation] CancellationToken ct)
     {
@@ -1118,7 +1216,9 @@ SELECT COUNT_BIG(*) FROM (SELECT {owners} FROM surf.[{table}] GROUP BY {owners}
         {
             ct.ThrowIfCancellationRequested();
             var page = await read(cursor);
-            Check(page.Items.Count <= 1 && (page.Next == null || page.Items.Count == 1), "snapshot page", "bounded progressing page");
+            Check(page.Items.Count <= ValidationPageSize && (page.Next == null || page.Items.Count > 0) &&
+                (page.Next == null || cursor == null || page.Next.SortOrdinal > cursor.SortOrdinal ||
+                    page.Next.SortOrdinal == cursor.SortOrdinal && page.Next.EntryKey > cursor.EntryKey), "snapshot page", "bounded progressing page");
             foreach (var item in page.Items) yield return item;
             cursor = page.Next;
         } while (cursor != null);
@@ -1132,7 +1232,9 @@ SELECT COUNT_BIG(*) FROM (SELECT {owners} FROM surf.[{table}] GROUP BY {owners}
         {
             ct.ThrowIfCancellationRequested();
             var page = await read(cursor);
-            Check(page.Items.Count <= 1 && (page.Next == null || page.Items.Count == 1), "state page", "bounded progressing page");
+            Check(page.Items.Count <= ValidationPageSize && (page.Next == null || page.Items.Count > 0) &&
+                (page.Next == null || cursor == null || page.Next.SortOrdinal > cursor.SortOrdinal ||
+                    page.Next.SortOrdinal == cursor.SortOrdinal && page.Next.Key > cursor.Key), "state page", "bounded progressing page");
             foreach (var item in page.Items) yield return item;
             cursor = page.Next;
         } while (cursor != null);
@@ -1202,6 +1304,8 @@ SELECT COUNT_BIG(*) FROM (SELECT {owners} FROM surf.[{table}] GROUP BY {owners}
     }
 
     private sealed record TableOwner(long Revision, string Schema, string Name);
+    private sealed record ChildOwner(long Snapshot, long? Revision, long Order);
+    private sealed record RevisionOwner(long Snapshot, long Resource, bool Sealed);
     private sealed record LogicalResource(long Key, DatabaseVersionedResourceKind? Kind, string Original);
     private sealed record SourceTarget(long? Key, StateLinkResolution Resolution);
     private SourceTarget SourceTargetFor(string document, string id) => _sourceTargets[document].TryGetValue(id, out var target)

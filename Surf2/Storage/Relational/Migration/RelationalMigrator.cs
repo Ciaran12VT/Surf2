@@ -20,9 +20,12 @@ public sealed class RelationalMigrationException(string stageDirectory, Exceptio
 public sealed class RelationalMigrator
 {
     public async Task<RelationalMigrationResult> ConvertAsync(RelationalMigrationRequest request,
-        IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+        IProgress<string>? progress = null, CancellationToken cancellationToken = default,
+        IProgress<MigrationProgressUpdate>? detailedProgress = null)
     {
         ArgumentNullException.ThrowIfNull(request);
+        using var reporting = new MigrationProgressReporter(progress, detailedProgress);
+        reporting.StartPhase(request.ResumeStageDirectory == null ? "Freezing the legacy source" : "Opening recovery staging");
         bool packageSource = request.SourcePackagePath != null;
         if (packageSource && request.UseLocalSource)
             throw new ArgumentException("Select one legacy source: a package, local files, or SQL.", nameof(request));
@@ -36,6 +39,7 @@ public sealed class RelationalMigrator
                     request.StagingRoot, progress, cancellationToken)
             : await LegacySourceStage.ReopenAsync(request.ResumeStageDirectory, cancellationToken);
         stage.RetainForRecovery = true;
+        reporting.AttachLog(stage.DirectoryPath, stage.MigrationIdentity);
         try
         {
             if (stage.SourceOrigin != expectedOrigin)
@@ -47,27 +51,38 @@ public sealed class RelationalMigrator
                 ?? throw new InvalidDataException("The recovery manifest does not identify the original image directory. Recapture the legacy source before conversion.");
             string? sourceConnection = expectedOrigin == "Sql" ? request.SourceConnectionString : null;
             var inventory = new List<LegacyInventory>();
+            reporting.StartPhase("Checking source fields", stage.StagedDocuments.Values.Sum(d => d.ByteCount), "bytes");
             foreach (string key in LegacySourceStage.Documents.Keys)
             {
-                progress?.Report("Checking source fields: " + key);
+                reporting.SetDetail("Checking source fields: " + key);
                 await using var cursor = stage.OpenDocument(key);
-                inventory.Add(await new LegacySchemaInspector().InspectAsync(key, cursor, cancellationToken));
+                long scanned = 0;
+                long bytes = stage.StagedDocuments[key].ByteCount;
+                inventory.Add(await new LegacySchemaInspector().InspectAsync(key, cursor, cancellationToken, position =>
+                {
+                    long next = Math.Clamp(position, scanned, bytes);
+                    reporting.Advance("Checking source fields: " + key, next - scanned);
+                    scanned = next;
+                }));
+                reporting.Advance("Checked source fields: " + key, bytes - scanned);
             }
-            progress?.Report("Freezing referenced pasted images before destination writes");
+            reporting.StartPhase("Freezing referenced pasted images before destination writes");
             await stage.FreezeReferencedPastedImagesAsync(cancellationToken);
+            reporting.SetDetail("Verifying that the original source still matches recovery staging");
             await stage.WithVerifiedSourceAsync(sourceConnection, () => Task.CompletedTask, cancellationToken);
             long rows = inventory.Sum(item => item.DataRows);
             var installer = new RelationalSchemaInstaller();
             if (request.CreateDestination)
             {
                 if (request.ResumeStageDirectory != null) throw new InvalidOperationException("Resume requires the existing destination, not database creation.");
-                progress?.Report("Creating the separately selected destination");
+                reporting.StartPhase("Creating the separately selected destination");
                 if (sourceConnection == null)
                     await installer.CreateEmptyDatabaseAsync(request.DestinationConnectionString, cancellationToken);
                 else
                     await installer.CreateEmptyDestinationAsync(request.SourceConnectionString, request.DestinationConnectionString, cancellationToken);
             }
             var probe = new PersistenceFormatProbe();
+            reporting.StartPhase("Checking source and destination database identities");
             var source = sourceConnection == null ? null : await probe.ProbeAsync(sourceConnection, cancellationToken);
             var destination = await probe.ProbeAsync(request.DestinationConnectionString, cancellationToken);
             if (source != null && PersistenceFormatProbe.SameDatabase(source, destination)) throw new InvalidOperationException("The destination is the source database.");
@@ -76,7 +91,7 @@ public sealed class RelationalMigrator
             await using var destinationLease = await MigrationTargetLease.AcquireAsync(session, cancellationToken);
             if (destination.Format == PersistenceFormat.Empty)
             {
-                progress?.Report("Installing relational tables");
+                reporting.StartPhase("Installing relational tables");
                 if (packageSource)
                     await installer.InitializePackageDestinationAsync(request.DestinationConnectionString,
                         stage.MigrationIdentity, stage.Fingerprint, cancellationToken);
@@ -90,43 +105,56 @@ public sealed class RelationalMigrator
             else if (destination.Format is PersistenceFormat.Incomplete or PersistenceFormat.Relational)
             {
                 bool complete = await VerifyRecoveryAsync(session, stage, cancellationToken);
-                if (complete) return new(stage.MigrationIdentity, destination.DatabaseName, rows, stage.DirectoryPath, AlreadyCompleted: true);
+                if (complete)
+                {
+                    reporting.Finish("This recovery migration is already validated and complete.");
+                    return new(stage.MigrationIdentity, destination.DatabaseName, rows, stage.DirectoryPath, AlreadyCompleted: true);
+                }
                 if (request.ResumeStageDirectory == null) throw new InvalidOperationException("An incomplete destination must be resumed with its matching staging manifest.");
             }
             else throw new InvalidOperationException("The destination is not a verified empty database or a compatible recovery destination: " + destination.Reason);
 
-            var journal = new MigrationJournal(session, stage);
+            var journal = new MigrationJournal(session, stage) { Progress = reporting };
             await journal.RecordProvenanceAsync(inventory, cancellationToken);
-            progress?.Report("Converting captured databases and reverse history");
-            await new LegacySnapshotImporter(session, journal, stage).ImportAsync(cancellationToken);
-            progress?.Report("Converting scopes, diagrams, images, workbenches and preferences");
+            reporting.StartPhase("Converting captured databases and reverse history", unitName: "units processed");
+            await new LegacySnapshotImporter(session, journal, stage) { Progress = reporting }.ImportAsync(cancellationToken);
+            reporting.StartPhase("Converting scopes, diagrams, images, workbenches and preferences", unitName: "units processed");
             var stateImporter = new LegacyStateImporter(session, journal, stage,
                 sourceImageDirectory);
             await stateImporter.ImportAsync(cancellationToken);
+            reporting.SetDetail("Resolving saved document bindings");
             await ResolveSavedDocumentBindingsAsync(session, stage, cancellationToken);
-            progress?.Report("Validating preservation and publishing the destination");
+            reporting.StartPhase("Validating preservation and publishing the destination");
             var validationSession = RelationalSession.ForMigrationValidation(request.DestinationConnectionString,
                 stage.MigrationIdentity, stage.Fingerprint);
             await destinationLease.EnsureHeldAsync(cancellationToken);
-            var validation = await new RelationalMigrationValidator(validationSession, stage).ValidateAsync(cancellationToken);
+            var validation = await new RelationalMigrationValidator(validationSession, stage) { Progress = reporting }.ValidateAsync(cancellationToken);
             if (validation.DataRows != rows) throw new InvalidDataException("Preflight and preservation validation row counts differ.");
+            reporting.StartPhase("Publishing validated destination");
+            reporting.SetDetail("Rechecking the original source before the atomic publication transaction");
             await stage.WithVerifiedSourceAsync(sourceConnection, async () =>
             {
                 await destinationLease.EnsureHeldAsync(cancellationToken);
+                reporting.SetDetail("Checking content hashes and committing the Ready marker");
                 await journal.PublishAsync(validation, cancellationToken);
             }, cancellationToken);
+            reporting.SetDetail("Verifying the committed destination format");
             var ready = await probe.ProbeAsync(request.DestinationConnectionString, cancellationToken);
             if (ready.Format != PersistenceFormat.Relational) throw new InvalidDataException("The completed destination did not pass format verification.");
-            progress?.Report("Conversion complete. The source database was preserved.");
+            reporting.Finish("Conversion complete. The source database was preserved.");
             return new(stage.MigrationIdentity, ready.DatabaseName, rows, stage.DirectoryPath);
         }
         catch (OperationCanceledException)
         {
-            progress?.Report("Conversion cancelled without activation. Recovery staging: " + stage.DirectoryPath);
+            reporting.Finish("Conversion cancelled without activation. Recovery staging: " + stage.DirectoryPath);
             throw;
         }
         catch (Exception ex) when (ex is not RelationalMigrationException)
         {
+            string error = ex is SqlException sql
+                ? $"SQL error {sql.Number}, state {sql.State}, connection {sql.ClientConnectionId}"
+                : "error type: " + ex.GetType().Name;
+            reporting.Finish("Conversion failed without activation. Recovery staging: " + stage.DirectoryPath + "; " + error);
             throw new RelationalMigrationException(stage.DirectoryPath, ex);
         }
     }

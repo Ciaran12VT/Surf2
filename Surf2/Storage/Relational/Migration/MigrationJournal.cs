@@ -8,6 +8,9 @@ namespace Surf2.Storage.Relational.Migration;
 
 public sealed class MigrationJournal(RelationalSession session, LegacySourceStage source)
 {
+    internal MigrationProgressReporter? Progress { get; init; }
+    private long _reusedUnits;
+    private long _newUnits;
     public async Task<long> UnitAsync(string documentKey, string sourcePath, string entityKind,
         long ordinal, Func<SqlConnection, SqlTransaction, CancellationToken, Task<long>> write,
         CancellationToken cancellationToken = default)
@@ -47,6 +50,8 @@ WHERE MigrationIdentity=@Migration AND SourceIdentityHash=@Hash;
                 long key = reader.GetInt64(2);
                 await reader.DisposeAsync();
                 await transaction.CommitAsync(cancellationToken);
+                _reusedUnits++;
+                Progress?.Advance($"{documentKey}: {sourcePath} (reused {_reusedUnits:N0}, new {_newUnits:N0})");
                 return key;
             }
         }
@@ -73,6 +78,8 @@ IF @@ROWCOUNT=0
         command.Parameters.Add(RelationalSession.Parameter("@SourceHash", SqlDbType.Binary, document.SourceHash, 32));
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        _newUnits++;
+        Progress?.Advance($"{documentKey}: {sourcePath} (reused {_reusedUnits:N0}, new {_newUnits:N0})");
         return destinationKey;
     }
 

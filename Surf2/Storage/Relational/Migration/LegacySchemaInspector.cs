@@ -21,9 +21,10 @@ public sealed class LegacySchemaInspector
     private long _values;
     private long _dataRows;
     private int? _sourceSchemaVersion;
+    private Action<long>? _positionProgress;
 
     public async Task<LegacyInventory> InspectAsync(string key, StreamingJsonCursor cursor,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, Action<long>? positionProgress = null)
     {
         if (!LegacySourceStage.Documents.TryGetValue(key, out var definition))
         {
@@ -33,6 +34,7 @@ public sealed class LegacySchemaInspector
         _values = 0;
         _dataRows = 0;
         _sourceSchemaVersion = null;
+        _positionProgress = positionProgress;
         if (!await cursor.MoveNextAsync(cancellationToken))
         {
             throw new InvalidDataException("A legacy document is empty.");
@@ -58,6 +60,7 @@ public sealed class LegacySchemaInspector
     {
         ct.ThrowIfCancellationRequested();
         _values++;
+        if ((_values & 1023) == 0) _positionProgress?.Invoke(cursor.TokenOffset);
         Type effective = Nullable.GetUnderlyingType(type) ?? type;
         if (effective == typeof(JsonElement))
         {

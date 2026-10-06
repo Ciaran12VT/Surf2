@@ -117,3 +117,37 @@ Scratch recovery refuses redirected ancestors/payloads, unmarked/non-GUID direct
 3. Wait for validation. The destination cannot serve normal application queries before Ready publication. Choose separately whether it should be remembered for future starts; an environment connection override is reported explicitly.
 4. Compare scopes, captured history, diagrams/images, links, saved workbenches, search and exports on the migrated copy, then run representative performance checks.
 5. To roll back operationally, select the preserved original legacy database. Post-migration edits in the destination are not synchronized back to the original. Choosing No at the initial migration prompt continues the legacy path and its existing whole-document loading behavior.
+
+### Migration Progress and Compatible Retry
+
+The migration dialog now reports the active phase, current item, processed count, elapsed/phase time, and age of the last activity update. A one-second heartbeat keeps elapsed and activity age visible during long SQL/file operations; it does not advance completed work. Source inspection reports bytes, conversion distinguishes newly written and reused units, and preservation validation uses the existing checkpoint total. Coverage checks, final source/image hashes, and publication have separate phase labels.
+
+Remaining-time estimates are approximate and apply only to the active phase. They appear after enough throughput samples when that phase has a known total; unknown totals remain indeterminate. There is no fabricated whole-migration ETA. Work costs vary substantially between metadata, large definitions, history, and captures, and SQL waits can extend an estimate.
+
+Each attempt creates `migration-<identity>-attempt-<guid>.progress.jsonl` inside the existing recovery directory. The dialog exposes the selectable full path. Entries include UTC timestamps, phase/counts, elapsed time, activity age, and the phase estimate. A terminal SQL failure also records its error number, state, and client connection identity for correlation, not its potentially sensitive full message. Writes are throttled to ten seconds plus transitions/termination and capped at 4 MiB per attempt, including reserved terminal space. Logging failures never prevent migration. No connection string, credentials, SQL parameters, or object contents are logged. Logs are diagnostic files only, not authoritative checkpoints; existing SQL progress queries still show committed conversion checkpoints rather than live validation progress.
+
+Validation now uses 256-item catalogue pages with the existing byte budgets, 128-identity indexed journal batches with an eight-block/8 MiB cache, bounded child/revision owner batches, and streamed historical column/key pages. Historical metadata that exceeds the normal 8 MiB page budget is handled as one bounded row, retaining the old selected-row behavior within the source JSON limits. Exact field, ordering, ownership, hash, missing/extra-row, and publication checks remain in place; it does not load a whole library to accelerate validation.
+
+The schema scripts/checksum, converter version, recovery manifest, source fingerprint, and checkpoint/identity format are unchanged. A run started by the previous build can therefore be resumed by the updated build, provided the original source, staging directory, and destination still match. This update does not change a migration already running on another device. If that run fails, deploy the updated application there, choose **Resume an interrupted migration**, and select the same destination and recovery directory. Do not empty/recreate the destination or replace its manifest. Resume reuses committed units but repeats source/fidelity checks and validation; it does not skip directly to publication. A matching already-completed migration is recognized without importing it again.
+
+The updated build passed 167 validation/mapping checks, 166 isolated progress checks, and 1,076 existing storage/local/package/pasted-image migration checks. The solution built with zero warnings or errors. The validation fixture covers more than 2,000 current/historical child fields, 256-item page boundaries, historical values larger than 8 MiB pages, deliberate owner/order corruption, cancellation, unchanged legacy sources, and byte-identical recovery manifests across resume. Its 1,097 mapped units validated using 685 SQL commands in 17.443 seconds on this disposable LocalDB fixture. This is evidence of batching and preservation, not a predicted duration or measured speedup for the user's SQL Express migration. The progress checks include light/dark offscreen dialog layouts at default and reduced sizes, stalled heartbeats, late callbacks, log limits/redaction, and ETA behavior. Run logs are `migration-update-validation.log`, `migration-update-progress.log`, and `migration-update-storage.log` under `C:\Users\ciara\source\repos\Surf\build-check`.
+
+### SQL Connection Failure Diagnostics
+
+An SSPI-handshake/Shared Memory pipe error is a connection or authentication failure, not a reported preservation mismatch. The client message alone does not establish why the login failed. The validation batching reduces repeated queries; it is not a demonstrated repair for that failure. Test a **fresh** SSMS Windows Authentication connection under the same user to both the source and destination, and inspect SQL Server and Windows event logs at the failure time. An already-open SSMS session does not exercise a new login.
+
+Run these read-only checks on the migration machine's SQL Express instance; they neither alter migration checkpoints nor publish the destination:
+
+```sql
+SELECT name, state_desc, user_access_desc, is_auto_close_on
+FROM master.sys.databases
+WHERE name IN (N'Surf2_TEST', N'Surf2', N'TestLogDB');
+
+EXEC master.sys.sp_readerrorlog 0, 1, N'SSPI';
+EXEC master.sys.sp_readerrorlog 0, 1, N'Login failed';
+EXEC master.sys.sp_readerrorlog 0, 1, N'17806';
+```
+
+Log reading requires the appropriate server permission. If the relevant failure predates the current log, select the matching archive in SSMS rather than treating empty current-log results as proof that no error occurred. Preserve timestamps and full SQL/Windows error codes when sharing results; redact account/machine details as needed. Repeated startup/recovery messages for `TestLogDB` alone do not diagnose a login failure against the Surf databases. `AUTO_CLOSE` can cause databases to close and reopen between uses, but its actual setting and relevance must be checked before changing anything.
+
+References: [SQL connectivity troubleshooting](https://learn.microsoft.com/en-us/troubleshoot/sql/database-engine/connect/resolve-connectivity-errors-overview), [read and filter SQL error logs](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-readerrorlog-transact-sql), and [AUTO_CLOSE behavior](https://learn.microsoft.com/en-us/sql/t-sql/statements/alter-database-transact-sql-set-options#auto_close--on--off-).
