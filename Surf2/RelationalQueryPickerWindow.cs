@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 
@@ -22,6 +23,9 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
     private readonly ListBox _list = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Margin = new(8) };
     private readonly Button _back, _next, _open;
+    private readonly ColumnDefinition _listColumn = new() { Width = new(1, GridUnitType.Star) };
+    private readonly ColumnDefinition _detailsColumn = new() { Width = GridLength.Auto };
+    private readonly StackPanel _paging = new() { Orientation = Orientation.Horizontal, Visibility = Visibility.Collapsed };
     private object? _current, _continuation;
     private bool _loading;
     private bool _selecting;
@@ -37,6 +41,7 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
     {
         Title = title; Width = 800; Height = 560; MinWidth = 560; MinHeight = 380;
         WindowStartupLocation = WindowStartupLocation.CenterOwner; _read = read; _label = label;
+        AutomationProperties.SetName(_list, title);
         SetResourceReference(BackgroundProperty, "Theme.WindowBackgroundBrush");
         SetResourceReference(ForegroundProperty, "Theme.TextBrush");
         var danger = new Style(typeof(Button), (Style)FindResource("SurfPrimaryButtonStyle"));
@@ -48,13 +53,14 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.RowDefinitions.Add(new() { Height = GridLength.Auto });
         root.Children.Add(Commands);
-        var body = new Grid(); body.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        body.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); Grid.SetRow(body, 1); root.Children.Add(body);
+        var body = new Grid(); body.ColumnDefinitions.Add(_listColumn);
+        body.ColumnDefinitions.Add(_detailsColumn); Grid.SetRow(body, 1); root.Children.Add(body);
         body.Children.Add(_list); Grid.SetColumn(Details, 1); body.Children.Add(Details);
         Grid.SetRow(_status, 2); root.Children.Add(_status);
         var footer = new DockPanel { Margin = new(0, 8, 0, 0) }; Grid.SetRow(footer, 3); root.Children.Add(footer);
         _back = IconButton("\uE72B", "Previous page"); _next = IconButton("\uE72A", "Next page");
-        var paging = new StackPanel { Orientation = Orientation.Horizontal }; paging.Children.Add(_back); paging.Children.Add(_next); footer.Children.Add(paging);
+        _paging.Children.Add(_back); _paging.Children.Add(_next); footer.Children.Add(_paging);
+        UpdatePagingControls();
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         _open = CommandButton("Open"); var close = CommandButton("Close", "RelationalDangerButtonStyle"); actions.Children.Add(_open); actions.Children.Add(close);
         DockPanel.SetDock(actions, Dock.Right); footer.Children.Add(actions); Content = root;
@@ -88,7 +94,7 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
                 SelectedSummary = selected; _open.IsEnabled = selected != null;
             }
             catch (Exception e) { SelectedSummary = null; Report(e); }
-            finally { _selecting = false; if (!_closed) { _list.IsEnabled = true; _back.IsEnabled = _previous.Count > 0; _next.IsEnabled = _continuation != null; } }
+            finally { _selecting = false; if (!_closed) { _list.IsEnabled = true; UpdatePagingControls(); } }
         };
         Loaded += async (_, _) => await ReadPageAsync(null, true);
         Closed += (_, _) => { _closed = true; _ = DrainQueriesAsync(); };
@@ -108,6 +114,11 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
     protected void SetStatus(string text) { if (!_closed) _status.Text = text; }
     protected Task ReloadAsync() => ReadPageAsync(null, true);
     protected void ReplaceSelectedSummary(T summary) { SelectedSummary = summary; }
+    protected void UseFlexibleDetails(double listWidth)
+    {
+        _listColumn.Width = new(listWidth);
+        _detailsColumn.Width = new(1, GridUnitType.Star);
+    }
 
     protected bool IsLogicallyClosed => _closed;
     protected bool CanBeginPickerCommand => !_loading && !_selecting && !_closed && !_commandBusy;
@@ -115,8 +126,15 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
     {
         _commandBusy = busy;
         if (_closed) return;
-        _list.IsEnabled = !busy; _back.IsEnabled = !busy && _previous.Count > 0;
-        _next.IsEnabled = !busy && _continuation != null; _open.IsEnabled = !busy && SelectedSummary != null;
+        _list.IsEnabled = !busy; UpdatePagingControls(); _open.IsEnabled = !busy && SelectedSummary != null;
+    }
+    private void UpdatePagingControls()
+    {
+        // Keep the pager visible while navigating/loading; collapse only when no direction has a page.
+        _paging.Visibility = _previous.Count > 0 || _continuation != null ? Visibility.Visible : Visibility.Collapsed;
+        bool available = !_loading && !_selecting && !_commandBusy && !_closed;
+        _back.IsEnabled = available && _previous.Count > 0;
+        _next.IsEnabled = available && _continuation != null;
     }
     private sealed class PickerOperation(RelationalQueryPickerWindow<T> owner) : IDisposable
     {
@@ -169,7 +187,7 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
             SetStatus(page.Items.Count == 0 ? "No saved items." : string.Empty);
         }
         catch (Exception e) { Report(e); }
-            finally { _loading = false; if (!_closed) { _list.IsEnabled = true; _back.IsEnabled = _previous.Count > 0; _next.IsEnabled = _continuation != null; } }
+            finally { _loading = false; if (!_closed) { _list.IsEnabled = true; UpdatePagingControls(); } }
     }
 
     protected static Button CommandButton(string text, string styleKey = "SurfPrimaryButtonStyle")
@@ -182,6 +200,9 @@ internal class RelationalQueryPickerWindow<T> : Window where T : class
     {
         var button = new Button { Content = glyph, FontFamily = new("Segoe MDL2 Assets"), FontSize = 16,
             Width = 34, Height = 32, Margin = new(3), ToolTip = tooltip, Padding = new(0) };
+        AutomationProperties.SetName(button, tooltip);
+        AutomationProperties.SetHelpText(button, "Browse another page of saved items.");
+        ToolTipService.SetShowOnDisabled(button, true);
         button.SetResourceReference(StyleProperty, "SurfPrimaryButtonStyle");
         return button;
     }

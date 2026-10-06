@@ -176,6 +176,7 @@ public partial class MainWindow
             _relationalDefaultWorkbenchScope = _relationalScopeEdit?.SubjectKey;
             _relationalDefaultWorkbenchComparison = CreateRelationalWorkbenchComparisonKey(captured.Workbench);
         }
+        RememberRelationalScopeSwitchWorkbenchBaseline(captured.Workbench);
         await RefreshRelationalWorkbenchCatalogueAsync(_relationalStateLifetime.Token);
         }
         finally { _relationalOwnerCommands.Release(); }

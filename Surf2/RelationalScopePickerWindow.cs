@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
 using Microsoft.Win32;
@@ -18,6 +19,9 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
     private readonly DataGrid _resources = new() { AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false };
     private readonly Button _save = CommandButton("Save", "SurfSaveButtonStyle"), _delete = CommandButton("Delete", "RelationalDangerButtonStyle");
     private readonly Button _editDatabase = CommandButton("Edit Database");
+    private readonly CheckBox _includeChildren = new() { Content = "Include children", Margin = new(3, 6, 3, 0) };
+    private readonly Grid _detailContent = new();
+    private readonly bool _manage;
     private StateEditSession<Scope>? _edit;
     private Scope? _model;
     private bool _busy;
@@ -30,25 +34,90 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         return new(page.Items, page.Next);
     }, s => s.Name)
     {
-        _runtime = runtime;
+        _runtime = runtime; _manage = manage;
         if (!manage) return;
-        Width = 1000; Details.Width = 520;
-        foreach (var height in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(80), GridLength.Auto, new GridLength(1, GridUnitType.Star) })
-            Details.RowDefinitions.Add(new() { Height = height });
+        AutomationProperties.SetName(_name, "Scope name");
+        AutomationProperties.SetName(_description, "Scope description");
+        _description.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        Width = 1300; MinWidth = 1000; UseFlexibleDetails(220);
+        var scroll = new ScrollViewer { Content = _detailContent, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        _detailContent.SetBinding(MinHeightProperty, new Binding(nameof(ScrollViewer.ViewportHeight)) { Source = scroll });
+        Details.Children.Add(scroll);
+        foreach (var height in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(64), GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto })
+            _detailContent.RowDefinitions.Add(new() { Height = height });
         AddDetail(new TextBlock { Text = "Name", Margin = new(0, 0, 0, 4) }, 0); AddDetail(_name, 1);
         AddDetail(new TextBlock { Text = "Description", Margin = new(0, 8, 0, 4) }, 2); AddDetail(_description, 3);
         var resourceCommands = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 4) };
         Button folder = CommandButton("Add Folder"), file = CommandButton("Add File"), database = CommandButton("Add Database"), remove = CommandButton("Remove", "RelationalDangerButtonStyle");
         Button existingSnapshot = CommandButton("Add Snapshot"), existingDiagram = CommandButton("Add Diagram");
-        foreach (var command in new[] { folder, file, database, _editDatabase, existingSnapshot, existingDiagram, remove }) resourceCommands.Children.Add(command);
+        foreach (var command in new[] { folder, file, database, _editDatabase, existingSnapshot, existingDiagram, remove })
+        {
+            command.Padding = new(6, 5, 6, 5); command.MinWidth = 64; command.Margin = new(2);
+            resourceCommands.Children.Add(command);
+        }
         _editDatabase.IsEnabled = false;
-        _resources.SelectionChanged += (_, _) => _editDatabase.IsEnabled = !_busy && _resources.SelectedItem is ScopedResource { Kind: ResourceKind.DatabaseSnapshot };
+        _resources.SelectionChanged += (_, _) => UpdateResourceSelection();
         AddDetail(resourceCommands, 4);
-        _resources.Columns.Add(new DataGridTextColumn { Header = "Resource", Binding = new Binding(nameof(ScopedResource.Path)), IsReadOnly = true, Width = new(1, DataGridLengthUnitType.Star) });
-        _resources.Columns.Add(new DataGridTextColumn { Header = "Alias", Binding = new Binding(nameof(ScopedResource.DisplayNameOverride)), Width = 130 });
-        _resources.Columns.Add(new DataGridCheckBoxColumn { Header = "Children", Binding = new Binding(nameof(ScopedResource.IncludeChildren)), Width = 70 });
+        var aliasText = new FrameworkElementFactory(typeof(TextBlock));
+        aliasText.SetBinding(TextBlock.TextProperty, new Binding(nameof(ScopedResource.DisplayName)));
+        aliasText.SetBinding(FrameworkElement.ToolTipProperty, new Binding(nameof(ScopedResource.DisplayName)));
+        aliasText.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        var aliasEdit = new FrameworkElementFactory(typeof(TextBox));
+        aliasEdit.SetBinding(TextBox.TextProperty, new Binding(nameof(ScopedResource.DisplayNameOverride))
+            { Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+        _resources.Columns.Add(new DataGridTemplateColumn { Header = "Alias", Width = 130, SortMemberPath = nameof(ScopedResource.DisplayName),
+            CellTemplate = new DataTemplate { VisualTree = aliasText }, CellEditingTemplate = new DataTemplate { VisualTree = aliasEdit } });
+        _resources.Columns.Add(new DataGridTextColumn { Header = "Type", Binding = new Binding(nameof(ScopedResource.ResourceTypeDisplay)), IsReadOnly = true, Width = 90 });
+        _resources.Columns.Add(new DataGridTextColumn { Header = "Path/Resource", Binding = new Binding(nameof(ScopedResource.Details)), IsReadOnly = true,
+            Width = new(1, DataGridLengthUnitType.Star), MinWidth = 160 });
+        var addedHeader = new TextBlock { Text = "Added at", ToolTip = "Added to scope (AddedAtUtc), shown in local time." };
+        AutomationProperties.SetName(addedHeader, "Added to scope, local time");
+        _resources.Columns.Add(new DataGridTextColumn { Header = addedHeader, Binding = new Binding(nameof(ScopedResource.AddedDisplay)), IsReadOnly = true,
+            SortMemberPath = nameof(ScopedResource.AddedAtUtc), Width = 150 });
+        foreach (var column in _resources.Columns.OfType<DataGridTextColumn>())
+        {
+            var textStyle = new Style(typeof(TextBlock));
+            textStyle.Setters.Add(new Setter(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis));
+            textStyle.Setters.Add(new Setter(FrameworkElement.ToolTipProperty, new Binding(((Binding)column.Binding).Path.Path)));
+            column.ElementStyle = textStyle;
+        }
+        _resources.MinHeight = 140;
+        _resources.SetResourceReference(Control.BackgroundProperty, "Theme.SurfaceBrush");
+        _resources.SetResourceReference(Control.ForegroundProperty, "Theme.TextBrush");
+        _resources.SetResourceReference(Control.BorderBrushProperty, "Theme.StrongBorderBrush");
+        _resources.SetResourceReference(DataGrid.HorizontalGridLinesBrushProperty, "Theme.BorderBrush");
+        _resources.SetResourceReference(DataGrid.VerticalGridLinesBrushProperty, "Theme.BorderBrush");
+        var cellStyle = new Style(typeof(DataGridCell));
+        cellStyle.Setters.Add(new Setter(Control.BackgroundProperty, new DynamicResourceExtension("Theme.SurfaceBrush")));
+        cellStyle.Setters.Add(new Setter(Control.ForegroundProperty, new DynamicResourceExtension("Theme.TextBrush")));
+        var selectedCell = new Trigger { Property = DataGridCell.IsSelectedProperty, Value = true };
+        selectedCell.Setters.Add(new Setter(Control.BackgroundProperty, new DynamicResourceExtension("Theme.SelectionBrush")));
+        selectedCell.Setters.Add(new Setter(Control.ForegroundProperty, new DynamicResourceExtension("Theme.SelectionTextBrush")));
+        cellStyle.Triggers.Add(selectedCell); _resources.CellStyle = cellStyle;
+        var rowStyle = new Style(typeof(DataGridRow));
+        rowStyle.Setters.Add(new Setter(Control.BackgroundProperty, new DynamicResourceExtension("Theme.SurfaceBrush")));
+        rowStyle.Setters.Add(new Setter(Control.ForegroundProperty, new DynamicResourceExtension("Theme.TextBrush")));
+        _resources.RowStyle = rowStyle;
+        var headerStyle = new Style(typeof(System.Windows.Controls.Primitives.DataGridColumnHeader));
+        headerStyle.Setters.Add(new Setter(Control.BackgroundProperty, new DynamicResourceExtension("Theme.PanelBrush")));
+        headerStyle.Setters.Add(new Setter(Control.ForegroundProperty, new DynamicResourceExtension("Theme.TextBrush")));
+        _resources.ColumnHeaderStyle = headerStyle;
         AddDetail(_resources, 5);
-        Button create = CommandButton("New"), merge = CommandButton("Merge Scope");
+        _includeChildren.ToolTip = "Include files and subfolders as link/portal targets for this folder.";
+        AutomationProperties.SetName(_includeChildren, "Include children for selected folder");
+        AutomationProperties.SetHelpText(_includeChildren, "Include files and subfolders as link or portal targets.");
+        _includeChildren.SetBinding(CheckBox.IsCheckedProperty, new Binding("SelectedItem." + nameof(ScopedResource.IncludeChildren))
+        { Source = _resources, Mode = BindingMode.TwoWay, UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged });
+        AddDetail(_includeChildren, 6); UpdateResourceSelection();
+        // The outer scroller provides short-window access, but must never give the DataGrid an unbounded viewport.
+        var headers = _detailContent.Children.OfType<FrameworkElement>().Where(c => c != _resources).ToArray();
+        var resourceHeight = new MultiBinding { Converter = new ResourceViewportHeight(headers.Sum(c => c.Margin.Top + c.Margin.Bottom)) };
+        resourceHeight.Bindings.Add(new Binding(nameof(ScrollViewer.ViewportHeight)) { Source = scroll });
+        foreach (var header in headers) resourceHeight.Bindings.Add(new Binding(nameof(ActualHeight)) { Source = header });
+        _resources.SetBinding(HeightProperty, resourceHeight);
+        Button create = CommandButton("New"), merge = CommandButton("Add Scope Resources");
+        merge.ToolTip = "Add resources and virtual folders from another scope; keep the source scope.";
         Commands.Children.Add(create); Commands.Children.Add(_save); Commands.Children.Add(_delete); Commands.Children.Add(merge);
         _save.IsEnabled = _delete.IsEnabled = false; Details.IsEnabled = false;
         _save.Click += async (_, _) => await RunAsync(async () => { await SaveFieldsAsync(Lifetime); await ReloadAsync(); });
@@ -194,10 +263,26 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         _name.Text = _model.Name; _description.Text = _model.Description; _resources.ItemsSource = _model.Resources;
     }
 
-    private void AddDetail(UIElement control, int row) { Grid.SetRow(control, row); Details.Children.Add(control); }
+    private void AddDetail(UIElement control, int row) { Grid.SetRow(control, row); _detailContent.Children.Add(control); }
+    private sealed class ResourceViewportHeight(double margins) : IMultiValueConverter
+    {
+        public object Convert(object[] values, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        {
+            double viewport = values[0] is double height && double.IsFinite(height) ? height : 0;
+            double headers = values.Skip(1).OfType<double>().Where(double.IsFinite).Sum();
+            return Math.Max(140, viewport - headers - margins);
+        }
+        public object[] ConvertBack(object value, Type[] targetTypes, object parameter, System.Globalization.CultureInfo culture) =>
+            throw new NotSupportedException();
+    }
+    private void UpdateResourceSelection()
+    {
+        _editDatabase.IsEnabled = !_busy && _resources.SelectedItem is ScopedResource { Kind: ResourceKind.DatabaseSnapshot };
+        _includeChildren.IsEnabled = !_busy && _resources.SelectedItem is ScopedResource { Kind: ResourceKind.Folder };
+    }
     protected override async Task OnSelectedAsync(ScopeSummary? selected, CancellationToken ct)
     {
-        if (Details.Width == 0 || double.IsNaN(Details.Width)) return;
+        if (!_manage) return;
         await SaveFieldsAsync(ct);
         if (_edit != null) await _edit.DisposeAsync(); _edit = null; _model = null;
         Details.IsEnabled = _save.IsEnabled = _delete.IsEnabled = false;
@@ -246,7 +331,7 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         SetPickerCommandBusy(true);
         _busy = true; Commands.IsEnabled = Details.IsEnabled = false;
         try { await action(); } catch (Exception e) { Report(e); }
-        finally { _busy = false; SetPickerCommandBusy(false); if (!IsLogicallyClosed) { Commands.IsEnabled = true; Details.IsEnabled = _model != null; _editDatabase.IsEnabled = _resources.SelectedItem is ScopedResource { Kind: ResourceKind.DatabaseSnapshot }; } }
+        finally { _busy = false; SetPickerCommandBusy(false); if (!IsLogicallyClosed) { Commands.IsEnabled = true; Details.IsEnabled = _model != null; UpdateResourceSelection(); } }
     }
     protected override bool CanClose()
     {

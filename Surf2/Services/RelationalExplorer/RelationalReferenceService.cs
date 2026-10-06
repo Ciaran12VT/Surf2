@@ -66,7 +66,34 @@ public sealed class RelationalReferenceService(RelationalSession session, Relati
     ExplorerLimits? limits = null)
 {
     private readonly ExplorerLimits _limits = Validated(limits);
+    private readonly object _discoveryGate = new();
+    private IndexRequestContext? _completedDiscovery;
     private static ExplorerLimits Validated(ExplorerLimits? limits) { var value = limits ?? new(); value.Validate(); return value; }
+
+    // An unloaded-resource view cannot publish a global SQL discovery marker. Retain only the
+    // worker's completed, exact view; a different selection/generation or a new runtime must recheck it.
+    internal void AcceptCompletedDiscovery(ExplorerIndexRefreshProgress result)
+    {
+        if (!result.FullyPublished || result.Context is not { } context || context.Epoch != session.Epoch ||
+            context.RestrictDocumentKeys || result.UnloadedResources != context.UnloadedScopeResourceKeys.Length)
+            throw new InvalidOperationException("Reference discovery requires a completed active-scope view.");
+        lock (_discoveryGate) _completedDiscovery = context;
+    }
+
+    internal bool IsDiscoveryReady(IndexRequestContext context)
+    {
+        if (context.RestrictDocumentKeys) return false;
+        if (context.UnloadedScopeResourceKeys.IsEmpty) return context.DiscoveryReconciled;
+        lock (_discoveryGate)
+        {
+            var completed = _completedDiscovery;
+            return completed != null && completed.Epoch == context.Epoch && completed.ScopeKey == context.ScopeKey &&
+                completed.CatalogueGeneration == context.CatalogueGeneration && completed.ScopeVersion == context.ScopeVersion &&
+                completed.SnapshotCatalogueVersion == context.SnapshotCatalogueVersion && completed.DiagramCatalogueVersion == context.DiagramCatalogueVersion &&
+                completed.DiscoveryReconciled == context.DiscoveryReconciled &&
+                completed.UnloadedScopeResourceKeys.SequenceEqual(context.UnloadedScopeResourceKeys);
+        }
+    }
 
     public async Task<ReferenceCatalogue> LoadPaintAsync(ExplorerScope scope, CancellationToken ct = default)
     {
@@ -150,7 +177,7 @@ public sealed class RelationalReferenceService(RelationalSession session, Relati
             documents += page.Items.Length; stale += page.Items.Count(d => d.Freshness != IndexFreshness.Indexed);
             cursor = page.Next; exhausted = page.Exhausted;
         } while (!exhausted);
-        return new(documents, stale, context.DiscoveryReconciled, context.RestrictDocumentKeys || context.UnloadedScopeResourceKeys.Length != 0);
+        return new(documents, stale, IsDiscoveryReady(context), context.RestrictDocumentKeys);
     }
 
     private async Task<IndexPage<PaintName>> ReadPaintPageAsync(ExplorerScope scope, long after, CancellationToken ct)

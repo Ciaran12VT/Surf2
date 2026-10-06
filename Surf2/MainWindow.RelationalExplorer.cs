@@ -1,8 +1,10 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Surf2.Models;
 using Surf2.Services;
 using Surf2.Services.RelationalExplorer;
@@ -33,6 +35,8 @@ public partial class MainWindow
     private Guid _relationalExplorerSearchIdentity;
     private Guid _relationalExplorerOwner;
     private ExplorerIndexRefreshProgress? _relationalIndexProgress;
+    private DispatcherTimer? _relationalIndexStatusTimer;
+    private Stopwatch? _relationalIndexElapsed;
     private ExplorerIndexLanguagePolicy? _relationalIndexLanguages;
     private FrozenDictionary<string, FrozenDictionary<string, ReferenceHighlightStyleSetting>> _relationalHighlightStyles =
         new Dictionary<string, FrozenDictionary<string, ReferenceHighlightStyleSetting>>().ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
@@ -77,12 +81,20 @@ public partial class MainWindow
         if (_relationalReferenceCatalogue != null) RebuildRelationalReferenceHighlightStyles();
         var owner = _relationalExplorerOwner; var token = _relationalExplorerCancellation.Token;
         var retirement = _relationalExplorerRetirement; var languages = _relationalIndexLanguages;
+        _relationalIndexElapsed = Stopwatch.StartNew();
+        _relationalIndexStatusTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) =>
+        {
+            if (AcceptsRelationalExplorer(owner, runtime) && _relationalExplorerSearchTask.IsCompleted && _relationalIndexProgress != null)
+                StatusText = RelationalIndexStatus(_relationalIndexProgress with { Elapsed = _relationalIndexElapsed?.Elapsed ?? _relationalIndexProgress.Elapsed });
+        }, Dispatcher);
         // This bounded job includes per-document rendering/parsing and metadata assembly, not synchronous SQL wrappers.
         _relationalIndexRefreshTask = Task.Run(() => RefreshRelationalScopeIndexAsync(runtime, scope, languages, owner, retirement, token));
     }
 
     private void RetireRelationalExplorerContext()
     {
+        _relationalIndexStatusTimer?.Stop(); _relationalIndexStatusTimer = null;
+        _relationalIndexElapsed?.Stop(); _relationalIndexElapsed = null;
         _relationalExplorerOwner = Guid.Empty;
         var cancellation = _relationalExplorerCancellation; _relationalExplorerCancellation = null;
         Task cancellationCallbacks = cancellation?.Cancel() ?? Task.CompletedTask;
@@ -134,12 +146,13 @@ public partial class MainWindow
                 await Dispatcher.InvokeAsync(() =>
                 {
                     if (!AcceptsRelationalExplorer(owner, runtime)) return;
-                    _relationalIndexProgress = progress;
+                    _relationalIndexProgress = progress.Completed ? progress with { Phase = "Preparing highlights" } : progress;
                     // A search owns the status while it is active; refresh still exposes its own coverage field.
-                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalIndexStatus(progress);
+                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalIndexStatus(_relationalIndexProgress);
                 });
             }, ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
+            if (result.FullyPublished) runtime.References.AcceptCompletedDiscovery(result);
             var currentScope = scope with { Context = result.Context ?? scope.Context };
             var catalogue = await runtime.References.LoadPaintAsync(currentScope, ct).ConfigureAwait(false);
             await Dispatcher.InvokeAsync(() =>
@@ -159,15 +172,40 @@ public partial class MainWindow
                 if (!AcceptsRelationalExplorer(owner, runtime)) return;
                 var prior = _relationalIndexProgress;
                 _relationalIndexProgress = new(prior?.Considered ?? 0, prior?.Published ?? 0, prior?.Unchanged ?? 0,
-                    Math.Max(1, prior?.Failed ?? 0), prior?.UnloadedResources ?? 0, false, false, FailureCode: "RefreshFailed");
-                StatusText = "Derived reference indexing is incomplete. Browsing remains available; references are not ready.";
+                    Math.Max(1, prior?.Failed ?? 0), prior?.UnloadedResources ?? 0, true, false,
+                    FailureCode: ex is Microsoft.Data.SqlClient.SqlException sql ? "SQL_" + sql.Number : ex.GetType().Name,
+                    Resource: prior?.Resource, Document: prior?.Document, Phase: "Stopped", Elapsed: _relationalIndexElapsed?.Elapsed ?? default,
+                    FailedResource: prior?.Resource, FailedDocument: prior?.Document);
+                StatusText = RelationalIndexStatus(_relationalIndexProgress);
+            });
+        }
+        finally
+        {
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!AcceptsRelationalExplorer(owner, runtime)) return;
+                _relationalIndexStatusTimer?.Stop(); _relationalIndexStatusTimer = null;
+                _relationalIndexElapsed?.Stop();
             });
         }
     }
 
-    private static string RelationalIndexStatus(ExplorerIndexRefreshProgress progress) => progress.FullyPublished
-        ? $"Derived references published: {progress.Published} updated, {progress.Unchanged} unchanged documents."
-        : $"Derived references {(progress.Completed ? "incomplete" : "indexing")}: {progress.Considered} documents, {progress.Failed} failures, {progress.UnloadedResources} unloaded resources.";
+    internal static string RelationalIndexStatus(ExplorerIndexRefreshProgress progress)
+    {
+        string elapsed = progress.Elapsed.TotalDays >= 1 ? progress.Elapsed.ToString(@"d\.hh\:mm\:ss") : progress.Elapsed.ToString(@"hh\:mm\:ss");
+        if (progress.Completed && progress.Phase != "Preparing highlights" && progress.FullyPublished)
+            return $"References ready: {progress.Published:N0} indexed, {progress.Unchanged:N0} unchanged; " +
+                $"{progress.UnloadedResources:N0} unloaded resources excluded; {elapsed}.";
+        string state = progress.Phase == "Preparing highlights" ? "preparing highlights" : progress.Completed ? "finished (incomplete)" : progress.Phase.ToLowerInvariant();
+        string current = progress.Resource == null ? "" : "; " + ShortName(progress.Resource);
+        if (progress.Document != null) current += " / " + ShortName(progress.Document);
+        string failure = progress.FailureCode == null ? "" : " (" + progress.FailureCode + ")";
+        if (progress.Completed && progress.FailedResource != null)
+            failure += " at " + ShortName(progress.FailedResource) + (progress.FailedDocument == null ? "" : " / " + ShortName(progress.FailedDocument));
+        return $"Reference index {state}: {progress.Considered:N0} checked, {progress.Published:N0} indexed, {progress.Unchanged:N0} unchanged; " +
+            $"{elapsed}; {progress.Failed:N0} failures{failure}, {progress.UnloadedResources:N0} unloaded resources{current}.";
+        static string ShortName(string name) => name.Length <= 60 ? name : name[..57] + "...";
+    }
 
     private void RequestRelationalReferenceRefresh()
     {
@@ -663,7 +701,7 @@ public partial class MainWindow
         await using var linked = new ExplorerCancellationLifetime(ct, _relationalExplorerCancellation!.Token);
         var scope = _relationalExplorerScope ?? throw new InvalidOperationException("No relational scope is selected.");
         var context = await ReadContextAsync();
-        if (!AcceptsRelationalExplorer(owner, runtime) || !context.DiscoveryReconciled ||
+        if (!AcceptsRelationalExplorer(owner, runtime) || !runtime.References.IsDiscoveryReady(context) ||
             context.CatalogueGeneration != _relationalReferenceCatalogue.Paint.Context.CatalogueGeneration ||
             context.ScopeVersion != scope.Context.ScopeVersion || context.SnapshotCatalogueVersion != scope.Context.SnapshotCatalogueVersion ||
             context.DiagramCatalogueVersion != scope.Context.DiagramCatalogueVersion)

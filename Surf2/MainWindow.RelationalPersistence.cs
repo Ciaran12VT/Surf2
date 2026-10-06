@@ -67,6 +67,7 @@ public partial class MainWindow
                     CloseAllOpenWindows(); ClearSelectedWorkbench();
                     _relationalRetainedWindows.Clear(); _relationalRetainedConnections.Clear();
                     ApplyRelationalScope(prepared);
+                    RememberRelationalScopeSwitchWorkbenchBaseline();
                     if (previous != null) await previous.DisposeAsync();
                 }
                 catch { if (!ReferenceEquals(_relationalScopeEdit, prepared.Edit)) await prepared.Edit.DisposeAsync(); throw; }

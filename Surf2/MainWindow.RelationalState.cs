@@ -117,12 +117,14 @@ public partial class MainWindow
                     _canvasZoom = NormalizeCanvasZoom(_workspaceState.CanvasZoom); ApplyCanvasZoom();
                     await RestoreRelationalDocumentsAsync(ct);
                     RequireRelationalStartup(ct);
-                    _ = Dispatcher.BeginInvoke(new Action(() =>
+                    await Dispatcher.InvokeAsync(new Action(() =>
                     {
-                        if (!_relationalStateClosing && !ct.IsCancellationRequested) RestoreViewport();
+                        RequireRelationalStartup(ct);
+                        RestoreViewport(); WorkspaceScrollViewer.UpdateLayout();
                     }), DispatcherPriority.ContextIdle);
                 }
                 RequireRelationalStartup(ct);
+                RememberRelationalScopeSwitchWorkbenchBaseline();
                 _persistenceLoadFailureMessage = null; _isPersistenceHydrated = true;
                 RefreshDiagramImageToolMenu();
             }
@@ -362,6 +364,7 @@ public partial class MainWindow
                 RequireRelationalSelection(generation, ct);
                 var previous = _relationalScopeEdit; CloseAllOpenWindows(); ClearSelectedWorkbench();
                 _relationalRetainedWindows.Clear(); _relationalRetainedConnections.Clear(); ApplyRelationalScope(prepared);
+                RememberRelationalScopeSwitchWorkbenchBaseline();
                 if (previous != null) await previous.DisposeAsync();
             }
             catch { if (!ReferenceEquals(_relationalScopeEdit, prepared.Edit)) await prepared.Edit.DisposeAsync(); throw; }
@@ -995,6 +998,7 @@ public partial class MainWindow
                 if (old != null) await old.DisposeAsync();
                 _relationalDefaultWorkbenchScope = scope.SubjectKey;
                 _relationalDefaultWorkbenchComparison = CreateRelationalWorkbenchComparisonKey(captured.Workbench);
+                RememberRelationalScopeSwitchWorkbenchBaseline(captured.Workbench);
                 await RefreshRelationalWorkbenchCatalogueAsync(ct);
                 if (!_relationalStateClosing && generation == _relationalSelectionGeneration && _relationalDiagramEdit == null)
                 {
@@ -1026,6 +1030,7 @@ public partial class MainWindow
         catch (Exception error) when (error is not StateConflictException) { _relationalStateCommandOutcomeUnknown = true; throw; }
         if (_relationalStateClosing || generation != _relationalSelectionGeneration || !ReferenceEquals(scope, _relationalScopeEdit)) return;
         var old = _relationalWorkbenchEdit; _relationalWorkbenchEdit = NewRelationalWorkbenchEdit(captured, saved); if (old != null) await old.DisposeAsync();
+        RememberRelationalScopeSwitchWorkbenchBaseline(captured.Workbench);
         await RefreshRelationalWorkbenchCatalogueAsync(ct);
         if (!_relationalStateClosing && generation == _relationalSelectionGeneration && _relationalDiagramEdit == null)
         {
@@ -1107,12 +1112,15 @@ public partial class MainWindow
                 RequireRelationalSelection(generation, ct);
                 if (!string.IsNullOrWhiteSpace(model.ActiveDocumentPath)) SelectOpenDocument(model.ActiveDocumentPath);
                 RestoreRelationalReferenceLines(model.ReferenceConnectionLines); UpdateEmptyWorkspaceHint();
-                _ = Dispatcher.BeginInvoke(new Action(() =>
+                await Dispatcher.InvokeAsync(new Action(() =>
                 {
-                    if (_relationalStateClosing || generation != _relationalSelectionGeneration) return;
+                    RequireRelationalSelection(generation, ct);
                     RestoreViewport(); DiagramScrollViewer.ScrollToHorizontalOffset(model.DiagramViewportHorizontalOffset);
                     DiagramScrollViewer.ScrollToVerticalOffset(model.DiagramViewportVerticalOffset);
+                    WorkspaceScrollViewer.UpdateLayout(); DiagramScrollViewer.UpdateLayout();
                 }), DispatcherPriority.ContextIdle);
+                RequireRelationalSelection(generation, ct);
+                RememberRelationalScopeSwitchWorkbenchBaseline();
                 if (model.IsDefaultForScope)
                 {
                     _relationalDefaultWorkbenchScope = _relationalScopeEdit?.SubjectKey;
@@ -1165,24 +1173,16 @@ public partial class MainWindow
     {
         using var operation = BeginRelationalStateOperation(ct); ct = operation.Token;
         if (!_isPersistenceHydrated) return true;
+        if (!await ConfirmRelationalGridEditsBeforeStateSwitchAsync(ct)) return false;
         bool diagramDirty = HasRelationalUnsavedDiagramChanges();
-        bool workbenchDirty = false;
-        if (_relationalScopeEdit != null && _activeScope != null)
-        {
-            var target = await RelationalStateRuntime.StateStore.ReadDefaultWorkbenchTargetAsync(_relationalScopeEdit.SubjectKey, _activeScope.ScopeId, ct);
-            var captured = CaptureRelationalWorkbench(null, defaultForScope: true).Workbench;
-            if (target.Summary == null) workbenchDirty = HasMeaningfulWorkbenchState(captured);
-            else
-            {
-                var saved = RequireRelationalLoad(await RelationalStateRuntime.State.LoadWorkbenchAsync(target.Summary, ct), "default workbench");
-                await using (saved) workbenchDirty = CreateRelationalWorkbenchComparisonKey(captured) != CreateRelationalWorkbenchComparisonKey(saved.Snapshot().Workbench);
-            }
-        }
+        bool workbenchDirty = HasRelationalScopeSwitchWorkbenchChanges();
+        bool scopeDirty = HasRelationalScopeSwitchScopeChanges();
         ct.ThrowIfCancellationRequested();
-        if (!diagramDirty && !workbenchDirty) return true;
-        var choice = MessageBox.Show(this, "Save changes before replacing the current workspace?", "Unsaved Changes", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+        if (!diagramDirty && !workbenchDirty && !scopeDirty) return true;
+        var choice = RelationalStateSwitchConfirmation?.Invoke() ?? MessageBox.Show(this, "Save changes before replacing the current workspace?", "Unsaved Changes", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
         if (choice == MessageBoxResult.Cancel) return false;
         if (choice == MessageBoxResult.No) return true;
+        if (scopeDirty) await SaveRelationalScopeAsync(ct);
         if (diagramDirty && !await SaveDiagramFromUiAsync()) return false;
         if (workbenchDirty) await SaveRelationalWorkbenchAsync(ct); return true;
     }

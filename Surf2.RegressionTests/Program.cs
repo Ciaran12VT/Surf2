@@ -13,6 +13,16 @@ using Surf2.Storage.Relational.Access.State;
 using Surf2.Services.RelationalExplorer;
 
 int passed = 0;
+if (args.Contains("--scope-ui", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunScopePickerUiChecksAsync(Check);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} scope UI scenarios."); return; }
+}
+if (args.Contains("--scope-dirty", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeScopeSwitchDirtyChecksAsync(Check);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} scope change checks."); return; }
+}
 if (args.Contains("--migration-progress", StringComparer.Ordinal))
 {
     StorageRegressionSuite.RunMigrationProgressChecks(Check);
@@ -213,6 +223,11 @@ if (args.Contains("--state-access", StringComparer.Ordinal))
 if (args.Contains("--query-integration", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunQueryIntegrationChecksAsync(Check);
+}
+
+if (args.Contains("--scope-index", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunScopeIndexChecksAsync(Check);
 }
 
 if (args.Contains("--saved-targets", StringComparer.Ordinal))

@@ -5,7 +5,6 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Surf2.Models;
 using Surf2.Services;
-using Surf2.Storage;
 
 namespace Surf2;
 
@@ -22,20 +21,18 @@ public static class RelationalStatePickerVisualChecks
         string directory = Path.GetFullPath(outputDirectory); Directory.CreateDirectory(directory);
         string previous = AppThemeService.CurrentTheme;
         var passed = new List<string>();
-        var runtime = new RelationalRuntime(SqlServerConnectionOptions.FromConnectionString("Server=unused.invalid;Database=OffscreenFixture;Integrated Security=True"));
-        var scopes = new RelationalScopePickerWindow(runtime);
         try
         {
+            passed.AddRange(await RelationalScopePickerUiChecks.RunOffscreenAsync(directory, ct));
             foreach (string theme in new[] { AppearanceSettings.LightTheme, AppearanceSettings.DarkTheme })
             {
                 ct.ThrowIfCancellationRequested(); AppThemeService.Apply(theme);
-                Render(scopes, "scopes", theme, required: ["New", "Save", "Delete", "Merge Scope", "Add Folder", "Add File", "Add Database", "Edit Database", "Add Snapshot", "Add Diagram", "Remove", "Open", "Close"]);
                 if (preparedSettings != null) Render(preparedSettings, "settings", theme, required: ["Next"]);
             }
         }
         finally
         {
-            await scopes.DrainQueriesAsync(); AppThemeService.Apply(previous);
+            AppThemeService.Apply(previous);
         }
         return passed;
 

@@ -10,37 +10,52 @@ public sealed partial class RelationalScopeIndexRefresher
 {
     private sealed record PublishedState(IndexFreshness Freshness, string? Fingerprint,
         IndexPolicy? Policy, long? SourceRevisionKey, string Language);
+    private sealed record PreparedDocument(DocumentHandle Handle, PublishedState Published);
 
-    private async Task<DocumentHandle> GetOrRegisterAsync(DocumentRegistration registration, CancellationToken ct)
+    private async Task<PreparedDocument> GetOrRegisterAsync(DocumentRegistration registration, CancellationToken ct)
     {
         await using var connection = await _session.OpenAsync(ct).ConfigureAwait(false);
-        await using var command = IndexSql.Command(connection, null, """
-SELECT d.DocumentKey,d.Version,f.OriginalPath FROM surf.Document d LEFT JOIN surf.FileSource f ON f.FileSourceKey=d.FileSourceKey
-WHERE (@Kind=0 AND d.Kind=0 AND (@Ascii=0 OR f.PathIsAscii=0 OR f.PathHash=@Hash))
- OR (@Kind IN(1,2) AND d.Kind=@Kind AND d.SnapshotKey=@Snapshot AND d.SnapshotResourceKey=@Resource)
- OR (@Kind=3 AND d.Kind=3 AND d.DiagramRevisionKey=@Diagram);
-""");
         string? path = (registration.Owner as FileDocumentOwner)?.Path;
         var snapshot = registration.Owner as SnapshotDocumentOwner;
         var diagram = registration.Owner as DiagramDocumentOwner;
         var kind = path != null ? IndexedDocumentKind.File : snapshot != null ? snapshot.IsTableCode ? IndexedDocumentKind.TableCode
             : IndexedDocumentKind.Definition : IndexedDocumentKind.Diagram;
+        string predicate = kind switch
+        {
+            IndexedDocumentKind.File => "d.Kind=0 AND (@Ascii=0 OR f.PathIsAscii=0 OR f.PathHash=@Hash)",
+            IndexedDocumentKind.Definition or IndexedDocumentKind.TableCode => "d.Kind=@Kind AND d.SnapshotKey=@Snapshot AND d.SnapshotResourceKey=@Resource",
+            _ => "d.Kind=3 AND d.DiagramRevisionKey=@Diagram"
+        };
+        await using var command = IndexSql.Command(connection, null, $"""
+SELECT d.DocumentKey,d.Version,LEFT(f.OriginalPath,65537),d.Freshness,r.SourceFingerprint,
+ r.ParserVersion,r.RendererVersion,r.PolicyVersion,r.SourceRevisionKey,d.Language
+FROM surf.Document d LEFT JOIN surf.FileSource f ON f.FileSourceKey=d.FileSourceKey
+LEFT JOIN surf.DocumentRevision r ON r.DocumentRevisionKey=d.CurrentRevisionKey
+WHERE {predicate};
+""");
         IndexSql.Add(command, "@Kind", SqlDbType.Int, (int)kind);
         IndexSql.Add(command, "@Ascii", SqlDbType.Bit, path != null && ReferenceMetadata.IsAscii(path));
         IndexSql.Add(command, "@Hash", SqlDbType.Binary, path == null ? null : IndexSql.Hash(path.ToUpperInvariant()), 32);
         IndexSql.Add(command, "@Snapshot", SqlDbType.BigInt, snapshot?.SnapshotKey);
         IndexSql.Add(command, "@Resource", SqlDbType.BigInt, snapshot?.ResourceKey);
         IndexSql.Add(command, "@Diagram", SqlDbType.BigInt, diagram?.DiagramRevisionKey);
-        DocumentHandle? found = null;
+        PreparedDocument? found = null;
         using (var cancel = RelationalSession.CancelCommand(command, ct))
         await using (var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false))
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
-                if (path != null && !string.Equals(path, reader.GetString(2), StringComparison.OrdinalIgnoreCase)) continue;
+                if (path != null)
+                {
+                    string original = reader.GetString(2);
+                    if (original.Length > 65536) throw new ExplorerLimitException("A physical index locator exceeds its metadata limit.");
+                    if (!string.Equals(path, original, StringComparison.OrdinalIgnoreCase)) continue;
+                }
                 if (found != null) throw new InvalidOperationException("The typed document identity is ambiguous.");
-                found = new(reader.GetInt64(0), IndexSql.Hex((byte[])reader[1]));
+                found = new(new(reader.GetInt64(0), IndexSql.Hex((byte[])reader[1])), ReadPublished(reader, 3));
             }
-        return found ?? await _index.RegisterAsync(registration, ct).ConfigureAwait(false);
+        if (found != null) return found;
+        var handle = await _index.RegisterAsync(registration, ct).ConfigureAwait(false);
+        return new(handle, await ReadPublishedAsync(handle.DocumentKey, ct).ConfigureAwait(false));
     }
 
     private async Task<PublishedState> ReadPublishedAsync(long documentKey, CancellationToken ct)
@@ -55,10 +70,13 @@ WHERE d.DocumentKey=@Document;
         using var cancel = RelationalSession.CancelCommand(command, ct);
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         if (!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new KeyNotFoundException("Document not registered.");
-        return new((IndexFreshness)reader.GetInt32(0), reader.IsDBNull(1) ? null : IndexSql.Hex((byte[])reader[1]),
-            reader.IsDBNull(2) ? null : new(reader.GetString(2), reader.GetString(3), reader.GetString(4)),
-            reader.IsDBNull(5) ? null : reader.GetInt64(5), reader.GetString(6));
+        return ReadPublished(reader, 0);
     }
+
+    private static PublishedState ReadPublished(SqlDataReader reader, int start) =>
+        new((IndexFreshness)reader.GetInt32(start), reader.IsDBNull(start + 1) ? null : IndexSql.Hex((byte[])reader[start + 1]),
+            reader.IsDBNull(start + 2) ? null : new(reader.GetString(start + 2), reader.GetString(start + 3), reader.GetString(start + 4)),
+            reader.IsDBNull(start + 5) ? null : reader.GetInt64(start + 5), reader.GetString(start + 6));
 
     private async Task InvalidateDiscoveryAsync(ExplorerScope scope, CancellationToken ct)
     {
@@ -189,7 +207,7 @@ INSERT surf.DocumentLocator(DocumentKey,ScopeResourceKey,Kind,OriginalLocator,Lo
         await transaction.CommitAsync(ct).ConfigureAwait(false);
     }
 
-    // Prune only a successfully enumerated loaded resource, one obsolete document membership at a time.
+    // Prune only successfully enumerated loaded resources, in bounded key batches.
     private async Task PruneAsync(ExplorerScope scope, long resourceKey, HashSet<(long Resource, long Document)> seen, CancellationToken ct)
     {
         long after = 0;
@@ -208,24 +226,24 @@ SELECT TOP(64) DocumentKey FROM surf.ResourceDocument WHERE ScopeResourceKey=@Re
                 while (await reader.ReadAsync(ct).ConfigureAwait(false)) page.Add(reader.GetInt64(0));
             }
             if (page.Count == 0) break;
-            foreach (long document in page)
-            {
-                after = document;
-                if (seen.Contains((resourceKey, document))) continue;
-                await using var connection = await _session.OpenAsync(ct).ConfigureAwait(false);
-                await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
-                await IndexSql.MutateHeadAsync(connection, transaction, ct).ConfigureAwait(false);
-                await FenceDomainAsync(connection, transaction, scope.Context, ct).ConfigureAwait(false);
-                await using var command = IndexSql.Command(connection, transaction, """
-DELETE surf.DocumentLocator WHERE ScopeResourceKey=@Resource AND DocumentKey=@Document;
-DELETE surf.ResourceDocument WHERE ScopeResourceKey=@Resource AND DocumentKey=@Document;
+            after = page[^1];
+            long[] obsolete = page.Where(document => !seen.Contains((resourceKey, document))).ToArray();
+            if (obsolete.Length == 0) continue;
+            await using var pruneConnection = await _session.OpenAsync(ct).ConfigureAwait(false);
+            await using var transaction = (SqlTransaction)await pruneConnection.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
+            await IndexSql.MutateHeadAsync(pruneConnection, transaction, ct).ConfigureAwait(false);
+            await FenceDomainAsync(pruneConnection, transaction, scope.Context, ct).ConfigureAwait(false);
+            await using var prune = IndexSql.Command(pruneConnection, transaction, """
+DELETE l FROM surf.DocumentLocator l WHERE l.ScopeResourceKey=@Resource
+ AND EXISTS(SELECT 1 FROM @Documents d WHERE d.Id=l.DocumentKey);
+DELETE m FROM surf.ResourceDocument m WHERE m.ScopeResourceKey=@Resource
+ AND EXISTS(SELECT 1 FROM @Documents d WHERE d.Id=m.DocumentKey);
 """);
-                IndexSql.Add(command, "@Resource", SqlDbType.BigInt, resourceKey);
-                IndexSql.Add(command, "@Document", SqlDbType.BigInt, document);
-                using var cancel = RelationalSession.CancelCommand(command, ct);
-                await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
-                await transaction.CommitAsync(ct).ConfigureAwait(false);
-            }
+            IndexSql.Add(prune, "@Resource", SqlDbType.BigInt, resourceKey);
+            IndexSql.Keys(prune, "@Documents", obsolete);
+            using var pruneCancel = RelationalSession.CancelCommand(prune, ct);
+            await prune.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
         }
     }
 
