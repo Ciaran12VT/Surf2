@@ -6,7 +6,7 @@ using Surf2.Models;
 
 namespace Surf2.Services;
 
-public sealed class SqlTraceService
+public sealed partial class SqlTraceService
 {
     private const int MaximumTraceDepth = 20;
 
@@ -150,7 +150,9 @@ public sealed class SqlTraceService
     private static List<SqlTraceObject> FindCalledStoredProcedures(
         string sql,
         IReadOnlyCollection<SqlTraceObject> storedProcedures,
-        string currentObjectKey)
+        string currentObjectKey,
+        CancellationToken cancellationToken = default,
+        bool bounded = false)
     {
         if (string.IsNullOrWhiteSpace(sql) || storedProcedures.Count == 0)
         {
@@ -163,6 +165,7 @@ public sealed class SqlTraceService
 
         foreach (SqlTraceObject storedProcedure in storedProcedures)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (string.Equals(NormalizeTraceName(storedProcedure.Key), normalizedCurrentObjectKey, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(NormalizeTraceName(storedProcedure.SimpleName), normalizedCurrentObjectKey, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(NormalizeTraceName(storedProcedure.QualifiedName), normalizedCurrentObjectKey, StringComparison.OrdinalIgnoreCase))
@@ -174,7 +177,9 @@ public sealed class SqlTraceService
             string pattern =
                 $@"(?i)\b(?:exec(?:ute)?\s+)?(?:(?:\[[^\]\r\n]+\]|[A-Za-z_#][A-Za-z0-9_#$]*)\s*\.\s*){{0,2}}\[?{escapedName}\]?(?=\s*(?:;|\(|@|\b|$))";
 
-            if (Regex.IsMatch(strippedSql, pattern, RegexOptions.CultureInvariant))
+            if (bounded
+                ? Regex.IsMatch(strippedSql, pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250))
+                : Regex.IsMatch(strippedSql, pattern, RegexOptions.CultureInvariant))
             {
                 results.Add(storedProcedure);
             }

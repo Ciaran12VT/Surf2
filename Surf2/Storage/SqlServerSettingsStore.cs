@@ -5,7 +5,12 @@ namespace Surf2.Storage;
 public sealed class SqlServerSettingsStore : ISettingsStore
 {
     private const string DocumentKey = "app-settings";
-    private readonly SqlServerDocumentStore _documentStore = new();
+    private readonly SqlServerDocumentStore _documentStore;
+
+    public SqlServerSettingsStore(SqlServerConnectionOptions? options = null)
+    {
+        _documentStore = new(options ?? SqlServerConnectionOptions.CreateDefault());
+    }
     private readonly JsonSettingsStore _jsonFallback = new();
 
     public async Task<AppSettings> LoadAsync(CancellationToken cancellationToken = default)

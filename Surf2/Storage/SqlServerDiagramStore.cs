@@ -5,7 +5,12 @@ namespace Surf2.Storage;
 public sealed class SqlServerDiagramStore : IDiagramStore
 {
     private const string DocumentKey = "diagram-library";
-    private readonly SqlServerDocumentStore _documentStore = new();
+    private readonly SqlServerDocumentStore _documentStore;
+
+    public SqlServerDiagramStore(SqlServerConnectionOptions? options = null)
+    {
+        _documentStore = new(options ?? SqlServerConnectionOptions.CreateDefault());
+    }
     private readonly JsonDiagramStore _jsonFallback = new();
 
     public async Task<DiagramLibrary> LoadAsync(CancellationToken cancellationToken = default)

@@ -1,10 +1,14 @@
 # Surf 2.0 Relational Query Access Implementation Plan
 
-Status: proposed follow-on implementation for review. Date: 6 October 2026.
+Status: application query implementation integrated and functionally validated; release qualification remains. Date: 6 October 2026.
+
+Typed query identities, request lifetimes, byte-bounded caching, selected-state edits, lazy preference queries, and grid/explorer providers are implemented. Startup, selected documents, references/search, grids, targeted saves, scopes, diagrams/workbenches, history/capture/comparison, SQL trace, and package transfers use the relational path without rebuilding global libraries. The final access/query/state gate passed 1,189 checks and the actual-control offscreen WPF gate passed 421 checks; provider and binding-model prototypes passed 4,786 and 2,026 assertions respectively. See the implementation results for secondary-workflow gates and explicit compatibility limits. Phase 8 real-corpus benchmarking, native UI/accessibility soak, SQL plan review, and deployment qualification remain release work; no quantified application memory improvement is claimed.
+
+[Implementation results](<C:/Users/ciara/source/repos/Surf 2.0/docs/relational-implementation-results.md>) record the 569-check secondary-workflow gate, 116 isolated comparison checks, 92-check bounded storage benchmark, current compatibility limits, and migration/rollback steps.
 
 Make Surf request only the metadata, document content, table rows, and saved state needed for the user's current work. Keep SQL Server, preserve current navigation and search behaviour, and replace whole-library reads and writes with narrow asynchronous operations. Normalized tables alone will not reduce Surf's retained memory if the application recreates its current library objects from those tables.
 
-This is the application-side companion to the [Relational Persistence Implementation Plan](<C:/Users/ciara/source/repos/Surf 2.0/docs/relational-persistence-implementation-plan.md>). It assumes that plan's entity identities, immutable revisions, history mapping, migration safeguards, and captured-data prototype have been implemented and validated. Proposed interface and component names below are design contracts, not existing implementation. This document does not authorize runtime code changes or a database conversion.
+This is the application-side companion to the [Relational Persistence Implementation Plan](<C:/Users/ciara/source/repos/Surf 2.0/docs/relational-persistence-implementation-plan.md>). It assumes that plan's entity identities, immutable revisions, history mapping, migration safeguards, and captured-data prototype have been implemented and validated. The user subsequently authorized both implementations. Representative interface names below describe design contracts; concrete implementation names may differ. No user database has been converted or selected by development tests.
 
 ## 1. Scope and Required Outcomes
 

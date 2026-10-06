@@ -137,8 +137,9 @@ public partial class SettingsWindow : Window
         DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 8 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SelectRelationalPreferenceAsync(0); return; }
         if (!_loadingSelection && _activeSetting != null)
         {
             _ = CommitFieldsToSetting(_activeSetting, requireValid: false);
@@ -249,6 +250,7 @@ public partial class SettingsWindow : Window
 
     private void AddButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { AddRelationalPreference(0); return; }
         if (_activeSetting != null)
         {
             _ = CommitFieldsToSetting(_activeSetting, requireValid: false);
@@ -269,6 +271,7 @@ public partial class SettingsWindow : Window
 
     private void RemoveButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { RemoveRelationalPreference(0); return; }
         if (BackcolorList.SelectedItem is not ExtensionBackcolorSetting setting)
         {
             return;
@@ -287,8 +290,9 @@ public partial class SettingsWindow : Window
         BackcolorList.SelectedIndex = Math.Min(index, _backcolors.Count - 1);
     }
 
-    private void SaveButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings())
         {
             return;
@@ -308,8 +312,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void HighlightStyleList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void HighlightStyleList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SelectRelationalPreferenceAsync(1); return; }
         if (!_loadingHighlightSelection && _activeHighlightStyle != null)
         {
             _ = CommitHighlightFieldsToSetting(_activeHighlightStyle, requireValid: false);
@@ -399,8 +404,9 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void SaveHighlightButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveHighlightButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveReferenceHighlightSettings(validateActive: true))
         {
             return;
@@ -420,8 +426,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void DiagramImageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void DiagramImageList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SelectRelationalPreferenceAsync(2); return; }
         if (!_loadingDiagramImageSelection && _activeDiagramImage != null)
         {
             _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
@@ -516,8 +523,9 @@ public partial class SettingsWindow : Window
         DiagramImageResourceTypeComboBox.SelectedIndex = 0;
     }
 
-    private void ImportDiagramImageButton_Click(object sender, RoutedEventArgs e)
+    private async void ImportDiagramImageButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await ImportRelationalPreferenceImageAsync(); return; }
         if (_activeDiagramImage == null)
         {
             return;
@@ -569,6 +577,7 @@ public partial class SettingsWindow : Window
 
     private async void ExportDiagramImagePackageButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await ExportRelationalSelectedImagePackageAsync(); return; }
         if (!SaveDiagramImageSettings(validateActive: true))
         {
             return;
@@ -609,6 +618,7 @@ public partial class SettingsWindow : Window
 
     private async void ImportDiagramImagePackageButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await ImportRelationalImagePackageAsync(); return; }
         if (_activeDiagramImage != null)
         {
             _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
@@ -722,6 +732,7 @@ public partial class SettingsWindow : Window
 
     private void AddDiagramImageButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { AddRelationalPreference(2); return; }
         if (_activeDiagramImage != null)
         {
             _ = CommitDiagramImageFieldsToSetting(_activeDiagramImage, requireValid: false);
@@ -743,6 +754,7 @@ public partial class SettingsWindow : Window
 
     private void RemoveDiagramImageButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { RemoveRelationalPreference(2); return; }
         if (DiagramImageList.SelectedItem is not DiagramImageDefinition image)
         {
             return;
@@ -774,6 +786,7 @@ public partial class SettingsWindow : Window
 
     private void MoveSelectedDiagramImage(int offset)
     {
+        if (_relationalPreferences != null) { MoveRelationalImage(offset); return; }
         if (DiagramImageList.SelectedItem is not DiagramImageDefinition image)
         {
             return;
@@ -797,8 +810,9 @@ public partial class SettingsWindow : Window
         LoadSelectedDiagramImage(image);
     }
 
-    private void SaveDiagramImagesButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveDiagramImagesButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings() ||
             !SaveReferenceHighlightSettings(validateActive: false) ||
             !SaveDiagramImageSettings(validateActive: true))
@@ -838,27 +852,7 @@ public partial class SettingsWindow : Window
 
     private async void TestConnectionButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!TryNormalizeConnectionString(PersistenceConnectionStringTextBox.Text, out string connectionString, out string validationMessage))
-        {
-            PersistenceValidationText.Foreground = Brushes.Firebrick;
-            PersistenceValidationText.Text = validationMessage;
-            return;
-        }
-
-        PersistenceValidationText.Foreground = Brushes.DimGray;
-        PersistenceValidationText.Text = "Testing connection...";
-
-        try
-        {
-            await SqlServerDocumentStore.TestConnectionAsync(connectionString);
-            PersistenceValidationText.Foreground = Brushes.DarkGreen;
-            PersistenceValidationText.Text = "Connection succeeded. Surf2 schema is available.";
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException or TimeoutException)
-        {
-            PersistenceValidationText.Foreground = Brushes.Firebrick;
-            PersistenceValidationText.Text = $"Connection failed: {ex.Message}";
-        }
+        await TestRelationalPersistenceConnectionAsync();
     }
 
     private void UseDefaultConnectionButton_Click(object sender, RoutedEventArgs e)
@@ -877,105 +871,12 @@ public partial class SettingsWindow : Window
 
     private async void ExportDatabaseButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!TryNormalizeConnectionString(PersistenceConnectionStringTextBox.Text, out string connectionString, out string validationMessage))
-        {
-            PersistenceValidationText.Foreground = Brushes.Firebrick;
-            PersistenceValidationText.Text = validationMessage;
-            return;
-        }
-
-        var dialog = new SaveFileDialog
-        {
-            Title = "Export Database",
-            Filter = "Surf2 database export (*.surf2db.zip)|*.surf2db.zip|Zip files (*.zip)|*.zip|All files (*.*)|*.*",
-            DefaultExt = ".surf2db.zip",
-            FileName = $"surf2-export-{DateTime.Now:yyyyMMdd-HHmmss}.surf2db.zip"
-        };
-
-        if (dialog.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        SetPersistenceActionsEnabled(false);
-        PersistenceValidationText.Foreground = Brushes.DimGray;
-        PersistenceValidationText.Text = "Exporting database...";
-
-        try
-        {
-            PersistenceExportResult result = await _persistencePackageService.ExportAsync(dialog.FileName, connectionString);
-            PersistenceValidationText.Foreground = Brushes.DarkGreen;
-            PersistenceValidationText.Text = $"Exported {result.DocumentCount} database document(s) and {result.LocalFileCount} local file(s).";
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SqlException or InvalidOperationException or ArgumentException)
-        {
-            PersistenceValidationText.Foreground = Brushes.Firebrick;
-            PersistenceValidationText.Text = $"Export failed: {ex.Message}";
-        }
-        finally
-        {
-            SetPersistenceActionsEnabled(true);
-        }
+        await ExportRelationalPersistenceAsync();
     }
 
     private async void ImportDatabaseButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!TryNormalizeConnectionString(PersistenceConnectionStringTextBox.Text, out string connectionString, out string validationMessage))
-        {
-            PersistenceValidationText.Foreground = Brushes.Firebrick;
-            PersistenceValidationText.Text = validationMessage;
-            return;
-        }
-
-        var dialog = new OpenFileDialog
-        {
-            Title = "Import Database",
-            Filter = "Surf2 database export (*.surf2db.zip)|*.surf2db.zip|Zip files (*.zip)|*.zip|All files (*.*)|*.*"
-        };
-
-        if (dialog.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        MessageBoxResult confirmation = MessageBox.Show(
-            this,
-            "Import this database export into the currently configured Surf2 database?",
-            "Import Database",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-
-        if (confirmation != MessageBoxResult.Yes)
-        {
-            return;
-        }
-
-        SetPersistenceActionsEnabled(false);
-        PersistenceValidationText.Foreground = Brushes.DimGray;
-        PersistenceValidationText.Text = "Importing database...";
-
-        try
-        {
-            PersistenceImportResult result = await _persistencePackageService.ImportAsync(dialog.FileName, connectionString);
-            PersistenceDatabaseImported = true;
-            MessageBox.Show(
-                this,
-                $"Imported {result.DocumentCount} database document(s) and restored {result.RestoredLocalFileCount} local file(s). Restart Surf2 to load the imported setup.",
-                "Import Database",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            DialogResult = true;
-            Close();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SqlException or InvalidOperationException or InvalidDataException or ArgumentException)
-        {
-            PersistenceValidationText.Foreground = Brushes.Firebrick;
-            PersistenceValidationText.Text = $"Import failed: {ex.Message}";
-        }
-        finally
-        {
-            SetPersistenceActionsEnabled(true);
-        }
+        await ImportRelationalPersistenceAsync();
     }
 
     private void SetPersistenceActionsEnabled(bool isEnabled)
@@ -986,7 +887,7 @@ public partial class SettingsWindow : Window
         ImportDatabaseButton.IsEnabled = isEnabled;
     }
 
-    private void SavePersistenceButton_Click(object sender, RoutedEventArgs e)
+    private async void SavePersistenceButton_Click(object sender, RoutedEventArgs e)
     {
         if (!PersistenceConnectionStringTextBox.IsEnabled)
         {
@@ -1005,6 +906,7 @@ public partial class SettingsWindow : Window
         ConnectionSettings.ConnectionString = connectionString;
         _connectionSettingsStore.Save(ConnectionSettings);
         ConnectionSettingsWereChanged = true;
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         SaveWorkbenchSettings();
         SaveKeyboardShortcutSettings();
         SaveAppearanceSettings();
@@ -1014,8 +916,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void SaveKeyboardShortcutSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveKeyboardShortcutSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings() ||
             !SaveReferenceHighlightSettings(validateActive: false) ||
             !SaveDiagramImageSettings(validateActive: false))
@@ -1031,8 +934,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void SaveResourceComparisonSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveResourceComparisonSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings() ||
             !SaveReferenceHighlightSettings(validateActive: false) ||
             !SaveDiagramImageSettings(validateActive: false))
@@ -1048,8 +952,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void SaveWorkbenchSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveWorkbenchSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings() ||
             !SaveReferenceHighlightSettings(validateActive: false) ||
             !SaveDiagramImageSettings(validateActive: false))
@@ -1065,8 +970,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void SaveAppearanceSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveAppearanceSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings() ||
             !SaveReferenceHighlightSettings(validateActive: false) ||
             !SaveDiagramImageSettings(validateActive: false))
@@ -1082,8 +988,9 @@ public partial class SettingsWindow : Window
         Close();
     }
 
-    private void SaveDiagnosticsSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void SaveDiagnosticsSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relationalPreferences != null) { await SaveRelationalPreferenceSelectionAsync(); return; }
         if (!SaveBackcolorSettings() ||
             !SaveReferenceHighlightSettings(validateActive: false) ||
             !SaveDiagramImageSettings(validateActive: false))

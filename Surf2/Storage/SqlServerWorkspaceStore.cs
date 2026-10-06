@@ -5,7 +5,12 @@ namespace Surf2.Storage;
 public sealed class SqlServerWorkspaceStore : IWorkspaceStore
 {
     private const string DocumentKey = "workspace-state";
-    private readonly SqlServerDocumentStore _documentStore = new();
+    private readonly SqlServerDocumentStore _documentStore;
+
+    public SqlServerWorkspaceStore(SqlServerConnectionOptions? options = null)
+    {
+        _documentStore = new(options ?? SqlServerConnectionOptions.CreateDefault());
+    }
     private readonly JsonWorkspaceStore _jsonFallback = new();
 
     public async Task<WorkspaceState> LoadAsync(CancellationToken cancellationToken = default)

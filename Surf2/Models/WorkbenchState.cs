@@ -91,6 +91,13 @@ public sealed class WorkbenchLibrary
 
 public sealed class ReferenceConnectionLineState
 {
+    [System.Text.Json.Serialization.JsonIgnore] public long? SourceBoundSnapshotKey { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public long? SourceBoundResourceKey { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public SavedDocumentTargetState SourceTargetState { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public long? TargetBoundSnapshotKey { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public long? TargetBoundResourceKey { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore] public SavedDocumentTargetState TargetTargetState { get; set; }
+
     public string ConnectionId { get; set; } = Guid.NewGuid().ToString("N");
 
     public string SourceFilePath { get; set; } = string.Empty;

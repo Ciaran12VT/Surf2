@@ -240,7 +240,7 @@ public partial class App : Application
     {
         try
         {
-            string connectionString = SqlServerConnectionOptions.CreateDefault().ConnectionString;
+            string connectionString = mainWindow.EffectivePersistenceConnectionString;
             _databaseExternalOpenPipeServer = StartExternalOpenPipeServer(
                 ExternalOpenPipeNames.CreateDatabase(connectionString),
                 mainWindow);
@@ -249,7 +249,14 @@ public partial class App : Application
                 mainWindow);
 
             mainWindow.ActiveScopeChanged += (_, _) =>
-                RefreshActiveScopeExternalOpenPipeServer(mainWindow, connectionString);
+                RefreshActiveScopeExternalOpenPipeServer(mainWindow, mainWindow.EffectivePersistenceConnectionString);
+            mainWindow.PersistenceConnectionChanged += (_, _) =>
+            {
+                _databaseExternalOpenPipeServer?.Dispose();
+                _databaseExternalOpenPipeServer = StartExternalOpenPipeServer(
+                    ExternalOpenPipeNames.CreateDatabase(mainWindow.EffectivePersistenceConnectionString), mainWindow);
+                RefreshActiveScopeExternalOpenPipeServer(mainWindow, mainWindow.EffectivePersistenceConnectionString);
+            };
             RefreshActiveScopeExternalOpenPipeServer(mainWindow, connectionString);
         }
         catch (Exception ex)

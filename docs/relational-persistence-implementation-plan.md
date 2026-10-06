@@ -1,10 +1,14 @@
 # Surf 2.0 Relational Persistence Implementation Plan
 
-Status: proposed design for review. Date: 6 October 2026.
+Status: storage implementation and integration validated on disposable fixtures. Date: 6 October 2026.
+
+The relational schema, selected-read/write stores, migration coordinator, format probe, and package readers/writers are implemented. The final isolated SQL, local-file, package, image-freeze recovery, selected-state access, bootstrap, and offscreen migration/capture/history-dialog gate passed 4,516 checks. The integrated application WPF gate passed 421 checks. No user database has been converted or activated by this development work. Real-corpus memory measurements and production rollout remain separate release checks; functional results do not establish a quantified application memory improvement. See the companion query plan and implementation results for runtime coverage and limits.
+
+[Implementation results and migration trial steps](<C:/Users/ciara/source/repos/Surf 2.0/docs/relational-implementation-results.md>) record the final gates, bounded-row measurements, read/write boundaries, rollback, and remaining release qualification.
 
 Retain SQL Server and replace collection-sized JSON documents with relational records that can be read independently. Preserve existing data, history, Object Explorer hierarchy, links, diagrams, workbenches, and settings. Design the schema around browsing, opening a document, resolving references, searching a scope, paging table data, and inspecting history.
 
-This stage covers the storage model, legacy mapping, indexes, migration, validation, and implementation sequence. Detailed application-side repositories, caching, cancellation, and UI orchestration are the next design stage. No production schema changes or application implementation are authorized by this document.
+This stage covers the storage model, legacy mapping, indexes, migration, validation, and implementation sequence. The user subsequently authorized implementation of this plan and its application-query companion. Development and verification use disposable fixtures; converting or selecting the user's existing database remains an explicit application action.
 
 ## 1. Decisions and Scope
 

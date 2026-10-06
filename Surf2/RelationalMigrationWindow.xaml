@@ -1,0 +1,46 @@
+<Window x:Class="Surf2.RelationalMigrationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Migrate Surf Database" Width="650" Height="400" MinWidth="540" MinHeight="360"
+        WindowStartupLocation="CenterOwner" Background="{DynamicResource Theme.WindowBackgroundBrush}"
+        Closing="Window_Closing">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <TextBlock Text="Source database" VerticalAlignment="Center"/>
+        <TextBlock x:Name="SourceText" Grid.Column="1" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+        <TextBlock Grid.Row="1" Margin="0,12,0,0" Text="Destination database" VerticalAlignment="Center"/>
+        <TextBox x:Name="DestinationName" Grid.Row="1" Grid.Column="1" Margin="0,12,0,0" MinHeight="27"/>
+        <TextBlock Grid.Row="2" Margin="0,12,0,0" Text="Operation" VerticalAlignment="Center"/>
+        <ComboBox x:Name="Operation" Grid.Row="2" Grid.Column="1" Margin="0,12,0,0" MinHeight="27"
+                  SelectedIndex="0" SelectionChanged="Operation_SelectionChanged">
+            <ComboBoxItem Content="Create a separate database"/>
+            <ComboBoxItem Content="Use an existing empty database"/>
+            <ComboBoxItem Content="Resume an interrupted migration"/>
+        </ComboBox>
+        <TextBlock x:Name="RecoveryLabel" Grid.Row="3" Margin="0,12,0,0" Text="Recovery staging" VerticalAlignment="Center" Visibility="Collapsed"/>
+        <DockPanel x:Name="RecoveryPanel" Grid.Row="3" Grid.Column="1" Margin="0,12,0,0" Visibility="Collapsed">
+            <Button DockPanel.Dock="Right" Width="30" Margin="6,0,0,0" Content="..." ToolTip="Choose recovery staging directory"
+                    Click="BrowseRecovery_Click"/>
+            <TextBox x:Name="RecoveryPath" MinHeight="27"/>
+        </DockPanel>
+        <TextBlock Grid.Row="4" Grid.ColumnSpan="2" Margin="0,16,0,0" TextWrapping="Wrap"
+                   Text="The original database is preserved. An incomplete destination cannot be opened as a migrated database."/>
+        <Grid Grid.Row="5" Grid.ColumnSpan="2" Margin="0,16,0,16" MinHeight="40">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <ProgressBar x:Name="Progress" Height="5" Visibility="Collapsed" IsIndeterminate="True"/>
+            <TextBox x:Name="Status" Grid.Row="1" Margin="0,10,0,0" IsReadOnly="True" TextWrapping="Wrap" BorderThickness="0"
+                     Background="Transparent" VerticalScrollBarVisibility="Auto"/>
+        </Grid>
+        <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="ConvertButton" Content="Migrate" MinWidth="95" Height="30" Margin="0,0,8,0"
+                    Style="{StaticResource SurfSaveButtonStyle}" Click="Convert_Click"/>
+            <Button x:Name="CloseButton" Content="Cancel" MinWidth="95" Height="30"
+                    Style="{StaticResource SurfCloseButtonStyle}" Click="Close_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

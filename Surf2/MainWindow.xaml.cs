@@ -243,12 +243,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly LinkableResourceService _linkableResourceService = new();
     private readonly ResourceComparisonService _resourceComparisonService = new();
     private readonly ExistingScopeResourceService _existingScopeResourceService = new();
-    private readonly IWorkspaceStore _workspaceStore = new SqlServerWorkspaceStore();
-    private readonly IScopeStore _scopeStore = new SqlServerScopeStore();
-    private readonly ISettingsStore _settingsStore = new SqlServerSettingsStore();
-    private readonly IDatabaseMetadataStore _databaseMetadataStore = new SqlServerDatabaseMetadataStore();
-    private readonly IDiagramStore _diagramStore = new SqlServerDiagramStore();
-    private readonly IWorkbenchStore _workbenchStore = new SqlServerWorkbenchStore();
+    private readonly SqlServerConnectionOptions _persistenceOptions;
+    private readonly IWorkspaceStore _workspaceStore;
+    private readonly IScopeStore _scopeStore;
+    private readonly ISettingsStore _settingsStore;
+    private readonly IDatabaseMetadataStore _databaseMetadataStore;
+    private readonly IDiagramStore _diagramStore;
+    private readonly IWorkbenchStore _workbenchStore;
     private readonly DatabaseDocumentService _databaseDocumentService = new();
     private readonly DatabaseExportService _databaseExportService;
     private readonly DatabaseSnapshotHistoryService _databaseSnapshotHistoryService;
@@ -388,8 +389,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private readonly DispatcherTimer _diagramCtrlShiftZoomTimer;
     private readonly TaskCompletionSource<bool> _startupReadyCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public MainWindow()
+    public MainWindow() : this(SqlServerConnectionOptions.CreateDefault()) { }
+
+    public MainWindow(SqlServerConnectionOptions persistenceOptions)
     {
+        _persistenceOptions = persistenceOptions ?? throw new ArgumentNullException(nameof(persistenceOptions));
+        _workspaceStore = new SqlServerWorkspaceStore(persistenceOptions);
+        _scopeStore = new SqlServerScopeStore(persistenceOptions);
+        _settingsStore = new SqlServerSettingsStore(persistenceOptions);
+        _databaseMetadataStore = new SqlServerDatabaseMetadataStore(persistenceOptions);
+        _diagramStore = new SqlServerDiagramStore(persistenceOptions);
+        _workbenchStore = new SqlServerWorkbenchStore(persistenceOptions);
         _databaseExportService = new DatabaseExportService(_databaseDocumentService);
         _databaseSnapshotHistoryService = new DatabaseSnapshotHistoryService(_databaseDocumentService);
         InitializeComponent();
@@ -425,6 +435,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public event EventHandler? ActiveScopeChanged;
+
+    public event EventHandler? PersistenceConnectionChanged;
+
+    public string EffectivePersistenceConnectionString => _relational?.Options.ConnectionString ?? _persistenceOptions.ConnectionString;
 
     public ObservableCollection<FileSystemNode> RootNodes { get; } = [];
 
@@ -484,6 +498,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             try
             {
+                if (await TryLoadRelationalPersistenceAsync()) return;
                 WorkspaceState workspaceState = await _workspaceStore.LoadAsync();
                 ScopeLibrary scopeLibrary = await _scopeStore.LoadAsync();
                 DatabaseSnapshotLibrary databaseSnapshots = await _databaseMetadataStore.LoadAsync();
@@ -576,6 +591,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void ScopesButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null)
+        {
+            try { await ShowRelationalScopesAsync(); }
+            catch (Exception error) { StatusText = "Could not change scope: " + error.Message; }
+            return;
+        }
         if (!EnsurePersistenceReadyForSave("scope changes"))
         {
             return;
@@ -621,6 +642,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task LoadScopeAsync(Scope? scope)
     {
+        if (_relational != null)
+        {
+            InvalidateRelationalDocumentContext();
+            await LoadRelationalScopeAsync(scope);
+            return;
+        }
         int loadVersion = ++_scopeLoadVersion;
         RootNodes.Clear();
         _expandedObjectExplorerNodeKeys.Clear();
@@ -675,14 +702,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void LoadObjectExplorerRoots(Scope scope)
+    private Task LoadObjectExplorerRoots(Scope scope)
     {
+        if (_relational != null) return LoadRelationalRootsAsync();
         RootNodes.Clear();
 
         foreach (FileSystemNode node in _fileTreeService.CreateRoots(scope.Resources, _databaseSnapshots, _diagramLibrary, scope.VirtualFolders, GetUnloadedResourceIds()))
         {
             RootNodes.Add(node);
         }
+        return Task.CompletedTask;
     }
 
     public async Task<ExternalOpenResponse> OpenExternalResourceAsync(ExternalOpenRequest request)
@@ -705,6 +734,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             ActivateForExternalOpen();
+
+            if (_relational != null) return await OpenRelationalExternalResourceAsync(request);
 
             Scope? targetScope = FindExternalOpenScope(request);
             if (targetScope == null)
@@ -1079,6 +1110,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task ApplyObjectExplorerSearchAsync()
     {
+        if (_relational != null) { await SearchRelationalExplorerAsync(); return; }
         if (_activeScope == null)
         {
             StatusText = "Create or open a scope before searching.";
@@ -1088,7 +1120,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string query = ObjectExplorerSearchTextBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(query))
         {
-            LoadObjectExplorerRoots(_activeScope);
+            await LoadObjectExplorerRoots(_activeScope);
             StatusText = "Object Explorer search cleared.";
             return;
         }
@@ -1136,6 +1168,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task LoadLastActiveScopeAsync()
     {
+        if (_relational != null) { await LoadRelationalLastActiveScopeAsync(); return; }
         Scope? activeScope = null;
 
         if (!string.IsNullOrWhiteSpace(_scopeLibrary.LastActiveScopeId))
@@ -1358,6 +1391,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (_relational != null)
+        {
+            if (!_relationalExplorerNodes.TryGetValue(node, out var selected))
+            {
+                StatusText = "The selected Explorer occurrence is no longer available. Refresh the scope and try again.";
+                return;
+            }
+            var address = await TryOpenRelationalExplorerNodeAsync(selected);
+            if (address == null) return;
+            string? relatedDataPath = await OpenRelatedTableDataForTableDocumentAsync(address.DocumentPath, null);
+            if (relatedDataPath != null) ApplyObjectExplorerSpreadsheetFilters(relatedDataPath, node);
+            ApplyObjectExplorerContentSearchNavigation(node);
+            return;
+        }
+
         string? tableDataDocumentPath = await OpenFileWithRelatedTableDataAsync(node.FullPath);
         if (tableDataDocumentPath == null)
         {
@@ -1393,6 +1441,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string tableDocumentPath,
         FloatingCodeWindow? fallbackSourceWindow = null)
     {
+        if (_relational != null) return await OpenRelationalRelatedTableDataAsync(tableDocumentPath, fallbackSourceWindow);
         tableDocumentPath = GetCanonicalDatabaseDocumentPath(tableDocumentPath);
         if (!_databaseDocumentService.TryGetTableDataDocumentPathForTableDocument(
                 tableDocumentPath,
@@ -1448,7 +1497,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return true;
     }
 
-    private void ObjectExplorerItem_Expanded(object sender, RoutedEventArgs e)
+    private async void ObjectExplorerItem_Expanded(object sender, RoutedEventArgs e)
     {
         if (e.OriginalSource is TreeViewItem { DataContext: FileSystemNode node })
         {
@@ -1458,7 +1507,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _expandedObjectExplorerNodeKeys.Add(node.NodeKey);
             }
 
-            _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
+            if (_relational != null) await LoadRelationalChildrenAsync(node);
+            else _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
         }
     }
 
@@ -1489,6 +1539,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private ContextMenu? CreateObjectExplorerContextMenu(FileSystemNode node)
     {
+        if (_relational != null) return CreateRelationalObjectExplorerContextMenu(node);
         bool canCreateDiagram = string.Equals(node.FullPath, DiagramDocumentService.DiagramRootPath, StringComparison.OrdinalIgnoreCase);
         bool canOpenContainingFolder = CanOpenContainingFolder(node);
         bool canCreateVirtualFolder = _activeScope != null;
@@ -1708,6 +1759,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task ExportDatabaseDataAsync(FileSystemNode node)
     {
+        if (_relational != null)
+        {
+            await RunRelationalSnapshotNodeHandlerAsync(node, RelationalDatabaseExportHandler);
+            return;
+        }
         if (!TryGetDatabaseSnapshotForNode(node, out DatabaseMetadataSnapshot snapshot))
         {
             StatusText = "This Object Explorer item cannot be exported.";
@@ -1775,6 +1831,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OpenDatabaseHistory(FileSystemNode node)
     {
+        if (_relational != null)
+        {
+            _ = RunRelationalSnapshotNodeHandlerAsync(node, RelationalDatabaseHistoryHandler);
+            return;
+        }
         if (!TryGetDatabaseSnapshotForNode(node, out DatabaseMetadataSnapshot snapshot))
         {
             StatusText = "This Object Explorer item does not have database history.";
@@ -2379,6 +2440,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task CompareObjectExplorerNodeAsync(FileSystemNode node, bool tableData)
     {
+        if (_relational != null)
+        {
+            await CompareRelationalObjectExplorerNodeAsync(node, tableData);
+            return;
+        }
         if (_activeScope == null)
         {
             StatusText = "Open a scope before comparing resources.";
@@ -2430,6 +2496,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task OpenResourceComparisonAsync(ComparisonResource left, ComparisonResource right)
     {
+        if (_relational != null)
+        {
+            await OpenRelationalComparisonResourcesAsync(left, right);
+            return;
+        }
         if (left.IsCollection && right.IsCollection)
         {
             await OpenCollectionDiffAsync(left, right);
@@ -2447,6 +2518,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task OpenCollectionDiffAsync(ComparisonResource left, ComparisonResource right)
     {
+        if (_relational != null)
+        {
+            await OpenRelationalComparisonResourcesAsync(left, right);
+            return;
+        }
         ResourceCollectionDiffResult result;
         Mouse.OverrideCursor = Cursors.Wait;
         try
@@ -2478,6 +2554,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OpenCollectionDiffRow(ResourceCollectionDiffRow row)
     {
+        if (_relational != null)
+        {
+            _ = RunRelationalComparisonAsync(async (service, scope, generation, ct) =>
+            {
+                var left = row.LeftDocument == null ? null : await ResolveRelationalComparisonTargetAsync(row.LeftDocument.Resource, ct);
+                var right = row.RightDocument == null ? null : await ResolveRelationalComparisonTargetAsync(row.RightDocument.Resource, ct);
+                await OpenRelationalComparisonCoreAsync(service, left, right, scope, generation, ct);
+            });
+            return;
+        }
         ResourceComparisonDocument? leftDocument = row.LeftDocument;
         ResourceComparisonDocument? rightDocument = row.RightDocument;
         if (leftDocument == null && rightDocument == null)
@@ -2523,6 +2609,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OpenFileDiff(ComparisonResource left, ComparisonResource right)
     {
+        if (_relational != null)
+        {
+            _ = OpenRelationalComparisonResourcesAsync(left, right);
+            return;
+        }
         if (!_resourceComparisonService.TryGetTextContent(left, _databaseSnapshots, out string leftContent, out _, out string leftError))
         {
             StatusText = leftError;
@@ -2552,6 +2643,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void OpenTableDataDiff(ComparisonResource left, ComparisonResource right)
     {
+        if (_relational != null)
+        {
+            _ = OpenRelationalComparisonResourcesAsync(left, right);
+            return;
+        }
         IReadOnlyList<string> keyColumns = _resourceComparisonService.GetPreferredTableDataKeyColumns(left, right, _databaseSnapshots);
         if (keyColumns.Count == 0)
         {
@@ -2624,11 +2720,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         await RefreshObjectExplorerForVirtualFolderChangeAsync();
 
         string action = isLoaded ? "Loaded" : "Unloaded";
-        StatusText = $"{action} resource '{GetReferenceResourceDisplayName(resource)}'.";
+        string resourceName = _relational != null && _relationalExplorerScope?.Resources.FirstOrDefault(r =>
+            r.ResourceId.Equals(resource.ResourceId, StringComparison.OrdinalIgnoreCase)) is { } typedResource
+            ? Services.RelationalExplorer.ExplorerCompatibility.ResourceDisplayName(typedResource) : GetReferenceResourceDisplayName(resource);
+        StatusText = $"{action} resource '{resourceName}'." + (_relational != null
+            ? " " + (_relationalIndexProgress == null ? "Derived references are not ready." : RelationalIndexStatus(_relationalIndexProgress)) : "");
     }
 
     private async Task RemoveScopeResourceAsync(string resourceId)
     {
+        if (_relational != null) { await RemoveRelationalScopeResourceAsync(resourceId); return; }
         if (_activeScope == null)
         {
             return;
@@ -2897,6 +2998,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task AddExistingResourcesToActiveScopeAsync()
     {
+        if (_relational != null) { await AddRelationalExistingResourcesAsync(); return; }
         if (_activeScope == null)
         {
             StatusText = "Open a scope before adding existing resources.";
@@ -3125,7 +3227,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text))
             {
-                LoadObjectExplorerRoots(_activeScope);
+                await LoadObjectExplorerRoots(_activeScope);
                 await RestoreObjectExplorerViewStateAsync(viewState);
                 return;
             }
@@ -3192,18 +3294,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task RestoreObjectExplorerViewStateAsync(ObjectExplorerViewState viewState)
     {
-        RestoreExpandedObjectExplorerNodes(RootNodes, viewState.ExpandedNodeKeys);
+        int scopeVersion = _scopeLoadVersion;
+        await RestoreExpandedObjectExplorerNodes(RootNodes, viewState.ExpandedNodeKeys);
 
         for (int pass = 0; pass < 3; pass++)
         {
             ObjectExplorer.UpdateLayout();
-            await Dispatcher.InvokeAsync(
-                () =>
-                {
-                    RestoreObjectExplorerContainerExpansion(ObjectExplorer, viewState.ExpandedNodeKeys);
-                    ObjectExplorer.UpdateLayout();
-                },
-                DispatcherPriority.Loaded);
+            await Dispatcher.InvokeAsync(() => ObjectExplorer.UpdateLayout(), DispatcherPriority.Loaded);
+            if (scopeVersion != _scopeLoadVersion) return;
+            await RestoreObjectExplorerContainerExpansion(ObjectExplorer, viewState.ExpandedNodeKeys);
+            ObjectExplorer.UpdateLayout();
         }
 
         await Dispatcher.InvokeAsync(
@@ -3216,12 +3316,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DispatcherPriority.ContextIdle);
     }
 
-    private void RestoreExpandedObjectExplorerNodes(
+    private async Task RestoreExpandedObjectExplorerNodes(
         IEnumerable<FileSystemNode> nodes,
         HashSet<string> expandedNodeKeys)
     {
-        foreach (FileSystemNode node in nodes)
+        int scopeVersion = _scopeLoadVersion;
+        foreach (FileSystemNode node in nodes.ToArray())
         {
+            if (scopeVersion != _scopeLoadVersion) return;
             if (!expandedNodeKeys.Contains(node.NodeKey))
             {
                 continue;
@@ -3229,21 +3331,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             if (node.IsDirectory && !node.IsLoaded)
             {
-                _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
+                if (_relational != null) await LoadRelationalChildrenAsync(node);
+                else _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
             }
 
             node.IsExpanded = true;
-            RestoreExpandedObjectExplorerNodes(node.Children, expandedNodeKeys);
+            await RestoreExpandedObjectExplorerNodes(node.Children, expandedNodeKeys);
         }
     }
 
-    private void RestoreObjectExplorerContainerExpansion(
+    private async Task RestoreObjectExplorerContainerExpansion(
         ItemsControl itemsControl,
         HashSet<string> expandedNodeKeys)
     {
         itemsControl.UpdateLayout();
-        foreach (object item in itemsControl.Items)
+        int scopeVersion = _scopeLoadVersion;
+        foreach (object item in itemsControl.Items.Cast<object>().ToArray())
         {
+            if (scopeVersion != _scopeLoadVersion) return;
             if (item is not FileSystemNode node ||
                 !expandedNodeKeys.Contains(node.NodeKey) ||
                 itemsControl.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem treeViewItem)
@@ -3253,13 +3358,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             if (node.IsDirectory && !node.IsLoaded)
             {
-                _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
+                if (_relational != null) await LoadRelationalChildrenAsync(node);
+                else _fileTreeService.LoadChildren(node, _activeScope?.VirtualFolders);
             }
 
             node.IsExpanded = true;
             treeViewItem.IsExpanded = true;
             treeViewItem.UpdateLayout();
-            RestoreObjectExplorerContainerExpansion(treeViewItem, expandedNodeKeys);
+            await RestoreObjectExplorerContainerExpansion(treeViewItem, expandedNodeKeys);
         }
     }
 
@@ -3673,8 +3779,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void DiagramImageToolMenuItem_Click(object sender, RoutedEventArgs e)
+    private async void DiagramImageToolMenuItem_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null)
+        {
+            if ((sender as FrameworkElement)?.Tag is Surf2.Storage.Relational.Access.State.ImageDefinitionSummary summary)
+                await SelectRelationalDiagramImageAsync(summary);
+            return;
+        }
         if ((sender as FrameworkElement)?.Tag is not string imageId)
         {
             return;
@@ -3902,6 +4014,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void DeleteDiagramButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null) { await DeleteRelationalDiagramFromUiAsync(); return; }
         if (string.IsNullOrWhiteSpace(_activeDiagramId))
         {
             StatusText = "Open a saved diagram before deleting it.";
@@ -4075,6 +4188,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task<bool> SaveCurrentDiagramAsync(string diagramId, string diagramName)
     {
+        if (_relational != null) return await SaveRelationalDiagramFromUiAsync(diagramId, diagramName);
         if (!EnsurePersistenceReadyForSave("diagram changes"))
         {
             return false;
@@ -4131,7 +4245,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text))
         {
-            LoadObjectExplorerRoots(_activeScope);
+            await LoadObjectExplorerRoots(_activeScope);
             return;
         }
 
@@ -4459,6 +4573,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RefreshDiagramImageToolMenu()
     {
+        if (_relational != null) { QueueRelationalImageMenuRefresh(); return; }
         if (DiagramImageToolButton?.ContextMenu == null)
         {
             return;
@@ -4549,6 +4664,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private DiagramImageDefinition? FindDiagramImageDefinition(string? imageId)
     {
+        if (_relational != null) return _relationalSelectedImageDefinition != null &&
+            string.Equals(_relationalSelectedImageDefinition.Id, imageId, StringComparison.Ordinal) ? _relationalSelectedImageDefinition : null;
         if (string.IsNullOrWhiteSpace(imageId))
         {
             return null;
@@ -6675,6 +6792,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void FocusDatabaseResourceInObjectExplorer(ScopedResource databaseResource)
     {
+        if (_relational != null)
+        {
+            QueueRelationalExplorerFocus(databaseResource.Path, _relationalExplorerScope?.Resources.FirstOrDefault(r =>
+                r.ResourceId.Equals(databaseResource.ResourceId, StringComparison.OrdinalIgnoreCase))?.ScopeResourceKey);
+            return;
+        }
         ObjectExplorerSearchTextBox.Clear();
         RootNodes.Clear();
 
@@ -6690,6 +6813,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void FocusFolderInObjectExplorer(string folderPath)
     {
+        if (_relational != null) { QueueRelationalExplorerFocus(folderPath); return; }
         ObjectExplorerSearchTextBox.Clear();
         string displayName = GetFolderLinkDisplayName(folderPath);
         var node = new FileSystemNode(folderPath, isDirectory: true, displayName: displayName)
@@ -7742,13 +7866,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             canvasPoint);
     }
 
-    private void PlaceDiagramResourceOnDiagram(
+    private async void PlaceDiagramResourceOnDiagram(
         string displayName,
         string link,
         ResourceKind resourceKind,
         Func<string?> getContent,
         Point canvasPoint)
     {
+        if (_relational != null) { await PlaceRelationalDiagramResourceAsync(displayName, link, resourceKind, canvasPoint); return; }
         if (TryBlockDiagramObjectEditWhenLocked("add resources to the diagram"))
         {
             return;
@@ -8045,6 +8170,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private Task OpenDiagramAsync(string diagramPath)
     {
+        if (_relational != null) return OpenRelationalDiagramFromUiAsync(diagramPath);
         string diagramId = DiagramDocumentService.GetDiagramId(diagramPath);
         DiagramDocument? diagram = _diagramLibrary.Find(diagramId);
         if (diagram == null)
@@ -8160,6 +8286,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         FloatingCodeWindow? sourceWindow = null,
         bool suppressHistory = false)
     {
+        if (await TryOpenRelationalFileAsync(filePath, existingState, targetLineNumber, targetColumnNumber,
+            targetReference, sourceWindow, suppressHistory)) return;
         filePath = GetCanonicalDatabaseDocumentPath(filePath);
         if (existingState != null)
         {
@@ -8451,6 +8579,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private string? GetClipboardTextFileNameSeed(string filePath)
     {
+        if (_relational != null) return GetRelationalTextFileNameSeed(filePath);
         ScopedResource? owningResource = FindOwningScopeResource(filePath);
         if (owningResource == null)
         {
@@ -8517,6 +8646,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseOpenWindow(FloatingCodeWindow window)
     {
+        RetireRelationalWindow(window.State);
         if (ReferenceEquals(_activeCodeWindow, window))
         {
             SetActiveCodeWindow(null);
@@ -8536,6 +8666,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseSpreadsheetWindow(FloatingSpreadsheetWindow window)
     {
+        RetireRelationalWindow(window.State, window);
         window.FilterReferenceCopyRequested -= SpreadsheetWindow_FilterReferenceCopyRequested;
         RemoveWindowFromCodeView(window);
         _openSpreadsheetWindows.Remove(window.State.FilePath);
@@ -8746,12 +8877,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         CodeDocumentsTabControl.Items.Clear();
     }
 
-    private void FloatingWindow_ContextMenuOpeningRequested(object? sender, CodeWindowContextMenuOpeningEventArgs e)
+    private async void FloatingWindow_ContextMenuOpeningRequested(object? sender, CodeWindowContextMenuOpeningEventArgs e)
     {
         RemoveDynamicReferencesMenuItems(e.ContextMenu);
 
         if (sender is not FloatingCodeWindow window)
         {
+            return;
+        }
+
+        if (_relational != null)
+        {
+            await ShowRelationalReferenceMenuAsync(window, e);
             return;
         }
 
@@ -8854,7 +8991,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             : $"Could not copy {(e.CopiedAsFile ? ".txt file" : "text")}: {e.ErrorMessage}";
     }
 
-    private void SpreadsheetWindow_FilterReferenceCopyRequested(object? sender, EventArgs e)
+    private async void SpreadsheetWindow_FilterReferenceCopyRequested(object? sender, EventArgs e)
     {
         if (sender is not FloatingSpreadsheetWindow window)
         {
@@ -8869,7 +9006,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         string linkPath = window.State.FilePath;
-        if (_databaseDocumentService.TryGetTableDocumentPathForTableDataDocument(
+        if (_relational != null)
+        {
+            var context = _relationalDocumentContextGeneration;
+            try { linkPath = await GetRelationalFilterLinkAsync(window); }
+            catch (Exception error) { StatusText = "Could not copy filter reference: " + error.Message; return; }
+            if (context != _relationalDocumentContextGeneration || !_openSpreadsheetWindows.Values.Contains(window)) return;
+        }
+        else if (_databaseDocumentService.TryGetTableDocumentPathForTableDataDocument(
                 linkPath,
                 _databaseSnapshots,
                 out string tableDocumentPath))
@@ -8877,7 +9021,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             linkPath = tableDocumentPath;
         }
 
-        DatabaseDocumentService.TryCreateReadableDocumentPath(linkPath, _databaseSnapshots, out linkPath);
+        if (_relational == null) DatabaseDocumentService.TryCreateReadableDocumentPath(linkPath, _databaseSnapshots, out linkPath);
         string filterReference = ComposeMetadataLinkTarget(linkPath, lineNumber: null, filters);
 
         try
@@ -9031,6 +9175,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task ApplySqlTraceAsync(FloatingCodeWindow window)
     {
+        if (_shutdownRequested || !_openWindows.Values.Contains(window)) return;
         if (string.IsNullOrWhiteSpace(window.Text))
         {
             StatusText = "This SQL window has no content to trace.";
@@ -9038,7 +9183,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         string documentName = GetDocumentDisplayName(window.State);
-        SqlTraceResult trace = _sqlTraceService.BuildTrace(documentName, window.Text, _databaseSnapshots);
+        await using var request = _relational == null ? null : BeginRelationalAuxiliaryRequest(window.State);
+        var cancellation = request?.CancellationToken ?? CancellationToken.None;
+        SqlTraceResult trace;
+        if (_relational != null)
+        {
+            var runtime = _relational;
+            var context = _relationalDocumentContextGeneration;
+            try
+            {
+                trace = await _sqlTraceService.BuildRelationalTraceAsync(documentName, window.Text, runtime.Snapshots,
+                    cancellation);
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception error) { StatusText = "Could not generate SQL trace: " + error.Message; return; }
+            if (!ReferenceEquals(runtime, _relational) || context != _relationalDocumentContextGeneration ||
+                !_openWindows.Values.Contains(window)) return;
+        }
+        else trace = _sqlTraceService.BuildTrace(documentName, window.Text, _databaseSnapshots);
         if (string.IsNullOrWhiteSpace(trace.Text))
         {
             StatusText = $"No SQL trace could be generated for {documentName}.";
@@ -9046,7 +9208,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         bool copiedToClipboard = TryCopyTextToClipboard(trace.Text);
-        string tracePath = await SaveSqlTraceFileAsync(documentName, trace.Text);
+        string tracePath;
+        try
+        {
+            tracePath = await SaveSqlTraceFileAsync(documentName, trace.Text, cancellation);
+            cancellation.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception error) { StatusText = "Could not save SQL trace: " + error.Message; return; }
         await OpenFileAsync(tracePath, sourceWindow: window, suppressHistory: true);
 
         string clipboardMessage = copiedToClipboard ? "copied to clipboard and opened" : "opened";
@@ -9144,8 +9313,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private static async Task<string> SaveSqlTraceFileAsync(string documentName, string traceText)
+    private static async Task<string> SaveSqlTraceFileAsync(string documentName, string traceText, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         string traceDirectory = Path.Combine(appData, "Surf2", "Traces");
         Directory.CreateDirectory(traceDirectory);
@@ -9153,12 +9323,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string baseFileName = CreateSafeFileName(Path.GetFileNameWithoutExtension(documentName));
         string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
         string tracePath = Path.Combine(traceDirectory, $"{baseFileName}-{timestamp}.sqltrace.txt");
-        await File.WriteAllTextAsync(tracePath, traceText);
-        return tracePath;
+        string pending = Path.Combine(traceDirectory, ".surf2-trace-" + Guid.NewGuid().ToString("N") + ".pending");
+        try
+        {
+            await using (var file = new FileStream(pending, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                16 * 1024, FileOptions.Asynchronous))
+            {
+                await using var writer = new StreamWriter(file, new UTF8Encoding(false), leaveOpen: true);
+                await writer.WriteAsync(traceText.AsMemory(), cancellationToken);
+                await writer.FlushAsync(cancellationToken);
+                await file.FlushAsync(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(tracePath)) tracePath = Path.Combine(traceDirectory, $"{baseFileName}-{timestamp}-{Guid.NewGuid():N}.sqltrace.txt");
+            File.Move(pending, tracePath, overwrite: false);
+            return tracePath;
+        }
+        finally
+        {
+            if (File.Exists(pending)) File.Delete(pending);
+        }
     }
 
     private async Task ApplySqlFindAsync(FloatingCodeWindow window, SqlFindOperation operation)
     {
+        if (_relational != null)
+        {
+            await ApplyRelationalSqlFindAsync(window, operation);
+            return;
+        }
         if (_activeScope == null)
         {
             StatusText = "Open a scope before using SQL Find.";
@@ -9240,7 +9433,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                    .Any(reference => reference.Kind == ReferenceEntityKind.Table);
     }
 
-    private bool TryInferSqlFieldTable(string sql, int targetOffset, string normalizedTarget, out string tableName)
+    private bool TryInferSqlFieldTable(string sql, int targetOffset, string normalizedTarget, out string tableName,
+        ReferenceEntity? selectedFieldReference = null)
     {
         tableName = string.Empty;
         string[] parts = GetSqlNameParts(normalizedTarget);
@@ -9285,7 +9479,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return true;
         }
 
-        ReferenceEntity? fieldReference = FindUniqueSqlFieldReference(normalizedTarget);
+        ReferenceEntity? fieldReference = selectedFieldReference ?? (_relational == null ? FindUniqueSqlFieldReference(normalizedTarget) : null);
         if (!string.IsNullOrWhiteSpace(fieldReference?.ContainerName))
         {
             tableName = fieldReference.ContainerName;
@@ -10492,6 +10686,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (_relational != null)
+        {
+            await NavigateRelationalReferenceAsync(e, sourceWindow.State.FilePath, sourceWindow);
+            return;
+        }
+
         IReadOnlyList<ReferenceEntity> references = SortReferencesForSource(
             _referenceIndex.Resolve(e.Token, e.ArgumentCount),
             sourceWindow.State.FilePath);
@@ -10776,6 +10976,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         return new ReferenceConnectionLineState
         {
+            SourceBoundSnapshotKey = state.SourceBoundSnapshotKey,
+            SourceBoundResourceKey = state.SourceBoundResourceKey,
+            SourceTargetState = state.SourceTargetState,
+            TargetBoundSnapshotKey = state.TargetBoundSnapshotKey,
+            TargetBoundResourceKey = state.TargetBoundResourceKey,
+            TargetTargetState = state.TargetTargetState,
             ConnectionId = string.IsNullOrWhiteSpace(state.ConnectionId) ? Guid.NewGuid().ToString("N") : state.ConnectionId,
             SourceFilePath = state.SourceFilePath,
             SourceLineNumber = Math.Max(1, state.SourceLineNumber),
@@ -10790,6 +10996,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task PreviewReferenceAsync(ReferenceNavigationRequestedEventArgs request, string sourceFilePath)
     {
+        if (_relational != null)
+        {
+            await PreviewRelationalReferenceAsync(request, sourceFilePath);
+            return;
+        }
         IReadOnlyList<ReferenceEntity> references = SortReferencesForSource(
             _referenceIndex.Resolve(request.Token, request.ArgumentCount),
             sourceFilePath);
@@ -11864,7 +12075,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Vector delta = currentPoint - _diagramSelectionGroupDragStartPoint;
         foreach (DiagramObjectSnapshot snapshot in _diagramSelectionGroupDragStartSnapshots)
         {
-            FrameworkElement? diagramObject = FindDiagramObjectById(snapshot.Id);
+            FrameworkElement? diagramObject = _relational != null ? FindRelationalDiagramObjectBySnapshot(snapshot) : FindDiagramObjectById(snapshot.Id);
             if (diagramObject == null)
             {
                 continue;
@@ -11884,10 +12095,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         UpdateDiagramSelectionGroupDrag(endPoint);
         List<DiagramObjectSnapshot> beforeSnapshots = _diagramSelectionGroupDragStartSnapshots
-            .Select(snapshot => snapshot.Clone())
+            .Select(snapshot => _relational != null ? CloneRelationalDiagramSnapshot(snapshot) : snapshot.Clone())
             .ToList();
         List<DiagramObjectSnapshot> afterSnapshots = beforeSnapshots
-            .Select(snapshot => FindDiagramObjectById(snapshot.Id))
+            .Select(snapshot => _relational != null ? FindRelationalDiagramObjectBySnapshot(snapshot) : FindDiagramObjectById(snapshot.Id))
             .Select(CreateDiagramObjectSnapshot)
             .OfType<DiagramObjectSnapshot>()
             .ToList();
@@ -11951,9 +12162,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Math.Max(0, height));
     }
 
-    private static DiagramObjectSnapshot CreateMovedDiagramObjectSnapshot(DiagramObjectSnapshot snapshot, Vector delta)
+    private DiagramObjectSnapshot CreateMovedDiagramObjectSnapshot(DiagramObjectSnapshot snapshot, Vector delta)
     {
-        DiagramObjectSnapshot moved = snapshot.Clone();
+        DiagramObjectSnapshot moved = _relational != null ? CloneRelationalDiagramSnapshot(snapshot) : snapshot.Clone();
         moved.Left += delta.X;
         moved.Top += delta.Y;
 
@@ -11984,13 +12195,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return true;
         }
 
-        Dictionary<string, DiagramObjectSnapshot> afterById = afterSnapshots.ToDictionary(
-            snapshot => snapshot.Id,
-            StringComparer.OrdinalIgnoreCase);
-        foreach (DiagramObjectSnapshot before in beforeSnapshots)
+        for (int i = 0; i < beforeSnapshots.Count; i++)
         {
-            if (!afterById.TryGetValue(before.Id, out DiagramObjectSnapshot? after) ||
-                !AreDiagramObjectSnapshotsEquivalent(before, after))
+            if (!AreDiagramObjectSnapshotsEquivalent(beforeSnapshots[i], afterSnapshots[i]))
             {
                 return true;
             }
@@ -12694,6 +12901,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task BeginPortalPairingAsync(DiagramPortalControl sourcePortal)
     {
+        if (_relational != null) { await BeginRelationalPortalPairingAsync(sourcePortal); return; }
         if (TryBlockDiagramObjectEditWhenLocked("pair portals"))
         {
             return;
@@ -12847,6 +13055,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task NavigateToPairedPortalAsync(DiagramPortalControl portal)
     {
+        if (_relational != null) { await NavigateRelationalPortalAsync(portal); return; }
         if (string.IsNullOrWhiteSpace(portal.PairedPortalDiagramId) ||
             string.IsNullOrWhiteSpace(portal.PairedPortalObjectId))
         {
@@ -12899,6 +13108,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         string secondDiagramId,
         string secondPortalObjectId)
     {
+        if (_relational != null) return await PairRelationalPortalsAsync(firstDiagramId, firstPortalObjectId, secondDiagramId, secondPortalObjectId);
         if (string.Equals(firstDiagramId, secondDiagramId, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(firstPortalObjectId, secondPortalObjectId, StringComparison.OrdinalIgnoreCase))
         {
@@ -12981,6 +13191,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task ClearPairedPortalReferenceAsync(DiagramPortalControl portal)
     {
+        if (_relational != null) { await ClearRelationalPairedPortalAsync(portal); return; }
         if (!portal.IsPaired)
         {
             return;
@@ -13047,6 +13258,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private string ResolvePortalAddress(string diagramId, string portalObjectId)
     {
+        if (_relational != null) return ResolveRelationalPortalAddress(diagramId, portalObjectId);
         string diagramName = _diagramLibrary.Find(diagramId)?.Name ?? "Missing Diagram";
         string portalName = string.Empty;
 
@@ -13101,6 +13313,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task<bool> PersistActiveDiagramSilentlyAsync()
     {
+        if (_relational != null)
+        {
+            try { await SaveRelationalPortalWorkspaceAsync(); return true; }
+            catch (Exception error) { ReportRelationalStateFailure(error, "save selected diagram state"); return false; }
+        }
         if (string.IsNullOrWhiteSpace(_activeDiagramId))
         {
             return false;
@@ -13153,7 +13370,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        _diagramClipboardSnapshot = snapshot.Clone();
+        _diagramClipboardSnapshot = _relational != null ? CloneRelationalDiagramSnapshot(snapshot) : snapshot.Clone();
         _referenceDiagramObjectClipboard = null;
         bool copiedClipboard = TrySetDiagramObjectClipboard(searchText);
         StatusText = copiedClipboard
@@ -13208,7 +13425,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        _diagramClipboardSnapshot = snapshot.Clone();
+        _diagramClipboardSnapshot = _relational != null ? CloneRelationalDiagramSnapshot(snapshot) : snapshot.Clone();
         _referenceDiagramObjectClipboard = null;
         TrySetDiagramObjectClipboard(GetDiagramObjectSearchText(_selectedDiagramObject));
         RemoveDiagramObject(_selectedDiagramObject, pushUndo: true);
@@ -13436,6 +13653,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PasteClipboardImage(BitmapSource clipboardImage)
     {
+        if (_relational != null)
+        {
+            try { PasteRelationalClipboardImage(clipboardImage); }
+            catch (Exception error) { ReportRelationalStateFailure(error, "paste image"); }
+            return;
+        }
         if (TryBlockDiagramObjectEditWhenLocked("paste images onto the diagram"))
         {
             return;
@@ -13565,7 +13788,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        DiagramObjectSnapshot pastedSnapshot = _diagramClipboardSnapshot.Clone();
+        DiagramObjectSnapshot pastedSnapshot = _relational != null ? CloneRelationalDiagramSnapshot(_diagramClipboardSnapshot) : _diagramClipboardSnapshot.Clone();
         if (pastedSnapshot.ObjectType == DiagramObjectType.WorkflowMarker)
         {
             StatusText = "Workflow markers are tied to workflow items and cannot be pasted.";
@@ -13629,7 +13852,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
                 else
                 {
-                    RemoveDiagramObject(FindDiagramObjectById(action.After?.Id), pushUndo: false);
+                    RemoveDiagramObject(_relational != null ? FindRelationalDiagramObjectBySnapshot(action.After) : FindDiagramObjectById(action.After?.Id), pushUndo: false);
                 }
 
                 StatusText = "Undid diagram object creation.";
@@ -13652,7 +13875,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             case DiagramUndoActionKind.Modified:
                 if (action.Before != null)
                 {
-                    FrameworkElement? target = FindDiagramObjectById(action.Before.Id);
+                    FrameworkElement? target = _relational != null ? FindRelationalDiagramObjectBySnapshot(action.Before) : FindDiagramObjectById(action.Before.Id);
                     if (target == null)
                     {
                         target = CreateDiagramObjectFromSnapshot(action.Before);
@@ -14348,7 +14571,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private DiagramObjectSnapshot? CreateDiagramObjectSnapshot(FrameworkElement? diagramObject)
     {
-        return diagramObject switch
+        DiagramObjectSnapshot? captured = diagramObject switch
         {
             DiagramShapeControl shape => new DiagramObjectSnapshot
             {
@@ -14461,6 +14684,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             },
             _ => null
         };
+        return _relational != null && captured != null && diagramObject != null
+            ? PreserveRelationalObjectSnapshot(diagramObject, captured) : captured;
     }
 
     private FrameworkElement? CreateDiagramObjectFromSnapshot(DiagramObjectSnapshot snapshot)
@@ -14480,6 +14705,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (diagramObject != null)
         {
             ApplyDiagramObjectSnapshot(diagramObject, snapshot);
+            if (_relational != null) BindRelationalObjectOccurrence(diagramObject, snapshot);
         }
 
         return diagramObject;
@@ -14498,6 +14724,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private DiagramImageControl? CreateDiagramImageFromSnapshot(DiagramObjectSnapshot snapshot)
     {
+        if (_relational != null) return CreateRelationalDiagramImageFromSnapshot(snapshot);
         string imageData = snapshot.ImageDataBase64;
         ImageSource? imageSource = null;
 
@@ -14648,6 +14875,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private FrameworkElement? FindDiagramObjectById(string? diagramObjectId)
     {
+        if (_relational != null)
+        {
+            var matches = DiagramCanvas.Children.OfType<FrameworkElement>().Where(IsDiagramObject)
+                .Where(o => CreateDiagramObjectSnapshot(o)?.Id.Equals(diagramObjectId, StringComparison.OrdinalIgnoreCase) == true).Take(2).ToArray();
+            return matches.Length == 1 ? matches[0] : null;
+        }
         if (string.IsNullOrWhiteSpace(diagramObjectId))
         {
             return null;
@@ -14703,12 +14936,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private WorkflowDocument? FindWorkflow(string workflowId)
     {
+        if (_relational != null)
+        {
+            var matches = _currentDiagramWorkflows.Where(w => string.Equals(w.WorkflowId, workflowId, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+            return matches.Length == 1 ? matches[0] : null;
+        }
         return _currentDiagramWorkflows.FirstOrDefault(workflow =>
             string.Equals(workflow.WorkflowId, workflowId, StringComparison.OrdinalIgnoreCase));
     }
 
     private WorkflowItem? FindWorkflowItem(string workflowId, string workflowItemId)
     {
+        if (_relational != null)
+        {
+            var matches = FindWorkflow(workflowId)?.Items.Where(i => string.Equals(i.WorkflowItemId, workflowItemId, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+            return matches?.Length == 1 ? matches[0] : null;
+        }
         return FindWorkflow(workflowId)?.Items.FirstOrDefault(item =>
             string.Equals(item.WorkflowItemId, workflowItemId, StringComparison.OrdinalIgnoreCase));
     }
@@ -14916,7 +15159,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         DiagramObjectSnapshot? before,
         DiagramObjectSnapshot? after)
     {
-        _diagramUndoStack.Push(new DiagramUndoAction(kind, before?.Clone(), after?.Clone()));
+        _diagramUndoStack.Push(new DiagramUndoAction(kind,
+            before == null ? null : _relational != null ? CloneRelationalDiagramSnapshot(before) : before.Clone(),
+            after == null ? null : _relational != null ? CloneRelationalDiagramSnapshot(after) : after.Clone()));
         TrimDiagramUndoStack();
     }
 
@@ -14928,8 +15173,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             DiagramUndoActionKind.GroupModified,
             null,
             null,
-            beforeSnapshots.Select(snapshot => snapshot.Clone()).ToList(),
-            afterSnapshots.Select(snapshot => snapshot.Clone()).ToList()));
+            beforeSnapshots.Select(snapshot => _relational != null ? CloneRelationalDiagramSnapshot(snapshot) : snapshot.Clone()).ToList(),
+            afterSnapshots.Select(snapshot => _relational != null ? CloneRelationalDiagramSnapshot(snapshot) : snapshot.Clone()).ToList()));
         TrimDiagramUndoStack();
     }
 
@@ -14954,7 +15199,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         List<FrameworkElement> restoredObjects = [];
         foreach (DiagramObjectSnapshot snapshot in snapshots)
         {
-            FrameworkElement? target = FindDiagramObjectById(snapshot.Id);
+            FrameworkElement? target = _relational != null ? FindRelationalDiagramObjectBySnapshot(snapshot) : FindDiagramObjectById(snapshot.Id);
             if (target == null)
             {
                 target = CreateDiagramObjectFromSnapshot(snapshot);
@@ -15319,13 +15564,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RemoveWorkflowItemAndMarker(string workflowId, string workflowItemId)
     {
+        if (_relational != null && (FindWorkflow(workflowId) == null || FindWorkflowItem(workflowId, workflowItemId) == null))
+        {
+            StatusText = "The workflow/item relationship is missing or ambiguous in this selected revision. Original markers were retained.";
+            return;
+        }
         if (TryBlockDiagramObjectEditWhenLocked("delete workflow markers"))
         {
             return;
         }
 
         WorkflowDocument? workflow = FindWorkflow(workflowId);
-        WorkflowItem? workflowItem = workflow?.Items.FirstOrDefault(item =>
+        WorkflowItem? workflowItem = _relational != null ? FindWorkflowItem(workflowId, workflowItemId) : workflow?.Items.FirstOrDefault(item =>
             string.Equals(item.WorkflowItemId, workflowItemId, StringComparison.OrdinalIgnoreCase));
 
         if (workflow == null || workflowItem == null)
@@ -15353,6 +15603,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private FrameworkElement? FindWorkflowMarkerByWorkflowItem(string workflowId, string workflowItemId)
     {
+        if (_relational != null)
+        {
+            var matches = DiagramCanvas.Children.OfType<DiagramWorkflowMarkerControl>().Where(m =>
+                string.Equals(m.WorkflowId, workflowId, StringComparison.OrdinalIgnoreCase) && string.Equals(m.WorkflowItemId, workflowItemId, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+            return matches.Length == 1 ? matches[0] : null;
+        }
         return DiagramCanvas.Children
             .OfType<DiagramWorkflowMarkerControl>()
             .FirstOrDefault(marker =>
@@ -15405,6 +15661,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void SettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null) { await ShowRelationalSettingsAsync(); return; }
         var settingsWindow = new SettingsWindow(_appSettings)
         {
             Owner = this
@@ -15513,6 +15770,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void SaveWorkbenchAsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null) { await SaveRelationalWorkbenchCopyFromUiAsync(); return; }
         try
         {
             if (!EnsurePersistenceReadyForSave("Workbench changes"))
@@ -15567,6 +15825,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void DeleteWorkbenchButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null) { await DeleteRelationalWorkbenchFromUiAsync(); return; }
         if (WorkbenchSelector.SelectedItem is not WorkbenchState workbench)
         {
             return;
@@ -15605,6 +15864,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void WorkbenchSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (_relational != null)
+        {
+            UpdateWorkbenchCommandState();
+            if (!_isUpdatingWorkbenchSelection && WorkbenchSelector.SelectedItem is Surf2.Storage.Relational.State.WorkbenchSummary summary)
+                await LoadRelationalWorkbenchFromUiAsync(summary);
+            else if (!_isUpdatingWorkbenchSelection && WorkbenchSelector.SelectedItem is RelationalWorkbenchCatalogueAction)
+            {
+                try { using var operation = BeginRelationalStateOperation(); await ShowRelationalWorkbenchesAsync(); }
+                catch (Exception error) { ReportRelationalStateFailure(error, "browse Workbenches"); }
+            }
+            return;
+        }
         if (_isUpdatingWorkbenchSelection ||
             WorkbenchSelector.SelectedItem is not WorkbenchState workbench)
         {
@@ -15739,6 +16010,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool HasUnsavedDiagramChanges()
     {
+        if (_relational != null) return HasRelationalUnsavedDiagramChanges();
         bool hasDiagramState =
             !string.IsNullOrWhiteSpace(_activeDiagramId) ||
             DiagramCanvas.Children.OfType<FrameworkElement>().Any(IsDiagramObject) ||
@@ -15769,6 +16041,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool HasUnsavedWorkbenchChanges()
     {
+        if (_relational != null) return HasRelationalUnsavedWorkbenchChanges();
         WorkbenchState currentWorkbench = CaptureWorkbenchState();
         WorkbenchState? savedWorkbench = ResolveCurrentWorkbenchSaveTarget();
         if (savedWorkbench == null)
@@ -15834,6 +16107,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task<bool> SaveDefaultWorkbenchForCurrentScopeAsync()
     {
+        if (_relational != null) return await SaveRelationalDefaultWorkbenchFromUiAsync();
         try
         {
             if (!EnsurePersistenceReadyForSave("Workbench changes"))
@@ -16280,6 +16554,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CreateNewBlankDiagram()
     {
+        if (_relational != null) { CreateRelationalBlankDiagramFromUi(); return; }
         ClearLoadedDiagram();
         EnsureDiagramViewVisible();
         StatusText = "Created a new blank diagram. Use Save to name and persist it.";
@@ -16287,6 +16562,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RefreshSavedWorkbenches(string? selectedWorkbenchId = null)
     {
+        if (_relational != null) { QueueRelationalWorkbenchRefresh(); return; }
         string? targetSelection = selectedWorkbenchId;
         if (string.IsNullOrWhiteSpace(targetSelection) &&
             WorkbenchSelector?.SelectedItem is WorkbenchState selectedWorkbench)
@@ -16338,6 +16614,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         if (DeleteWorkbenchButton != null)
         {
+            if (_relational != null)
+            {
+                DeleteWorkbenchButton.IsEnabled = _isPersistenceHydrated && WorkbenchSelector?.SelectedItem is Surf2.Storage.Relational.State.WorkbenchSummary;
+                return;
+            }
             DeleteWorkbenchButton.IsEnabled = WorkbenchSelector?.SelectedItem is WorkbenchState;
         }
     }
@@ -16570,6 +16851,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         return new OpenDocumentState
         {
+            BoundSnapshotKey = state.BoundSnapshotKey,
+            BoundResourceKey = state.BoundResourceKey,
+            TargetState = state.TargetState,
             FilePath = state.FilePath,
             DisplayName = state.DisplayName,
             Left = state.Left,
@@ -16608,6 +16892,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void CloseAllOpenWindows()
     {
+        InvalidateRelationalDocumentContext();
+        foreach (var window in _openWindows.Values) RetireRelationalWindow(window.State);
+        foreach (var window in _openSpreadsheetWindows.Values) RetireRelationalWindow(window.State, window);
         SetActiveCodeWindow(null);
         ClearReferenceConnectionLines();
         WorkspaceCanvas.Children.Clear();
@@ -17920,6 +18207,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void RebuildReferenceIndexForActiveScope()
     {
+        if (_relational != null)
+        {
+            _referenceIndex = ScopeReferenceIndex.Empty;
+            RequestRelationalReferenceRefresh();
+            return;
+        }
         _referenceIndex = _activeScope == null
             ? ScopeReferenceIndex.Empty
             : _referenceIndexService.Build(_activeScope, _databaseSnapshots, _appSettings.CodeWindows, GetUnloadedResourceIds());
@@ -18050,6 +18343,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private IReadOnlyDictionary<string, ReferenceHighlightStyleSetting> GetReferenceHighlightStylesForFile(string filePath)
     {
+        if (_relational != null) return GetRelationalReferenceHighlightStylesForFile(filePath);
         string preferredLanguage = GetCodeLanguageForFile(filePath);
         var stylesByToken = new Dictionary<string, ReferenceHighlightStyleSetting>(StringComparer.OrdinalIgnoreCase);
 
@@ -18429,36 +18723,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task SaveScopeLibraryAsync(CancellationToken cancellationToken = default)
     {
+        if (_relational != null) { await SaveRelationalScopeAsync(cancellationToken); return; }
         EnsurePersistenceReadyForSaveOrThrow("scope changes");
         await _scopeStore.SaveAsync(_scopeLibrary, cancellationToken);
     }
 
     private async Task SaveDatabaseSnapshotsAsync(CancellationToken cancellationToken = default)
     {
+        if (_relational != null)
+            throw new InvalidOperationException("Relational snapshots require an explicit selected capture or history command; whole-library saves are not supported.");
         EnsurePersistenceReadyForSaveOrThrow("database snapshot changes");
         await _databaseMetadataStore.SaveAsync(_databaseSnapshots, cancellationToken);
     }
 
     private async Task SaveDiagramLibraryAsync(CancellationToken cancellationToken = default)
     {
+        if (_relational != null) { await SaveRelationalDiagramAsync(cancellationToken); return; }
         EnsurePersistenceReadyForSaveOrThrow("diagram changes");
         await _diagramStore.SaveAsync(_diagramLibrary, cancellationToken);
     }
 
     private async Task SaveWorkbenchLibraryAsync(CancellationToken cancellationToken = default)
     {
+        if (_relational != null) { await SaveRelationalWorkbenchAsync(cancellationToken); return; }
         EnsurePersistenceReadyForSaveOrThrow("Workbench changes");
         await _workbenchStore.SaveAsync(_workbenchLibrary, cancellationToken);
     }
 
     private async Task SaveSettingsAsync(CancellationToken cancellationToken = default)
     {
+        if (_relational != null) { await SaveRelationalSettingsAsync(cancellationToken); return; }
         EnsurePersistenceReadyForSaveOrThrow("settings changes");
         await _settingsStore.SaveAsync(_appSettings, cancellationToken);
     }
 
     private async Task SaveWorkspaceStateDocumentAsync(CancellationToken cancellationToken = default)
     {
+        if (_relational != null) { await SaveRelationalWorkspaceAsync(cancellationToken); return; }
         EnsurePersistenceReadyForSaveOrThrow("workspace state");
         await _workspaceStore.SaveAsync(_workspaceState, cancellationToken);
     }
@@ -18477,6 +18778,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task SaveApplicationStateForShutdownAsync()
     {
+        if (_relational != null)
+        {
+            using var deadline = new CancellationTokenSource(ShutdownSaveTimeout);
+            await SaveRelationalApplicationStateAsync(deadline.Token);
+            return;
+        }
         var cancellation = new CancellationTokenSource(ShutdownSaveTimeout);
         Task saveTask = Task.Run(() => SaveApplicationStateAsync(cancellation.Token), cancellation.Token);
         _ = saveTask.ContinueWith(_ => cancellation.Dispose(), TaskScheduler.Default);
@@ -18494,6 +18801,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private Task SaveApplicationStateAsync(CancellationToken cancellationToken)
     {
+        if (_relational != null) return SaveRelationalApplicationStateAsync(cancellationToken);
         EnsurePersistenceReadyForSaveOrThrow("application state");
         return Task.WhenAll(
             _scopeStore.SaveAsync(_scopeLibrary, cancellationToken),
@@ -18526,7 +18834,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             InternalLogService.Warning(
                 "Skipping shutdown persistence because startup hydration did not complete.",
                 ("Reason", _persistenceLoadFailureMessage ?? "<unknown>"));
+            e.Cancel = true;
+            if (_shutdownRequested) return;
+            _shutdownRequested = true;
+            _ = _relationalStartupCancellation.Cancel();
+            if (_relational != null) CancelRelationalStateQueries();
+            await _startupReadyCompletion.Task;
+            try { await DisposeRelationalPersistenceAsync(); }
+            catch (Exception error) { InternalLogService.Error(error, "Persistence cleanup failed after an unsuccessful startup."); }
             _shutdownSaveCompleted = true;
+            Close();
             return;
         }
 
@@ -18582,6 +18899,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         finally
         {
+            try { await DisposeRelationalPersistenceAsync(); }
+            catch (Exception error) { InternalLogService.Error(error, "Persistence cleanup failed during shutdown."); }
             _shutdownSaveCompleted = true;
             InternalLogService.Info("Closing MainWindow after shutdown save attempt.");
             Close();
