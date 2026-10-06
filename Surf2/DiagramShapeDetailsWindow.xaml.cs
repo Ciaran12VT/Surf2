@@ -10,11 +10,14 @@ public partial class DiagramShapeDetailsWindow : Window
     private string _outlineColorText;
     private string _backColorText;
 
-    public DiagramShapeDetailsWindow(string labelText, string outlineColorText, string backColorText)
+    public DiagramShapeDetailsWindow(string labelText, string outlineColorText, string backColorText, double labelFontSize = DiagramTextStyle.DefaultFontSize)
     {
         InitializeComponent();
 
         LabelTextBox.Text = labelText;
+        LabelFontSize = DiagramTextStyle.NormalizeFontSize(labelFontSize);
+        LabelFontSizeComboBox.ItemsSource = DiagramTextStyle.FontSizes.Append(LabelFontSize).Distinct().Order().ToList();
+        LabelFontSizeComboBox.SelectedItem = LabelFontSize;
         _outlineColorText = NormalizeColorText(outlineColorText, "#000000");
         _backColorText = NormalizeColorText(backColorText, "#FFFFFF");
 
@@ -22,6 +25,8 @@ public partial class DiagramShapeDetailsWindow : Window
     }
 
     public string LabelText { get; private set; } = string.Empty;
+
+    public double LabelFontSize { get; private set; } = DiagramTextStyle.DefaultFontSize;
 
     public string OutlineColorText { get; private set; } = "#000000";
 
@@ -70,6 +75,7 @@ public partial class DiagramShapeDetailsWindow : Window
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
         LabelText = LabelTextBox.Text;
+        LabelFontSize = (double)LabelFontSizeComboBox.SelectedItem;
         OutlineColorText = _outlineColorText;
         BackColorText = _backColorText;
         DialogResult = true;

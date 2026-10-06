@@ -1473,6 +1473,11 @@ public partial class FloatingCodeWindow : UserControl
 
     private void CopyTextButton_Click(object sender, RoutedEventArgs e)
     {
+        CopyTextToClipboard();
+    }
+
+    public void CopyTextToClipboard()
+    {
         try
         {
             TextClipboardService.CopyText(Editor.Text);
@@ -1489,6 +1494,11 @@ public partial class FloatingCodeWindow : UserControl
     }
 
     private void CopyAsTextFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyAsTextFileToClipboard();
+    }
+
+    public void CopyAsTextFileToClipboard()
     {
         try
         {

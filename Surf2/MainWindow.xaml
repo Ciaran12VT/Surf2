@@ -1747,6 +1747,7 @@
                                         Width="100000"
                                         Height="100000"
                                         Background="{DynamicResource Theme.ActiveDiagramCanvasBrush}"
+                                        ContextMenuOpening="DiagramCanvas_ContextMenuOpening"
                                         DragOver="DiagramCanvas_DragOver"
                                         Drop="DiagramCanvas_Drop"
                                         MouseLeftButtonDown="DiagramCanvas_MouseLeftButtonDown"

@@ -43,6 +43,8 @@ public sealed class DiagramObjectSnapshot
 
     public string LabelText { get; set; } = string.Empty;
 
+    public double LabelFontSize { get; set; } = 12;
+
     public string OutlineColorText { get; set; } = "#000000";
 
     public string BackColorText { get; set; } = "#FFFFFF";
@@ -100,6 +102,7 @@ public sealed class DiagramObjectSnapshot
             ImageDataBase64 = ImageDataBase64,
             PastedImageFileName = PastedImageFileName,
             LabelText = LabelText,
+            LabelFontSize = LabelFontSize,
             OutlineColorText = OutlineColorText,
             BackColorText = BackColorText,
             HasEndArrow = HasEndArrow,

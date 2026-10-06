@@ -192,6 +192,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private const string DiagramObjectClipboardDataFormat = "Surf2.DiagramObject";
     private const string SearchTokenClipboardDataFormat = "Surf2.SearchToken";
     private const string DynamicReferencesContextMenuTag = "DynamicReferencesContextMenu";
+    private const string DiagramOverlapSelectMenuTag = "DiagramOverlapSelectMenu";
     private const string ExplorerDetailOpenWindowsTabKey = "OpenWindows";
     private const string ExplorerDetailPreviewTabKey = "Preview";
     private static readonly ReferenceEntityKind[] SqlContextMenuReferenceKinds =
@@ -8573,7 +8574,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             ToolTip = GetOpenDocumentToolTip(state.FilePath)
         };
         tabItem.ToolTip = GetOpenDocumentToolTip(state.FilePath);
-        tabItem.Header = CreateCodeDocumentTabHeader(state);
+        tabItem.Header = CreateCodeDocumentTabHeader(state, window);
         tabItem.Content = window;
 
         if (!CodeDocumentsTabControl.Items.Contains(tabItem))
@@ -8675,12 +8676,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         CodeDocumentsTabControl.Items.Remove(tabItem);
     }
 
-    private FrameworkElement CreateCodeDocumentTabHeader(OpenDocumentState state)
+    private FrameworkElement CreateCodeDocumentTabHeader(OpenDocumentState state, FrameworkElement window)
     {
         var panel = new DockPanel
         {
+            Background = Brushes.Transparent,
             LastChildFill = true
         };
+
+        if (window is FloatingCodeWindow codeWindow)
+        {
+            var contextMenu = new ContextMenu();
+            var copyTextItem = new MenuItem { Header = "Copy Text" };
+            copyTextItem.Click += (_, _) => codeWindow.CopyTextToClipboard();
+            var copyAsTextFileItem = new MenuItem { Header = "Copy as .txt" };
+            copyAsTextFileItem.Click += (_, _) => codeWindow.CopyAsTextFileToClipboard();
+            contextMenu.Items.Add(copyTextItem);
+            contextMenu.Items.Add(copyAsTextFileItem);
+            panel.ContextMenu = contextMenu;
+        }
 
         var closeButton = new Button
         {
@@ -11532,10 +11546,160 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        UpdateDiagramObjectSelectMenu(fixedLine, canvasPoint);
         fixedLine.ContextMenu.PlacementTarget = DiagramCanvas;
         fixedLine.ContextMenu.Placement = PlacementMode.MousePoint;
         fixedLine.ContextMenu.IsOpen = true;
         e.Handled = true;
+    }
+
+    private void DiagramCanvas_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        UserControl? diagramObject = FindAncestor<UserControl>(e.OriginalSource as DependencyObject);
+        if (diagramObject?.Parent != DiagramCanvas || !IsSelectableDiagramObject(diagramObject))
+        {
+            return;
+        }
+
+        Point canvasPoint = Mouse.GetPosition(DiagramCanvas);
+        if (e.CursorLeft < 0 || e.CursorTop < 0)
+        {
+            Rect bounds = GetDiagramObjectBounds(diagramObject);
+            canvasPoint = new Point(bounds.Left + (bounds.Width / 2), bounds.Top + (bounds.Height / 2));
+        }
+
+        UpdateDiagramObjectSelectMenu(diagramObject, canvasPoint);
+    }
+
+    private void UpdateDiagramObjectSelectMenu(FrameworkElement diagramObject, Point canvasPoint)
+    {
+        ContextMenu? contextMenu = diagramObject.ContextMenu;
+        if (contextMenu == null)
+        {
+            return;
+        }
+
+        foreach (MenuItem item in contextMenu.Items.OfType<MenuItem>()
+                     .Where(item => Equals(item.Tag, DiagramOverlapSelectMenuTag)).ToList())
+        {
+            contextMenu.Items.Remove(item);
+        }
+
+        int layerMenuEndIndex = FindMenuItemIndexByHeader(contextMenu, "Send to Back");
+        List<FrameworkElement> layerOrder = GetDiagramObjectsInLayerOrder();
+        int objectIndex = layerOrder.IndexOf(diagramObject);
+        if (layerMenuEndIndex < 0 || objectIndex < 0)
+        {
+            return;
+        }
+
+        List<FrameworkElement> objectsAtPoint = layerOrder
+            .Where(IsSelectableDiagramObject)
+            .Where(item => ReferenceEquals(item, diagramObject) || DiagramObjectContainsCanvasPoint(item, canvasPoint))
+            .Reverse()
+            .ToList();
+        if (!layerOrder.Take(objectIndex).Any(objectsAtPoint.Contains))
+        {
+            return;
+        }
+
+        var selectMenu = new MenuItem { Header = "Select", Tag = DiagramOverlapSelectMenuTag };
+        foreach (FrameworkElement candidate in objectsAtPoint)
+        {
+            var item = new MenuItem
+            {
+                Header = new TextBlock
+                {
+                    Text = GetDiagramObjectSelectMenuText(candidate, layerOrder.IndexOf(candidate) + 1),
+                    MaxWidth = 360,
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                },
+                IsChecked = ReferenceEquals(candidate, _selectedDiagramObject)
+            };
+            item.Click += (_, args) =>
+            {
+                args.Handled = true;
+                SelectAndBringDiagramObjectToFront(candidate);
+            };
+            selectMenu.Items.Add(item);
+        }
+
+        contextMenu.Items.Insert(layerMenuEndIndex + 1, selectMenu);
+    }
+
+    private static bool DiagramObjectContainsCanvasPoint(FrameworkElement diagramObject, Point canvasPoint)
+    {
+        if (diagramObject is DiagramLineControl line)
+        {
+            return line.ContainsCanvasPoint(canvasPoint);
+        }
+
+        if (diagramObject is DiagramLabelControl label)
+        {
+            return label.ContainsCanvasPoint(canvasPoint);
+        }
+
+        Rect bounds = GetDiagramObjectBounds(diagramObject);
+        if (bounds.Width <= 0 || bounds.Height <= 0 || !bounds.Contains(canvasPoint))
+        {
+            return false;
+        }
+
+        return diagramObject is DiagramShapeControl { ShapeKind: DiagramShapeKind.Ellipse } or
+            DiagramPortalControl or DiagramWorkflowMarkerControl or DiagramInfoPointControl
+            ? new EllipseGeometry(bounds).FillContains(canvasPoint)
+            : true;
+    }
+
+    private static string GetDiagramObjectSelectMenuText(FrameworkElement diagramObject, int layer)
+    {
+        string type = diagramObject switch
+        {
+            DiagramShapeControl shape => shape.ShapeKind.ToString(),
+            DiagramImageControl => "Image",
+            DiagramLabelControl => "Label",
+            DiagramLineControl => "Line",
+            DiagramPortalControl => "Portal",
+            DiagramWorkflowMarkerControl marker => $"Workflow Item {marker.ItemNumber}",
+            _ => "Info Point"
+        };
+        string name = diagramObject switch
+        {
+            DiagramShapeControl shape => shape.LabelText,
+            DiagramImageControl image => string.IsNullOrWhiteSpace(image.LabelText) ? image.ImageName : image.LabelText,
+            DiagramLabelControl label => label.LabelText,
+            DiagramPortalControl portal => portal.PortalName,
+            DiagramWorkflowMarkerControl marker => marker.ItemDescription,
+            _ => string.Empty
+        };
+        name = Regex.Replace(name, @"\s+", " ").Trim();
+        return string.IsNullOrEmpty(name)
+            ? $"{type} (Layer {layer})"
+            : $"{type}: {name} (Layer {layer})";
+    }
+
+    private void SelectAndBringDiagramObjectToFront(FrameworkElement diagramObject)
+    {
+        if (!DiagramCanvas.Children.Contains(diagramObject) || !IsSelectableDiagramObject(diagramObject) ||
+            TryBlockDiagramObjectEditWhenLocked("select and bring diagram objects to the front"))
+        {
+            return;
+        }
+
+        SelectDiagramObject(diagramObject);
+        List<FrameworkElement> layerOrder = GetDiagramObjectsInLayerOrder();
+        if (!ReferenceEquals(layerOrder[^1], diagramObject))
+        {
+            DiagramObjectSnapshot? before = CreateDiagramObjectSnapshot(diagramObject);
+            Panel.SetZIndex(diagramObject, Panel.GetZIndex(layerOrder[^1]) + DiagramLayerStep);
+            DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(diagramObject);
+            if (before != null && after != null)
+            {
+                PushDiagramUndo(DiagramUndoActionKind.Modified, before, after);
+            }
+        }
+
+        StatusText = "Selected diagram object and brought it to the front.";
     }
 
     private void StartDiagramAreaSelection(Point startPoint)
@@ -14178,6 +14342,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ZIndex = Panel.GetZIndex(shape),
                 ShapeKind = shape.ShapeKind,
                 LabelText = shape.LabelText,
+                LabelFontSize = shape.LabelFontSize,
                 OutlineColorText = shape.OutlineColorText,
                 BackColorText = shape.BackColorText,
                 Left = GetCanvasLeft(shape),
@@ -14196,6 +14361,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ImageDataBase64 = image.ImageDataBase64,
                 PastedImageFileName = image.PastedImageFileName,
                 LabelText = image.LabelText,
+                LabelFontSize = image.LabelFontSize,
                 Left = GetCanvasLeft(image),
                 Top = GetCanvasTop(image),
                 Width = image.ActualWidth > 0 ? image.ActualWidth : image.Width,
@@ -14226,6 +14392,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 Metadata = label.Metadata.Clone(),
                 ZIndex = Panel.GetZIndex(label),
                 LabelText = label.LabelText,
+                LabelFontSize = label.LabelFontSize,
                 OutlineColorText = label.OutlineColorText,
                 BackColorText = label.BackColorText,
                 IsTethered = label.IsTethered,
@@ -14410,13 +14577,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             case DiagramShapeControl shape:
                 shape.SetCanvasBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height);
-                shape.ApplyDetails(snapshot.LabelText, snapshot.OutlineColorText, snapshot.BackColorText);
+                shape.ApplyDetails(snapshot.LabelText, snapshot.OutlineColorText, snapshot.BackColorText, snapshot.LabelFontSize);
                 shape.ApplyMetadata(snapshot.Metadata);
                 break;
 
             case DiagramImageControl image:
                 image.SetCanvasBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height);
-                image.ApplyDetails(snapshot.LabelText);
+                image.ApplyDetails(snapshot.LabelText, snapshot.LabelFontSize);
                 image.ApplyMetadata(snapshot.Metadata);
                 break;
 
@@ -14438,7 +14605,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     snapshot.LabelText,
                     snapshot.OutlineColorText,
                     snapshot.BackColorText,
-                    resizeToText: false);
+                    resizeToText: false,
+                    labelFontSize: snapshot.LabelFontSize);
                 label.ApplyMetadata(snapshot.Metadata);
                 break;
 
@@ -14820,7 +14988,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var dialog = new DiagramShapeDetailsWindow(
             shape.LabelText,
             shape.OutlineColorText,
-            shape.BackColorText)
+            shape.BackColorText,
+            shape.LabelFontSize)
         {
             Owner = this
         };
@@ -14831,7 +15000,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             shape.ApplyDetails(
                 dialog.LabelText,
                 dialog.OutlineColorText,
-                dialog.BackColorText);
+                dialog.BackColorText,
+                dialog.LabelFontSize);
             ApplyTransparentDiagramObjectLayerDefault(shape);
             DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(shape);
             if (before != null && after != null)
@@ -14871,7 +15041,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var dialog = new DiagramImageDetailsWindow(image.LabelText)
+        var dialog = new DiagramImageDetailsWindow(image.LabelText, image.LabelFontSize)
         {
             Owner = this
         };
@@ -14879,7 +15049,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (dialog.ShowDialog() == true)
         {
             DiagramObjectSnapshot? before = CreateDiagramObjectSnapshot(image);
-            image.ApplyDetails(dialog.LabelText);
+            image.ApplyDetails(dialog.LabelText, dialog.LabelFontSize);
             DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(image);
             if (before != null && after != null)
             {
@@ -14992,8 +15162,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         SelectDiagramObject(label);
-        label.BeginEditLabel();
-        StatusText = "Editing diagram label.";
+        var dialog = new DiagramShapeDetailsWindow(
+            label.LabelText,
+            label.OutlineColorText,
+            label.BackColorText,
+            label.LabelFontSize)
+        {
+            Owner = this,
+            Title = "Label Details"
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            DiagramObjectSnapshot? before = CreateDiagramObjectSnapshot(label);
+            label.ApplyDetails(
+                dialog.LabelText,
+                dialog.OutlineColorText,
+                dialog.BackColorText,
+                labelFontSize: dialog.LabelFontSize);
+            ApplyTransparentDiagramObjectLayerDefault(label);
+            DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(label);
+            if (before != null && after != null)
+            {
+                PushDiagramUndo(DiagramUndoActionKind.Modified, before, after);
+            }
+
+            StatusText = "Updated diagram label.";
+        }
     }
 
     private void DiagramLabel_DeleteRequested(object? sender, EventArgs e)
@@ -15760,6 +15955,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             snapshot.ImageDataBase64,
             snapshot.PastedImageFileName,
             snapshot.LabelText,
+            LabelFontSize = NormalizeComparisonDouble(snapshot.LabelFontSize),
             snapshot.OutlineColorText,
             snapshot.BackColorText,
             snapshot.HasEndArrow,
@@ -17177,8 +17373,133 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         MoveOpenWindowsToCodeCanvas();
         CodeDocumentsTabControl.Visibility = Visibility.Collapsed;
         WorkspaceScrollViewer.Visibility = Visibility.Visible;
+        ArrangeOpenWindowsOnCodeCanvas();
         UpdateEmptyWorkspaceHint();
         RefreshReferenceConnectionLines();
+    }
+
+    private void ArrangeOpenWindowsOnCodeCanvas(bool deferUntilLoaded = true)
+    {
+        List<FrameworkElement> windows = OpenTabs
+            .Select(item => GetOpenWindowElement(item.FilePath))
+            .OfType<FrameworkElement>()
+            .ToList();
+        if (windows.Count == 0)
+        {
+            return;
+        }
+
+        // A collapsed scroll viewer has no usable viewport until layout runs.
+        WorkspaceScrollViewer.UpdateLayout();
+        double viewportWidth = WorkspaceScrollViewer.ViewportWidth;
+        double viewportHeight = WorkspaceScrollViewer.ViewportHeight;
+        if (viewportWidth <= 0 || viewportHeight <= 0)
+        {
+            if (deferUntilLoaded)
+            {
+                _ = Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_codeViewMode == CodeViewMode.Canvas)
+                    {
+                        ArrangeOpenWindowsOnCodeCanvas(deferUntilLoaded: false);
+                        RefreshReferenceConnectionLines();
+                    }
+                }), DispatcherPriority.Loaded);
+            }
+
+            return;
+        }
+
+        const double viewportMargin = 24;
+        var availableSize = new Size(
+            Math.Max(1, viewportWidth - (2 * viewportMargin)),
+            Math.Max(1, viewportHeight - (2 * viewportMargin)));
+        List<Rect> windowBounds = CalculateCodeCanvasWindowBounds(
+            windows.Select(window => new Size(window.Width, window.Height)).ToList(),
+            availableSize);
+        Rect groupBounds = Rect.Empty;
+        for (int index = 0; index < windows.Count; index++)
+        {
+            Rect bounds = windowBounds[index];
+            Canvas.SetLeft(windows[index], bounds.Left);
+            Canvas.SetTop(windows[index], bounds.Top);
+            groupBounds.Union(bounds);
+        }
+
+        SyncOpenDocumentStatesFromWindows();
+        double fitZoom = Math.Min(
+            availableSize.Width / groupBounds.Width,
+            availableSize.Height / groupBounds.Height);
+        _canvasZoom = NormalizeCanvasZoom(Math.Min(_canvasZoom, fitZoom));
+        _workspaceState.CanvasZoom = _canvasZoom;
+        ApplyCanvasZoom();
+        WorkspaceScrollViewer.UpdateLayout();
+        WorkspaceScrollViewer.ScrollToHorizontalOffset(
+            ((groupBounds.Left + (groupBounds.Width / 2)) * _canvasZoom) - (WorkspaceScrollViewer.ViewportWidth / 2));
+        WorkspaceScrollViewer.ScrollToVerticalOffset(
+            ((groupBounds.Top + (groupBounds.Height / 2)) * _canvasZoom) - (WorkspaceScrollViewer.ViewportHeight / 2));
+        WorkspaceScrollViewer.UpdateLayout();
+        CaptureViewportState();
+    }
+
+    private static List<Rect> CalculateCodeCanvasWindowBounds(IReadOnlyList<Size> windowSizes, Size availableSize)
+    {
+        if (windowSizes.Count == 0)
+        {
+            return [];
+        }
+
+        const double windowGap = 28;
+        double bestFitZoom = 0;
+        double[] columnWidths = [];
+        double[] rowHeights = [];
+        // Choose the grid that fits best, allowing windows to retain their sizes.
+        for (int columns = 1; columns <= windowSizes.Count; columns++)
+        {
+            var candidateColumnWidths = new double[columns];
+            var candidateRowHeights = new double[(windowSizes.Count + columns - 1) / columns];
+            for (int index = 0; index < windowSizes.Count; index++)
+            {
+                int column = index % columns;
+                int row = index / columns;
+                candidateColumnWidths[column] = Math.Max(candidateColumnWidths[column], windowSizes[index].Width);
+                candidateRowHeights[row] = Math.Max(candidateRowHeights[row], windowSizes[index].Height);
+            }
+
+            double width = candidateColumnWidths.Sum() + ((columns - 1) * windowGap);
+            double height = candidateRowHeights.Sum() + ((candidateRowHeights.Length - 1) * windowGap);
+            double fitZoom = Math.Min(availableSize.Width / width, availableSize.Height / height);
+            if (fitZoom > bestFitZoom)
+            {
+                bestFitZoom = fitZoom;
+                columnWidths = candidateColumnWidths;
+                rowHeights = candidateRowHeights;
+            }
+        }
+
+        double totalWidth = columnWidths.Sum() + ((columnWidths.Length - 1) * windowGap);
+        double totalHeight = rowHeights.Sum() + ((rowHeights.Length - 1) * windowGap);
+        double startLeft = Math.Max(0, VirtualOriginX - (totalWidth / 2));
+        double top = Math.Max(0, VirtualOriginY - (totalHeight / 2));
+        var bounds = new List<Rect>(windowSizes.Count);
+        for (int row = 0; row < rowHeights.Length; row++)
+        {
+            double left = startLeft;
+            for (int column = 0; column < columnWidths.Length; column++)
+            {
+                int index = (row * columnWidths.Length) + column;
+                if (index < windowSizes.Count)
+                {
+                    bounds.Add(new Rect(new Point(left, top), windowSizes[index]));
+                }
+
+                left += columnWidths[column] + windowGap;
+            }
+
+            top += rowHeights[row] + windowGap;
+        }
+
+        return bounds;
     }
 
     private void MoveOpenWindowsToCodeTabs()

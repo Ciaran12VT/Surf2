@@ -59,6 +59,7 @@ public sealed class DiagramShapeControl : UserControl
 
         _labelTextBlock = new TextBlock
         {
+            FontSize = DiagramTextStyle.DefaultFontSize,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(8),
@@ -76,7 +77,7 @@ public sealed class DiagramShapeControl : UserControl
             BorderBrush = Brushes.Gray,
             BorderThickness = new Thickness(1),
             Background = Brushes.White,
-            FontSize = 12,
+            FontSize = DiagramTextStyle.DefaultFontSize,
             Padding = new Thickness(2, 0, 2, 0),
             TextAlignment = TextAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
@@ -147,6 +148,8 @@ public sealed class DiagramShapeControl : UserControl
 
     public string LabelText { get; private set; } = string.Empty;
 
+    public double LabelFontSize => _labelTextBlock.FontSize;
+
     public string OutlineColorText { get; private set; }
 
     public string BackColorText { get; private set; }
@@ -200,11 +203,14 @@ public sealed class DiagramShapeControl : UserControl
         _labelTextBox.SelectAll();
     }
 
-    public void ApplyDetails(string labelText, string outlineColorText, string backColorText)
+    public void ApplyDetails(string labelText, string outlineColorText, string backColorText, double? labelFontSize = null)
     {
         CommitLabelEdit(notifyChange: false);
         LabelText = labelText;
         _labelTextBlock.Text = LabelText;
+        double fontSize = DiagramTextStyle.NormalizeFontSize(labelFontSize ?? LabelFontSize);
+        _labelTextBlock.FontSize = fontSize;
+        _labelTextBox.FontSize = fontSize;
         OutlineColorText = NormalizeColorText(outlineColorText, "#000000");
         BackColorText = NormalizeColorText(backColorText, "#FFFFFF");
         ApplyColors();

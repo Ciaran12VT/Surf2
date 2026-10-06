@@ -75,6 +75,7 @@ public sealed class DiagramLabelControl : UserControl
         };
         _labelTextBlock = new TextBlock
         {
+            FontSize = DiagramTextStyle.DefaultFontSize,
             IsHitTestVisible = false,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
@@ -85,7 +86,7 @@ public sealed class DiagramLabelControl : UserControl
             AcceptsReturn = false,
             BorderThickness = new Thickness(0),
             Background = Brushes.Transparent,
-            FontSize = 12,
+            FontSize = DiagramTextStyle.DefaultFontSize,
             Padding = new Thickness(2, 0, 2, 0),
             TextAlignment = TextAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
@@ -177,6 +178,8 @@ public sealed class DiagramLabelControl : UserControl
 
     public string LabelText { get; private set; } = string.Empty;
 
+    public double LabelFontSize => _labelTextBlock.FontSize;
+
     public string OutlineColorText { get; private set; }
 
     public string BackColorText { get; private set; }
@@ -261,11 +264,15 @@ public sealed class DiagramLabelControl : UserControl
         string labelText,
         string outlineColorText,
         string backColorText,
-        bool resizeToText = true)
+        bool resizeToText = true,
+        double? labelFontSize = null)
     {
         CommitLabelEdit(notifyChange: false);
         LabelText = labelText;
         _labelTextBlock.Text = LabelText;
+        double fontSize = DiagramTextStyle.NormalizeFontSize(labelFontSize ?? LabelFontSize);
+        _labelTextBlock.FontSize = fontSize;
+        _labelTextBox.FontSize = fontSize;
         OutlineColorText = NormalizeColorText(outlineColorText, "#000000");
         BackColorText = NormalizeColorText(backColorText, "#FFFFFF");
         ApplyColors();
@@ -593,6 +600,12 @@ public sealed class DiagramLabelControl : UserControl
         }
 
         return bestCorner;
+    }
+
+    public bool ContainsCanvasPoint(Point canvasPoint)
+    {
+        return BoxRect.Contains(canvasPoint) ||
+            new LineGeometry(AnchorPoint, GetAttachPoint()).StrokeContains(new Pen(Brushes.Black, 12), canvasPoint);
     }
 
     private bool IsPointInLocalBox(Point localPoint)

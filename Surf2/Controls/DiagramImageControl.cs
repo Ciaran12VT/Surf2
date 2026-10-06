@@ -59,6 +59,7 @@ public sealed class DiagramImageControl : UserControl
 
         _labelTextBlock = new TextBlock
         {
+            FontSize = DiagramTextStyle.DefaultFontSize,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(4, 0, 4, 0),
@@ -76,7 +77,7 @@ public sealed class DiagramImageControl : UserControl
             BorderBrush = Brushes.Gray,
             BorderThickness = new Thickness(1),
             Background = Brushes.White,
-            FontSize = 12,
+            FontSize = DiagramTextStyle.DefaultFontSize,
             Padding = new Thickness(2, 0, 2, 0),
             TextAlignment = TextAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
@@ -159,6 +160,8 @@ public sealed class DiagramImageControl : UserControl
 
     public string LabelText { get; private set; } = string.Empty;
 
+    public double LabelFontSize => _labelTextBlock.FontSize;
+
     public DiagramObjectMetadata Metadata { get; private set; } = new();
 
     public bool IsSelected
@@ -208,11 +211,14 @@ public sealed class DiagramImageControl : UserControl
         _labelTextBox.SelectAll();
     }
 
-    public void ApplyDetails(string labelText)
+    public void ApplyDetails(string labelText, double? labelFontSize = null)
     {
         CommitLabelEdit(notifyChange: false);
         LabelText = labelText;
         _labelTextBlock.Text = LabelText;
+        double fontSize = DiagramTextStyle.NormalizeFontSize(labelFontSize ?? LabelFontSize);
+        _labelTextBlock.FontSize = fontSize;
+        _labelTextBox.FontSize = fontSize;
     }
 
     public void ApplyMetadata(DiagramObjectMetadata metadata)
