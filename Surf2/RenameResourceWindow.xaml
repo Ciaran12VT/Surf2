@@ -28,9 +28,11 @@
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button Width="84"
                         Margin="0,0,8,0"
+                        Style="{StaticResource SurfSaveButtonStyle}"
                         Click="SaveButton_Click"
                         Content="Save" />
                 <Button Width="84"
+                        Style="{StaticResource SurfCloseButtonStyle}"
                         Click="CancelButton_Click"
                         Content="Cancel" />
             </StackPanel>

@@ -48,11 +48,13 @@
                     Orientation="Horizontal">
             <Button Width="88"
                     Height="28"
+                    Style="{StaticResource SurfSaveButtonStyle}"
                     Content="Save"
                     Click="SaveButton_Click" />
             <Button Width="88"
                     Height="28"
                     Margin="8,0,0,0"
+                    Style="{StaticResource SurfCloseButtonStyle}"
                     Content="Cancel"
                     IsCancel="True" />
         </StackPanel>

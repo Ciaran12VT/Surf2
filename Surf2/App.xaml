@@ -757,6 +757,7 @@
                                 Padding="{TemplateBinding Padding}">
                             <TextBlock HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
+                                       FontFamily="{TemplateBinding FontFamily}"
                                        FontSize="{TemplateBinding FontSize}"
                                        FontWeight="{TemplateBinding FontWeight}"
                                        Foreground="{TemplateBinding Foreground}"
@@ -801,7 +802,7 @@
                BasedOn="{StaticResource SurfActionButtonStyle}"
                TargetType="{x:Type Button}">
             <Setter Property="Background"
-                    Value="#16A34A" />
+                    Value="#15803D" />
         </Style>
 
         <Style x:Key="SurfCloseButtonStyle"

@@ -24,16 +24,20 @@
             <Button Width="138"
                     Height="28"
                     Margin="0,0,8,0"
+                    Padding="4,3"
+                    Style="{StaticResource SurfPrimaryButtonStyle}"
                     Click="PlaceNewButton_Click"
                     Content="Place new portal point" />
             <Button x:Name="SelectExistingButton"
                     Width="112"
                     Height="28"
                     Margin="0,0,8,0"
+                    Style="{StaticResource SurfPrimaryButtonStyle}"
                     Click="SelectExistingButton_Click"
                     Content="Select existing" />
             <Button Width="78"
                     Height="28"
+                    Style="{StaticResource SurfCloseButtonStyle}"
                     Click="CancelButton_Click"
                     Content="Cancel" />
         </StackPanel>

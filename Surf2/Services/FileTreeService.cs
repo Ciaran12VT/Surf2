@@ -85,6 +85,63 @@ public sealed class FileTreeService
         }
     }
 
+    public IReadOnlyList<string> GetDocumentHierarchy(
+        string documentPath,
+        IEnumerable<ScopedResource> resources,
+        DatabaseSnapshotLibrary? databaseSnapshots = null,
+        IEnumerable<VirtualFolder>? virtualFolders = null)
+    {
+        if (databaseSnapshots != null &&
+            DatabaseDocumentService.TryCreateReadableDocumentPath(documentPath, databaseSnapshots, out string readablePath))
+        {
+            documentPath = readablePath;
+        }
+
+        List<VirtualFolder> folders = virtualFolders?.ToList() ?? [];
+        ObservableCollection<FileSystemNode> roots = CreateRoots(resources, databaseSnapshots, virtualFolders: folders);
+        var hierarchy = new List<string>();
+        return TryFindDocumentHierarchy(roots, documentPath, folders, hierarchy) ? hierarchy : [];
+    }
+
+    private bool TryFindDocumentHierarchy(
+        IEnumerable<FileSystemNode> nodes,
+        string documentPath,
+        IReadOnlyList<VirtualFolder> virtualFolders,
+        List<string> hierarchy)
+    {
+        foreach (FileSystemNode node in nodes)
+        {
+            hierarchy.Add(node.Name);
+            bool matchesDocument = string.Equals(node.FullPath, documentPath, StringComparison.OrdinalIgnoreCase) ||
+                (!DatabaseDocumentService.IsDatabaseDocumentPath(documentPath) &&
+                 string.Equals(NormalizePathForDisplay(node.FullPath), NormalizePathForDisplay(documentPath), StringComparison.OrdinalIgnoreCase));
+            if (!node.IsDirectory && matchesDocument)
+            {
+                return true;
+            }
+
+            // Resolve the canonical tree without expanding or filtering the visible explorer.
+            if (node.IsDirectory && !node.IsLoaded && !node.IsVirtualFolder &&
+                node.ResourceKind != ResourceKind.DatabaseSnapshot &&
+                !DatabaseDocumentService.IsDatabaseDocumentPath(documentPath) &&
+                NormalizePathForDisplay(documentPath).StartsWith(
+                    NormalizePathForDisplay(node.FullPath) + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                LoadChildren(node, virtualFolders);
+            }
+
+            if (TryFindDocumentHierarchy(node.Children, documentPath, virtualFolders, hierarchy))
+            {
+                return true;
+            }
+
+            hierarchy.RemoveAt(hierarchy.Count - 1);
+        }
+
+        return false;
+    }
+
     public ObjectExplorerSearchResult CreateFilteredRoots(
         IEnumerable<ScopedResource> resources,
         DatabaseSnapshotLibrary? databaseSnapshots,

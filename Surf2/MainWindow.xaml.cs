@@ -8303,7 +8303,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var window = new FloatingCodeWindow(
             state,
             content,
-            _syntaxHighlightingService.GetDefinition(syntaxPath, GetCodeLanguageForFile(syntaxPath)));
+            _syntaxHighlightingService.GetDefinition(syntaxPath, GetCodeLanguageForFile(syntaxPath)))
+        {
+            ClipboardTextFileNameSeedProvider = () => GetClipboardTextFileNameSeed(state.FilePath)
+        };
         window.ApplyCodeBackcolor(GetCodeWindowBackcolor(syntaxPath));
         window.ApplyKeyboardShortcutSettings(_appSettings.KeyboardShortcuts);
         window.ApplyReferenceHighlights(GetReferenceHighlightStylesForFile(syntaxPath));
@@ -8444,6 +8447,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return string.IsNullOrWhiteSpace(filePath)
             ? $"Resource: {resourceName} ({resourceType})"
             : $"Resource: {resourceName} ({resourceType}){Environment.NewLine}{filePath}";
+    }
+
+    private string? GetClipboardTextFileNameSeed(string filePath)
+    {
+        ScopedResource? owningResource = FindOwningScopeResource(filePath);
+        if (owningResource == null)
+        {
+            return null;
+        }
+
+        IReadOnlyList<string> hierarchy = _fileTreeService.GetDocumentHierarchy(
+            filePath, [owningResource], _databaseSnapshots, _activeScope?.VirtualFolders);
+        return hierarchy.Count == 0 ? null : string.Join("_", hierarchy);
     }
 
     private ScopedResource? FindOwningScopeResource(string filePath)

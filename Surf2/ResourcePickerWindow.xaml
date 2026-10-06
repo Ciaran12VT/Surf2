@@ -57,10 +57,12 @@
                 <Button x:Name="PickButton"
                         Width="84"
                         Margin="0,0,8,0"
+                        Style="{StaticResource SurfPrimaryButtonStyle}"
                         Click="PickButton_Click"
                         Content="Pick"
                         IsEnabled="False" />
                 <Button Width="84"
+                        Style="{StaticResource SurfCloseButtonStyle}"
                         Click="CancelButton_Click"
                         Content="Cancel" />
             </StackPanel>

@@ -109,11 +109,13 @@
                 <Button Width="82"
                         Height="28"
                         Margin="0,0,8,0"
+                        Style="{StaticResource SurfSaveButtonStyle}"
                         Click="OkButton_Click"
                         IsDefault="True"
                         Content="OK" />
                 <Button Width="82"
                         Height="28"
+                        Style="{StaticResource SurfCloseButtonStyle}"
                         Click="CancelButton_Click"
                         IsCancel="True"
                         Content="Cancel" />

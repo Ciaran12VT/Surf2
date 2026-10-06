@@ -57,7 +57,7 @@
         <Style x:Key="GreenToolbarButtonStyle"
                BasedOn="{StaticResource RoundedToolbarButtonStyle}"
                TargetType="{x:Type Button}">
-            <Setter Property="Background" Value="#16A34A" />
+            <Setter Property="Background" Value="#15803D" />
         </Style>
 
         <Style x:Key="RoundedToolbarContentButtonStyle"
@@ -179,7 +179,7 @@
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="ButtonChrome" Property="Background" Value="{DynamicResource Theme.SelectionBrush}" />
-                                <Setter Property="Foreground" Value="{DynamicResource Theme.AccentBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource Theme.SelectionTextBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -260,6 +260,7 @@
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="ButtonChrome" Property="Background" Value="#93C5FD" />
+                                <Setter Property="Foreground" Value="#1E3A8A" />
                                 <Setter Property="Cursor" Value="Arrow" />
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -374,6 +375,7 @@
             <Setter Property="Width" Value="30" />
             <Setter Property="Height" Value="26" />
             <Setter Property="Background" Value="{DynamicResource Theme.SurfaceBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource Theme.StrongBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
@@ -408,6 +410,7 @@
             <Setter Property="Width" Value="42" />
             <Setter Property="Height" Value="26" />
             <Setter Property="Background" Value="{DynamicResource Theme.SurfaceBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource Theme.StrongBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />

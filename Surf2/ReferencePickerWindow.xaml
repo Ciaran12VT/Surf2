@@ -58,9 +58,11 @@
                     Orientation="Horizontal">
             <Button Width="86"
                     Margin="0,0,8,0"
+                    Style="{StaticResource SurfPrimaryButtonStyle}"
                     Click="OpenButton_Click"
                     Content="Open" />
             <Button Width="86"
+                    Style="{StaticResource SurfCloseButtonStyle}"
                     Click="CancelButton_Click"
                     Content="Cancel" />
         </StackPanel>

@@ -22,9 +22,13 @@
                                 Background="{TemplateBinding Background}"
                                 CornerRadius="7"
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              RecognizesAccessKey="True" />
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontFamily="{TemplateBinding FontFamily}"
+                                       FontSize="{TemplateBinding FontSize}"
+                                       FontWeight="{TemplateBinding FontWeight}"
+                                       Foreground="{TemplateBinding Foreground}"
+                                       Text="{TemplateBinding Content}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -58,7 +62,7 @@
         <Style x:Key="SettingsSaveButtonStyle"
                BasedOn="{StaticResource SettingsActionButtonStyle}"
                TargetType="{x:Type Button}">
-            <Setter Property="Background" Value="#16A34A" />
+            <Setter Property="Background" Value="#15803D" />
         </Style>
 
         <Style x:Key="SettingsCloseButtonStyle"

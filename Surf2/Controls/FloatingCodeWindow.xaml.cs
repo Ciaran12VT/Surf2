@@ -84,6 +84,8 @@ public partial class FloatingCodeWindow : UserControl
 
     public event EventHandler? CloseRequested;
 
+    public Func<string?>? ClipboardTextFileNameSeedProvider { get; set; }
+
     public event EventHandler? BoundsChanged;
 
     public event EventHandler? BringToFrontRequested;
@@ -1538,12 +1540,18 @@ public partial class FloatingCodeWindow : UserControl
 
     private string GetClipboardTextFileNameSeed()
     {
+        string? hierarchyName = ClipboardTextFileNameSeedProvider?.Invoke();
+        if (!string.IsNullOrWhiteSpace(hierarchyName))
+        {
+            return hierarchyName;
+        }
+
         if (!string.IsNullOrWhiteSpace(State.DisplayName))
         {
             return State.DisplayName;
         }
 
-        string fileName = Path.GetFileNameWithoutExtension(State.FilePath);
+        string fileName = Path.GetFileName(State.FilePath);
         return string.IsNullOrWhiteSpace(fileName)
             ? "code"
             : fileName;
