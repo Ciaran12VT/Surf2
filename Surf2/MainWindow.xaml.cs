@@ -492,6 +492,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        _startupDiagnostics = new();
         await ShowMainCanvasLoadingAsync("Loading Surf 2.0...", "Loading workspace data...");
 
         try
@@ -499,19 +500,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             try
             {
                 if (await TryLoadRelationalPersistenceAsync()) return;
+                SetStartupStage(StartupStage.LegacyDocuments);
                 WorkspaceState workspaceState = await _workspaceStore.LoadAsync();
                 ScopeLibrary scopeLibrary = await _scopeStore.LoadAsync();
                 DatabaseSnapshotLibrary databaseSnapshots = await _databaseMetadataStore.LoadAsync();
                 DiagramLibrary diagramLibrary = await _diagramStore.LoadAsync();
                 WorkbenchLibrary workbenchLibrary = await _workbenchStore.LoadAsync();
                 AppSettings appSettings = await _settingsStore.LoadAsync();
+                _appSettings = appSettings;
+                ApplyInternalLoggingSetting("startup settings loaded");
 
                 _workspaceState = workspaceState;
                 _scopeLibrary = scopeLibrary;
                 _databaseSnapshots = databaseSnapshots;
                 _diagramLibrary = diagramLibrary;
                 _workbenchLibrary = workbenchLibrary;
-                _appSettings = appSettings;
                 _isPersistenceHydrated = true;
                 _persistenceLoadFailureMessage = null;
             }
@@ -520,7 +523,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 _isPersistenceHydrated = false;
                 _persistenceLoadFailureMessage = ex.Message;
                 InternalLogService.Error(ex, "Failed to hydrate persistence state during startup.");
-                StatusText = $"Could not restore workspace: {ex.Message}. Saving is disabled until Surf2 restarts successfully.";
+                if (!_shutdownRequested) StatusText = DescribeStartupFailure(ex);
                 return;
             }
 
@@ -555,7 +558,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 }
 
                 RefreshDiagramImageToolMenu();
-                ApplyInternalLoggingSetting("startup settings loaded");
                 RefreshSavedWorkbenches();
                 await MigrateSavedFolderToDefaultScopeAsync();
 
@@ -584,6 +586,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
         finally
         {
+            _startupDiagnostics = null;
             HideMainCanvasLoading();
             _startupReadyCompletion.TrySetResult(true);
         }

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -68,7 +69,7 @@ public partial class MainWindow
         public int? SourceOrdinal { get; set; }
     }
     private sealed record PreparedRelationalScope(StateEditSession<Scope> Edit, Scope Model, ExplorerScope Explorer,
-        IReadOnlyList<ExplorerNodeSummary> Roots, ReferenceCatalogue References);
+        IReadOnlyList<ExplorerNodeSummary> Roots);
     private sealed record PreparedRelationalDiagram(DiagramState State, IReadOnlyList<RelationalImagePayload?> Images);
 
     private RelationalRuntime RelationalStateRuntime => _relational ?? throw new InvalidOperationException("No relational runtime is selected.");
@@ -82,31 +83,37 @@ public partial class MainWindow
             using var operation = BeginRelationalStateOperation();
             var ct = operation.Token;
             var runtime = RelationalStateRuntime;
+            SetStartupStage(StartupStage.DatabaseReadiness);
             await runtime.Session.RequireReadyAsync(ct);
             RequireRelationalStartup(ct);
             if (_relationalDocumentOpener == null) InitializeRelationalDocumentAccess();
+            SetStartupStage(StartupStage.Preferences);
             var preferences = RequireRelationalLoad(await runtime.Preferences.LoadStartupPreferencesAsync(ct), "preferences");
             StateEditSession<WorkspaceState>? workspace = null;
             StateEditSession<ScopeSelection>? selection = null;
             try
             {
+                preferences.Snapshot().ApplyToRuntime(_appSettings);
+                ApplyInternalLoggingSetting("relational startup preferences loaded");
+                SetStartupStage(StartupStage.Workspace);
                 workspace = RequireRelationalLoad(await runtime.State.LoadWorkspaceAsync(ct), "workspace");
+                SetStartupStage(StartupStage.ScopeSelection);
                 selection = RequireRelationalLoad(await runtime.State.LoadScopeSelectionAsync(ct), "scope selection");
-                _ = await runtime.State.ListScopesAsync(100, ct: ct); // A summary page, never editable scope stubs.
+                SetStartupStage(StartupStage.WorkbenchList);
                 var workbenches = await runtime.StateStore.ListRecentWorkbenchesAsync(100, ct: ct);
                 RequireRelationalStartup(ct);
                 _relationalPreferenceEdit = preferences; _relationalWorkspaceEdit = workspace; _relationalSelectionEdit = selection;
-                preferences.Snapshot().ApplyToRuntime(_appSettings);
+                SetStartupStage(StartupStage.Appearance);
                 await LoadRelationalAppearanceRulesAsync(preferences.ExpectedToken, ct);
                 RequireRelationalStartup(ct);
                 AppThemeService.Apply(_appSettings.Appearance.Theme); ApplyThemeToRuntimeSurfaces();
-                ApplyInternalLoggingSetting("relational startup preferences loaded");
                 _workspaceState = workspace.Snapshot();
                 BindRelationalWorkbenchPage(workbenches);
+                SetStartupStage(StartupStage.StartupWorkbench);
                 var newest = preferences.Snapshot().LoadMostRecentWorkbenchOnStartup
                     ? await runtime.Preferences.ReadMostRecentWorkbenchSummaryAsync(ct) : null;
                 RequireRelationalStartup(ct);
-                if (newest?.Status == StateLoadStatus.Failed) throw newest.Error!;
+                if (newest?.Status == StateLoadStatus.Failed) ExceptionDispatchInfo.Capture(newest.Error!).Throw();
                 if (newest?.Status == StateLoadStatus.Cancelled) throw new OperationCanceledException(ct);
                 if (newest?.IsReady == true) await LoadRelationalWorkbenchAsync(newest.Value!, ct);
                 else
@@ -115,8 +122,10 @@ public partial class MainWindow
                     RequireRelationalStartup(ct);
                     BeginRelationalLayout(_workspaceState.OpenDocuments);
                     _canvasZoom = NormalizeCanvasZoom(_workspaceState.CanvasZoom); ApplyCanvasZoom();
+                    SetStartupStage(StartupStage.Documents);
                     await RestoreRelationalDocumentsAsync(ct);
                     RequireRelationalStartup(ct);
+                    SetStartupStage(StartupStage.Viewport);
                     await Dispatcher.InvokeAsync(new Action(() =>
                     {
                         RequireRelationalStartup(ct);
@@ -139,6 +148,7 @@ public partial class MainWindow
         catch (Exception e)
         {
             _isPersistenceHydrated = false;
+            RetireRelationalExplorerContext();
             _persistenceLoadFailureMessage = "Relational startup did not complete.";
             if (!_relationalStateClosing) StatusText = "Could not restore relational state. Saving is disabled; no replacement defaults were published.";
             InternalLogService.Error(e, "Relational state startup failed.");
@@ -152,9 +162,13 @@ public partial class MainWindow
         if (_relationalStateClosing) throw new OperationCanceledException("The window is closing.", ct);
     }
 
-    private static T RequireRelationalLoad<T>(StateLoad<T> load, string kind) where T : class => load.Value ??
-        throw load.Error ?? (load.Status == StateLoadStatus.Cancelled ? new OperationCanceledException() :
-            new InvalidOperationException("The selected " + kind + " is missing. No replacement will be created."));
+    private static T RequireRelationalLoad<T>(StateLoad<T> load, string kind) where T : class
+    {
+        if (load.Value != null) return load.Value;
+        if (load.Error != null) ExceptionDispatchInfo.Capture(load.Error).Throw();
+        throw load.Status == StateLoadStatus.Cancelled ? new OperationCanceledException() :
+            new InvalidOperationException("The selected " + kind + " is missing. No replacement will be created.");
+    }
 
     private void RequireRelationalWrite()
     {
@@ -259,13 +273,16 @@ public partial class MainWindow
     private async Task<PreparedRelationalScope> PrepareRelationalScopeAsync(ScopeSummary chosen, CancellationToken ct,
         IReadOnlySet<string>? unloaded = null)
     {
+        SetStartupStage(StartupStage.ScopeState);
         var edit = RequireRelationalLoad(await RelationalStateRuntime.State.LoadScopeAsync(chosen, ct), "scope");
         try
         {
+            SetStartupStage(StartupStage.ScopeMetadata);
             var explorer = await RelationalStateRuntime.Explorer.OpenScopeAsync(edit.SubjectKey, unloaded ?? GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, ct);
+            SetStartupStage(StartupStage.ScopeRoots);
             var roots = await RelationalStateRuntime.Explorer.GetRootsAsync(explorer, ct);
-            var references = await RelationalStateRuntime.References.LoadPaintAsync(explorer, ct);
-            return new(edit, edit.Snapshot(), explorer, roots, references);
+            // Derived references are owned by the cancellable background job, not workspace hydration.
+            return new(edit, edit.Snapshot(), explorer, roots);
         }
         catch { await edit.DisposeAsync(); throw; }
     }
@@ -273,7 +290,7 @@ public partial class MainWindow
     private void ApplyRelationalScope(PreparedRelationalScope scope)
     {
         SetActiveScope(scope.Model); _relationalScopeEdit = scope.Edit;
-        _relationalExplorerScope = scope.Explorer; _relationalReferenceCatalogue = scope.References;
+        _relationalExplorerScope = scope.Explorer; _relationalReferenceCatalogue = null;
         _referenceIndex = ScopeReferenceIndex.Empty; // The reference owner consumes the shared relational paint lookup.
         RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
         foreach (var root in scope.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
@@ -307,6 +324,7 @@ public partial class MainWindow
         {
         RequireRelationalSelection(generation, ct);
         string? id = selection.Snapshot().LastActiveScopeId;
+        SetStartupStage(StartupStage.ScopeLookup);
         ScopeSummary? chosen = string.IsNullOrWhiteSpace(id) ? null : await FindRelationalScopeAsync(id, ct);
         if (chosen == null && string.IsNullOrWhiteSpace(id))
         {
@@ -1055,11 +1073,13 @@ public partial class MainWindow
         try
         {
         RequireRelationalSelection(generation, ct);
+        SetStartupStage(StartupStage.WorkbenchState);
         var edit = RequireRelationalLoad(await RelationalStateRuntime.State.LoadWorkbenchAsync(summary, ct), "workbench");
         PreparedRelationalScope? preparedScope = null;
         try
         {
             var aggregate = edit.Snapshot(); var model = aggregate.Workbench;
+            SetStartupStage(StartupStage.WorkbenchScope);
             var scopeTarget = await RelationalStateRuntime.StateStore.ReadWorkbenchScopeTargetAsync(summary.Token.Key, ct);
             if (scopeTarget == null || !SameRelationalOwner(scopeTarget.Token, edit.ExpectedToken)) throw new StateConflictException("workbench scope target");
             if (scopeTarget.Resolution == StateLinkResolution.Ambiguous) throw new InvalidDataException("The saved workbench's scope ID is ambiguous. No workspace was replaced.");
@@ -1077,6 +1097,7 @@ public partial class MainWindow
                 var chosen = await FindRelationalScopeAsync(model.ScopeId, ct); if (chosen != null) preparedScope = await PrepareRelationalScopeAsync(chosen, ct,
                     model.UnloadedResourceIds.ToHashSet(StringComparer.OrdinalIgnoreCase));
             }
+            SetStartupStage(StartupStage.Diagram);
             PreparedRelationalDiagram? diagram = model.ActiveDiagramSnapshot == null ? null :
                 await PrepareRelationalDiagramAsync(new(model.ActiveDiagramSnapshot, aggregate.PastedImages, aggregate.PastedImageFallbacks), ct);
             RequireRelationalSelection(generation, ct);
@@ -1108,10 +1129,12 @@ public partial class MainWindow
                 SetWorkspaceViewVisibility(model.IsCodeViewVisible, model.IsDiagramViewVisible, ParseWorkspaceViewKind(model.ActiveWorkspaceView));
                 var previous = _relationalWorkbenchEdit; _relationalWorkbenchEdit = edit; if (previous != null) await previous.DisposeAsync();
                 RequireRelationalSelection(generation, ct);
+                SetStartupStage(StartupStage.Documents);
                 await RestoreRelationalDocumentsAsync(ct);
                 RequireRelationalSelection(generation, ct);
                 if (!string.IsNullOrWhiteSpace(model.ActiveDocumentPath)) SelectOpenDocument(model.ActiveDocumentPath);
                 RestoreRelationalReferenceLines(model.ReferenceConnectionLines); UpdateEmptyWorkspaceHint();
+                SetStartupStage(StartupStage.Viewport);
                 await Dispatcher.InvokeAsync(new Action(() =>
                 {
                     RequireRelationalSelection(generation, ct);

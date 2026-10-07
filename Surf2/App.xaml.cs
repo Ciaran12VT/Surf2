@@ -17,10 +17,11 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // The persisted preference is applied after loading; capture failures before it can be read.
+        InternalLogService.Initialize();
         bool hasExternalOpenArgument = e.Args.Any(IsExternalOpenArgument);
         if (hasExternalOpenArgument)
         {
-            InternalLogService.Initialize();
             InternalLogService.Info(
                 "Surf2 started with external-open arguments.",
                 ("ArgumentCount", e.Args.Length));

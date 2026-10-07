@@ -40,7 +40,7 @@ public static partial class StorageRegressionSuite
 
     // Register in a separate console invocation: WPF permits only one Application per process.
     // This creates/drops ONLY SqlFixture's randomly named databases; it never calls App.OnStartup.
-    public static Task RunRuntimeWpfChecksAsync(Action<bool, string> check, string outputDir)
+    public static Task RunRuntimeWpfChecksAsync(Action<bool, string> check, string outputDir, bool startupOnly = false)
     {
         ArgumentNullException.ThrowIfNull(check);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDir);
@@ -68,7 +68,7 @@ public static partial class StorageRegressionSuite
                     app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                     Directory.CreateDirectory(directory);
                     await RuntimeWpfCheckCancellationAsync(check);
-                    await RunRuntimeWpfFixtureAsync(check, directory);
+                    await RunRuntimeWpfFixtureAsync(check, directory, startupOnly);
                 }
                 catch (Exception error) { failure = error; }
                 finally
@@ -85,10 +85,19 @@ public static partial class StorageRegressionSuite
         }) { IsBackground = true, Name = "Surf2 runtime offscreen WPF regression" };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        return completion.Task;
+        return WaitForThreadExitAsync();
+        async Task WaitForThreadExitAsync()
+        {
+            try { await completion.Task; }
+            finally
+            {
+                if (!await Task.Run(() => thread.Join(TimeSpan.FromSeconds(30))))
+                    throw new TimeoutException("The regression WPF dispatcher did not exit.");
+            }
+        }
     }
 
-    private static async Task RunRuntimeWpfFixtureAsync(Action<bool, string> check, string outputDir)
+    private static async Task RunRuntimeWpfFixtureAsync(Action<bool, string> check, string outputDir, bool startupOnly)
     {
         await using var fixture = await SqlFixture.CreateAsync();
         await new RelationalSchemaInstaller().InitializeDestinationAsync(fixture.SourceConnectionString,
@@ -154,6 +163,12 @@ public static partial class StorageRegressionSuite
         if (probe.Format != PersistenceFormat.Relational)
             throw new InvalidOperationException("Refusing runtime startup on anything other than the owned Ready fixture.");
         await session.RequireReadyAsync();
+
+        if (startupOnly)
+        {
+            await RuntimeWpfCheckStartupResilienceAsync(fixture, session, state, seeded, connection, check);
+            return;
+        }
 
         var main = new Surf2.MainWindow(SqlServerConnectionOptions.FromConnectionString(connection));
         FloatingSpreadsheetWindow? grid = null;

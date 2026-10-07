@@ -189,6 +189,7 @@ public partial class MainWindow
         SqlServerConnectionOptions options = _persistenceOptions;
         var ct = _relationalStartupCancellation.Token;
         ct.ThrowIfCancellationRequested();
+        SetStartupStage(StartupStage.DatabaseFormat);
         PersistenceFormatResult format = await new PersistenceFormatProbe().ProbeAsync(options.ConnectionString, ct);
         ct.ThrowIfCancellationRequested();
         if (format.Format == PersistenceFormat.Unavailable &&
@@ -246,6 +247,7 @@ public partial class MainWindow
                 ". No schema or saved data was changed.");
 
         var runtime = new RelationalRuntime(options);
+        SetStartupStage(StartupStage.DatabaseReadiness);
         await runtime.Session.RequireReadyAsync(ct);
         ct.ThrowIfCancellationRequested();
         if (_shutdownRequested) throw new OperationCanceledException("Startup was cancelled by window close.");

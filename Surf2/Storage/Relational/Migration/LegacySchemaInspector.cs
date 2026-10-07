@@ -180,7 +180,15 @@ public sealed class LegacySchemaInspector
             throw new InvalidDataException("A persisted entity is missing its identity or timestamp. Migration cannot invent unstable defaults.");
     }
 
-    public static T Deserialize<T>(JsonElement value) where T : class =>
-        JsonSerializer.Deserialize<T>(value, JsonOptions)
-        ?? throw new InvalidDataException("A legacy model value could not be decoded.");
+    public static T Deserialize<T>(JsonElement value) where T : class
+    {
+        T decoded = JsonSerializer.Deserialize<T>(value, JsonOptions)
+            ?? throw new InvalidDataException("A legacy model value could not be decoded.");
+        // The existing converter's omitted-value semantics must not change across a recovery retry.
+        // New runtime settings default logging on, but already journaled legacy settings defaulted off.
+        if (decoded is AppSettings { Diagnostics: { } logging } && (!value.TryGetProperty("Diagnostics", out var diagnostics) ||
+            diagnostics.ValueKind == JsonValueKind.Object && !diagnostics.TryGetProperty("EnableInternalLogging", out _)))
+            logging.EnableInternalLogging = false;
+        return decoded;
+    }
 }

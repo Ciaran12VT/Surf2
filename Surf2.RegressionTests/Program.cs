@@ -13,6 +13,12 @@ using Surf2.Storage.Relational.Access.State;
 using Surf2.Services.RelationalExplorer;
 
 int passed = 0;
+if (args.Contains("--startup-resilience", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
+        Path.Combine(AppContext.BaseDirectory, "startup-resilience-checks"), startupOnly: true);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} startup resilience checks."); return; }
+}
 if (args.Contains("--reference-warm-start", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunReferenceWarmStartChecksAsync(Check);

@@ -265,9 +265,8 @@ public partial class MainWindow
         if (work.Scope == null) return;
         var explorer = await work.Runtime.Explorer.OpenScopeAsync(work.Scope.SubjectKey, GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, work.Token);
         var roots = await work.Runtime.Explorer.GetRootsAsync(explorer, work.Token);
-        var references = await work.Runtime.References.LoadPaintAsync(explorer, work.Token);
         RequireRelationalSnapshotContext(work);
-        _relationalExplorerScope = explorer; _relationalReferenceCatalogue = references; _referenceIndex = ScopeReferenceIndex.Empty;
+        _relationalExplorerScope = explorer; _relationalReferenceCatalogue = null; _referenceIndex = ScopeReferenceIndex.Empty;
         RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
         foreach (var root in roots) RootNodes.Add(CreateRelationalExplorerNode(root));
         BeginRelationalExplorerContext(); InvalidateRelationalDocumentContext();
