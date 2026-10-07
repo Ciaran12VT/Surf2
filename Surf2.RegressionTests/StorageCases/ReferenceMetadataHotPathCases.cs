@@ -74,11 +74,15 @@ public static partial class StorageRegressionSuite
         {
             var again = await references.LoadPaintAsync(scope);
             var targets = await references.ResolveAsync(scope.Context, queries);
+            var verified = await references.ResolveVerifiedWithCoverageAsync(scope, queries);
             check(ReferenceEquals(again.Paint, paint.Paint) && targets[0].Candidates.Length == 1 &&
                 targets[0].Candidates[0].Definition.Kind == ReferenceEntityKind.StoredProcedure &&
                 targets[1].Candidates.Single().Definition.Name == "FixtureSymbol256" &&
                 targets[2].Candidates.Single().Definition.ParameterCount == 4 && targets[3].Candidates.Length == 1 && targets[4].Candidates.IsEmpty,
                 "Cached names preserve quoted qualified names, aliases, suffix fallback, overload ranking, Unicode and authoritative misses");
+            check(verified.Coverage.FullyPublished && verified.Targets.Zip(targets).All(t =>
+                t.First.Query == t.Second.Query && t.First.Candidates.SequenceEqual(t.Second.Candidates)),
+                "Verified navigation preserves complete-index lookup and overload behavior");
             check(!trace.Commands.Any(c => c.Text.Contains("surf.SymbolDefinition", StringComparison.OrdinalIgnoreCase) ||
                 c.Text.Contains("surf.ResourceDocument", StringComparison.OrdinalIgnoreCase) ||
                 c.Text.Contains("FROM surf.ScopeResource", StringComparison.OrdinalIgnoreCase)) && trace.Commands.Count < 20,
@@ -99,14 +103,28 @@ public static partial class StorageRegressionSuite
         var excluded = await explorer.OpenScopeAsync(seeded.ScopeToken.Key,
             new HashSet<string>(scope.Resources.Where(r => r.Kind == ResourceKind.DatabaseSnapshot).Select(r => r.ResourceId)), "en-US");
         var excludedResult = await references.ResolveWithCoverageAsync(excluded, [new("FixtureSymbol256")]);
+        var excludedVerified = await references.ResolveVerifiedWithCoverageAsync(excluded, [new("Evidence")]);
         check(excludedResult.Targets.Single().Candidates.IsEmpty && excludedResult.Coverage.Documents == 1 && !excludedResult.Coverage.FullyPublished,
             "A changed unloaded selection replaces the cache and cannot leak excluded database symbols or certify a provisional view");
+        check(excludedVerified.Targets.Single().Candidates.IsEmpty && !excludedVerified.Coverage.FullyPublished,
+            "Verified navigation never includes targets from excluded captured databases");
         await ThrowsAsync<ReferenceIndexNotReadyException>(() => references.ResolveAsync(excluded.Context, [new("FixtureSymbol256")]), check,
             "Context-only cached provisional navigation cannot turn an excluded-view miss into a complete result");
+        var databaseOnly = await explorer.OpenScopeAsync(seeded.ScopeToken.Key,
+            new HashSet<string>(scope.Resources.Where(r => r.Kind == ResourceKind.Diagram).Select(r => r.ResourceId)), "en-US");
+        var undiscoveredVerified = await references.ResolveVerifiedWithCoverageAsync(databaseOnly, [new("Evidence")]);
+        check(undiscoveredVerified.Targets.Single().Candidates.Single().Freshness == IndexFreshness.Indexed &&
+            undiscoveredVerified.Coverage.StaleOrUnindexed == 0 && !undiscoveredVerified.Coverage.DiscoveryReconciled &&
+            !undiscoveredVerified.Coverage.FullyPublished,
+            "Verified table navigation also tolerates an unconfirmed discovery view without falsely certifying it");
         var restricted = scope with { Context = await index.CaptureContextAsync(scope.Context.ScopeKey, documentKeys: [document]) };
         var restrictedResult = await references.ResolveWithCoverageAsync(restricted, [new("FixtureSymbol256")]);
         check(restrictedResult.Targets.Single().Candidates.Length == 1 && restrictedResult.Coverage.IsSubset && !restrictedResult.Coverage.FullyPublished,
             "Explicit document subsets retain their own candidates but never certify whole-scope completeness");
+        var restrictedVerified = await references.ResolveVerifiedWithCoverageAsync(restricted, [new("FixtureSymbol256"), new("Evidence")]);
+        check(restrictedVerified.Targets[0].Candidates.Length == 1 && restrictedVerified.Targets[1].Candidates.IsEmpty &&
+            restrictedVerified.Coverage.IsSubset && !restrictedVerified.Coverage.FullyPublished,
+            "Verified positive results preserve the caller's document subset and incomplete coverage");
         await ThrowsAsync<ExplorerLimitException>(() => new RelationalReferenceService(session, index,
             new ExplorerLimits(MaximumMetadataRows: 20)).LoadPaintAsync(scope), check,
             "The bulk metadata stream rejects row-budget overflow instead of publishing a truncated reference cache");
@@ -118,17 +136,43 @@ public static partial class StorageRegressionSuite
             cancelled.Cancel();
             await ThrowsAsync<OperationCanceledException>(() => references.LoadPaintAsync(scope, cancelled.Token), check,
                 "Cancellation interrupts metadata construction without installing a partial cache");
+            await ThrowsAsync<OperationCanceledException>(() => references.ResolveVerifiedWithCoverageAsync(scope, queries, cancelled.Token), check,
+                "Verified navigation respects cancellation before returning cached targets");
         }
+        await ThrowsAsync<ArgumentException>(() => references.ResolveVerifiedWithCoverageAsync(scope,
+            Enumerable.Repeat(new ReferenceQuery("Evidence"), 65)), check, "Verified navigation retains the 64-token request limit");
+        await ThrowsAsync<IndexGenerationChangedException>(() => references.ResolveVerifiedWithCoverageAsync(
+            scope with { Context = scope.Context with { Epoch = Guid.NewGuid() } }, queries), check,
+            "Verified navigation rejects a different runtime epoch");
 
         await references.LoadPaintAsync(scope);
         var lease = await index.BeginWorkAsync(await index.GetHandleAsync(document), Guid.NewGuid(), source.Fingerprint, policy);
         await ThrowsAsync<IndexGenerationChangedException>(() => references.ResolveAsync(scope.Context, [new("FixtureSymbol256")]), check,
             "Cached navigation still rejects a changed SQL generation before returning metadata");
+        await ThrowsAsync<IndexGenerationChangedException>(() => references.ResolveVerifiedWithCoverageAsync(scope, [new("Evidence")]), check,
+            "Verified positive navigation still rejects an obsolete SQL generation");
         var stale = await explorer.OpenScopeAsync(seeded.ScopeToken.Key, sortCultureName: "en-US");
         var staleResult = await references.ResolveWithCoverageAsync(stale, [new("FixtureSymbol256")]);
         check(staleResult.Coverage.StaleOrUnindexed == 2 && !staleResult.Coverage.FullyPublished &&
             staleResult.Targets.Single().Candidates.Single().Freshness == IndexFreshness.Stale,
             "Coverage and candidates expose both stale aliases after a real index mutation rather than reusing a ready cache");
+        await ThrowsAsync<ReferenceIndexNotReadyException>(() => references.ResolveAsync(stale, [new("Evidence")]), check,
+            "Authoritative all-scope resolution remains unavailable while unrelated documents are stale");
+        using (var trace = new StateAccessSqlTrace(connection))
+        {
+            var verified = await references.ResolveVerifiedWithCoverageAsync(stale,
+                [new("[dbo].[Evidence]"), new("FixtureSymbol256"), new("NoSuchReference")]);
+            check(verified.Targets[0].Candidates.Single().Definition.Kind == ReferenceEntityKind.Table &&
+                verified.Targets[0].Candidates.Single().Freshness == IndexFreshness.Indexed &&
+                !verified.Coverage.FullyPublished && verified.Coverage.StaleOrUnindexed == 2,
+                "A current captured table is navigable despite unrelated stale procedure aliases, without claiming complete coverage");
+            check(verified.Targets[1].Candidates.IsEmpty && verified.Targets[2].Candidates.IsEmpty && !verified.Coverage.FullyPublished,
+                "Verified navigation filters stale targets and does not turn an incomplete miss into an authoritative result");
+            check(!trace.Commands.Any(c => c.Text.Contains("surf.SymbolDefinition", StringComparison.OrdinalIgnoreCase) ||
+                c.Text.Contains("surf.ResourceDocument", StringComparison.OrdinalIgnoreCase)),
+                "Incomplete-index positive navigation retains the metadata cache without scanning every document");
+            StateAccessNoReads(trace.Commands, check, "Verified positive navigation", "TextContent", "Asset", "TableColumnRevision");
+        }
         await index.PublishAsync(new(lease, source.Text, source.Language, source.Symbols, source.SourceRevisionKey));
         var replacement = await explorer.OpenScopeAsync(seeded.ScopeToken.Key, sortCultureName: "en-US");
         var replacementResult = await references.ResolveAsync(replacement, [new("FixtureSymbol256"), new("NeedleProc")]);

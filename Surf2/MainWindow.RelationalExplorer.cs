@@ -317,6 +317,7 @@ public partial class MainWindow
             {
                 if (completed.FullyPublished) runtime.References.AcceptCompletedDiscovery(completed);
                 var current = view with { Context = completed.Context ?? view.Context };
+                using var publication = await refresher.EnterReferenceReadAsync(ct).ConfigureAwait(false);
                 var catalogue = await runtime.References.LoadPaintAsync(current, ct).ConfigureAwait(false);
                 Task highlights = Task.CompletedTask;
                 await Dispatcher.InvokeAsync(() =>
@@ -334,6 +335,7 @@ public partial class MainWindow
                     highlights = _relationalHighlightTask;
                     if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
                 });
+                publication.Dispose();
                 await highlights.ConfigureAwait(false); ct.ThrowIfCancellationRequested();
                 await Dispatcher.InvokeAsync(() =>
                 {
@@ -962,6 +964,10 @@ public partial class MainWindow
             }
         }
     }
+
+    private Task<IDisposable> EnterRelationalReferenceReadAsync(CancellationToken ct) =>
+        (_relationalIndexRefresher ?? throw new InvalidOperationException("The reference worker is closed."))
+            .EnterReferenceReadAsync(ct);
 
     // Parent awaits before disposing/replacing the runtime or finishing window close.
     private async Task StopRelationalExplorerAsync()

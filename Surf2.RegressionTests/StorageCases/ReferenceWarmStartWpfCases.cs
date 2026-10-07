@@ -255,8 +255,8 @@ public static partial class StorageRegressionSuite
             as Task<ExplorerScope> ?? throw new InvalidOperationException("Missing actual MainWindow current reference view hook.");
         var scope = await currentView.WaitAsync(TimeSpan.FromSeconds(60));
         var task = RuntimeWpfInvoke(main, "ResolveRelationalReferencesAsync", scope, request, sourcePath, CancellationToken.None)
-            as Task<ImmutableArray<SymbolSummary>> ?? throw new InvalidOperationException("Missing actual MainWindow reference resolution hook.");
-        return (scope, await task.WaitAsync(TimeSpan.FromSeconds(60)));
+            as Task<ReferenceResolutionBatch> ?? throw new InvalidOperationException("Missing actual MainWindow reference resolution hook.");
+        return (scope, (await task.WaitAsync(TimeSpan.FromSeconds(60))).Targets.Single().Candidates);
     }
 
     private static bool RuntimeWpfIsPendingPhysicalMessage(string message) =>

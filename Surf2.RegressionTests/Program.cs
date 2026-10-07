@@ -13,6 +13,13 @@ using Surf2.Storage.Relational.Access.State;
 using Surf2.Services.RelationalExplorer;
 
 int passed = 0;
+if (args.Length > 0 && args[0] == "--sample-database")
+{
+    if (args.Length != 4) throw new ArgumentException("Usage: --sample-database <owned LocalDB connection> <matching temporary directory> missing|mapped|changed|restart|pooled|views");
+    await StorageRegressionSuite.RunSampleDatabaseChecksAsync(args[1], args[2], args[3], Check);
+    Console.WriteLine($"Passed {passed} sample database checks.");
+    return;
+}
 if (args.Contains("--startup-resilience", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
@@ -25,6 +32,11 @@ if (args.Contains("--reference-warm-start", StringComparer.Ordinal))
     await StorageRegressionSuite.RunReferenceMetadataHotPathChecksAsync(Check);
     await StorageRegressionSuite.RunReferenceDatabaseBatchChecksAsync(Check);
     if (args.Length == 1) { Console.WriteLine($"Passed {passed} reference warm-start checks."); return; }
+}
+if (args.Contains("--reference-navigation", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunReferenceMetadataHotPathChecksAsync(Check);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} reference navigation checks."); return; }
 }
 if (args.Contains("--reference-watch", StringComparer.Ordinal))
 {

@@ -151,7 +151,8 @@ public partial class MainWindow
     private async Task<bool> TryOpenRelationalFileCoreAsync(string filePath, OpenDocumentState? existingState,
         int? targetLine, int? targetColumn, ReferenceEntity? targetReference, FloatingCodeWindow? sourceWindow,
         bool suppressHistory, CancellationToken ct, DocumentTextKey? expectedTextKey = null, IndexRequestContext? expectedIndex = null,
-        RelationalDocumentAddress? preferredResolvedAddress = null)
+        RelationalDocumentAddress? preferredResolvedAddress = null, SymbolSummary? expectedSymbol = null,
+        Action? referencePublished = null)
     {
         if (_relational == null) return false;
         var runtime = _relational;
@@ -180,6 +181,7 @@ public partial class MainWindow
                 var token = linked.Token;
                 if (_relationalDocumentWindows.TryGetValue(address.Identity, out var opened))
                 {
+                    using var publication = expectedSymbol == null ? null : await EnterRelationalReferenceReadAsync(token);
                     if (targetReference != null)
                     {
                         var current = await documents.DescribeTextAsync(address, token);
@@ -187,7 +189,7 @@ public partial class MainWindow
                         if (!_relationalOpenTextKeys.TryGetValue(address.Identity, out var resident) || resident != current.Key)
                             throw new DocumentReferenceChangedException();
                         await documents.ValidateTextPlanAsync(current, scope, token);
-                        if (expectedIndex != null && !await runtime.Index.IsContextCurrentAsync(expectedIndex, token)) throw new IndexGenerationChangedException();
+                        await ValidateIndexReferenceAsync(current, token);
                     }
                     if (CanPublishRelationalDocument(runtime, scope, owner, request))
                         RevealRelationalDocument(opened, targetLine, targetColumn, targetReference, suppressHistory);
@@ -227,8 +229,11 @@ public partial class MainWindow
                     "Large Document", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return true;
                 token.ThrowIfCancellationRequested();
                 var content = await documents.ReadTextAsync(plan, token);
+                // The provider, not a cancellable shared-flight consumer, owns the publication lease.
+                // Confirmations and content reads happen outside it.
+                using var textPublication = expectedSymbol == null ? null : await EnterRelationalReferenceReadAsync(token);
                 await documents.ValidateTextPlanAsync(plan, scope, token);
-                if (expectedIndex != null && !await runtime.Index.IsContextCurrentAsync(expectedIndex, token)) throw new IndexGenerationChangedException();
+                await ValidateIndexReferenceAsync(plan, token);
                 if (!CanPublishRelationalDocument(runtime, scope, owner, request)) return true;
                 if (sourceWindow != null && !_openWindows.Values.Contains(sourceWindow)) return true;
                 if (existingState != null) BindRelationalState(existingState, address);
@@ -245,6 +250,7 @@ public partial class MainWindow
                 return true;
             }, ct);
             // A joined open still honors this caller's requested line without creating another window.
+            using var joinedPublication = expectedSymbol == null ? null : await EnterRelationalReferenceReadAsync(ct);
             if (ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope) &&
                 contextGeneration == _relationalDocumentContextGeneration &&
                 _relationalDocumentLifetimes.TryGetValue(address.Identity, out var activeOwner) && ReferenceEquals(activeOwner, owner) &&
@@ -252,12 +258,41 @@ public partial class MainWindow
             {
                 if (expectedTextKey != null && (!_relationalOpenTextKeys.TryGetValue(address.Identity, out var resident) || resident != expectedTextKey))
                     throw new DocumentReferenceChangedException();
+                if (expectedSymbol != null)
+                {
+                    var plan = await documents.DescribeTextAsync(address, ct);
+                    if (expectedTextKey != plan.Key) throw new DocumentReferenceChangedException();
+                    await documents.ValidateTextPlanAsync(plan, scope, ct);
+                    await ValidateIndexReferenceAsync(plan, ct);
+                }
+                ct.ThrowIfCancellationRequested();
+                if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalExplorerScope, scope) ||
+                    contextGeneration != _relationalDocumentContextGeneration ||
+                    !_relationalDocumentLifetimes.TryGetValue(address.Identity, out var finalOwner) || !ReferenceEquals(finalOwner, owner) ||
+                    !_relationalDocumentWindows.TryGetValue(address.Identity, out var finalWindow) || !ReferenceEquals(finalWindow, active) ||
+                    !_openWindows.TryGetValue(address.DocumentPath, out var liveWindow) || !ReferenceEquals(liveWindow, active) ||
+                    expectedTextKey != null && (!_relationalOpenTextKeys.TryGetValue(address.Identity, out var finalKey) || finalKey != expectedTextKey))
+                    return true;
                 // Reopening the same identity through another alias reuses the window
                 // and text, but its clipboard ancestry follows the clicked occurrence.
                 SetRelationalDocumentFilenameSeed(active, address, scope, contextGeneration);
                 RevealRelationalDocument(active, targetLine, targetColumn, targetReference, suppressHistory);
+                referencePublished?.Invoke();
             }
             return true;
+
+            async Task ValidateIndexReferenceAsync(DocumentTextPlan plan, CancellationToken token)
+            {
+                if (expectedSymbol != null)
+                {
+                    var current = await CurrentRelationalReferenceViewAsync(token);
+                    var indexed = await documents.ReferenceDocumentAsync(current, expectedSymbol, token);
+                    RelationalDocumentService.ValidateReferenceSource(indexed, address, plan);
+                    if (!await runtime.Index.IsContextCurrentAsync(current.Context, token)) throw new IndexGenerationChangedException();
+                }
+                else if (expectedIndex != null && !await runtime.Index.IsContextCurrentAsync(expectedIndex, token))
+                    throw new IndexGenerationChangedException();
+            }
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return true; }
         catch (OperationCanceledException) { throw; }
@@ -293,17 +328,20 @@ public partial class MainWindow
             selectLine: reference != null, suppressCursorPositionChanged: suppressHistory);
     }
 
-    private async Task<ImmutableArray<SymbolSummary>> ResolveRelationalReferencesAsync(ExplorerScope scope,
+    private async Task<ReferenceResolutionBatch> ResolveRelationalReferencesAsync(ExplorerScope scope,
         ReferenceNavigationRequestedEventArgs request, string sourceFilePath, CancellationToken ct)
     {
         var runtime = _relational ?? throw new InvalidOperationException("The relational runtime is closed.");
-        var targets = await runtime.References.ResolveAsync(scope.Context, [new(request.Token, request.ArgumentCount)], ct);
-        var candidates = targets[0].Candidates;
+        var result = await runtime.References.ResolveVerifiedWithCoverageAsync(scope, [new(request.Token, request.ArgumentCount)], ct);
+        var candidates = result.Targets[0].Candidates;
         if (candidates.IsEmpty && HasPendingPhysicalReferences(scope))
             throw new InvalidOperationException("No verified reference target was found. Physical-file references are not ready yet.");
+        if (candidates.IsEmpty && !result.Coverage.FullyPublished)
+            throw new InvalidOperationException("No verified reference target was found. The reference index is incomplete; this does not mean the target is absent.");
         _openWindows.TryGetValue(sourceFilePath, out var source);
-        return await (_relationalDocuments ?? throw new InvalidOperationException("The document access is closed."))
+        var prioritized = await (_relationalDocuments ?? throw new InvalidOperationException("The document access is closed."))
             .PrioritizeReferencesAsync(candidates, source?.State, sourceFilePath, ct);
+        return result with { Targets = [result.Targets[0] with { Candidates = prioritized }] };
     }
 
     private async Task PreviewRelationalReferenceAsync(ReferenceNavigationRequestedEventArgs request, string sourceFilePath)
@@ -316,8 +354,10 @@ public partial class MainWindow
         try
         {
             await Task.Delay(100, pending.CancellationToken);
+            using var publication = await EnterRelationalReferenceReadAsync(pending.CancellationToken);
             scope = await CurrentRelationalReferenceViewAsync(pending.CancellationToken);
-            var candidates = await ResolveRelationalReferencesAsync(scope, request, sourceFilePath, pending.CancellationToken);
+            var result = await ResolveRelationalReferencesAsync(scope, request, sourceFilePath, pending.CancellationToken);
+            var candidates = result.Targets[0].Candidates;
             if (candidates.IsEmpty) return;
             var indexed = await documents.ReferenceDocumentAsync(scope, candidates[0], pending.CancellationToken);
             var address = await documents.ResolveReferenceAddressAsync(scope, indexed, pending.CancellationToken);
@@ -329,8 +369,13 @@ public partial class MainWindow
             await documents.ValidateTextPlanAsync(plan, scope, pending.CancellationToken);
             if (!await runtime.Index.IsContextCurrentAsync(scope.Context, pending.CancellationToken)) throw new IndexGenerationChangedException();
             if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalReferenceScope, scope)) return;
-            lifetime.TryPublish(pending.Stamp, () => ShowReferencePreview(RelationalDocumentService.Reference(candidates[0], address.DocumentPath),
-                content.Text, candidates.Length, address.SyntaxPath, address.DisplayName));
+            lifetime.TryPublish(pending.Stamp, () =>
+            {
+                ShowReferencePreview(RelationalDocumentService.Reference(candidates[0], address.DocumentPath),
+                    content.Text, candidates.Length, address.SyntaxPath, address.DisplayName);
+                string note = RelationalReferenceAvailabilityNote(scope, result.Coverage);
+                if (note.Length != 0) StatusText += " " + note + ".";
+            });
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -342,15 +387,22 @@ public partial class MainWindow
 
     private async Task NavigateRelationalReferenceAsync(ReferenceNavigationRequestedEventArgs request, string sourceFilePath, FloatingCodeWindow? sourceWindow)
     {
-        if (_relational == null || _relationalReferenceScope == null || _relationalDocuments == null || _relationalNavigationLifetime == null) return;
+        if (_relational == null || _relationalDocuments == null || _relationalNavigationLifetime == null) return;
+        if (_relationalReferenceScope == null)
+        { StatusText = "Reference indexing is not ready yet. Try again when captured references are ready."; return; }
         var runtime = _relational; var documents = _relationalDocuments;
         ExplorerScope? scope = null;
         var lifetime = _relationalNavigationLifetime;
         using var pending = lifetime.BeginRequest();
         try
         {
-            scope = await CurrentRelationalReferenceViewAsync(pending.CancellationToken);
-            var candidates = await ResolveRelationalReferencesAsync(scope, request, sourceFilePath, pending.CancellationToken);
+            ReferenceResolutionBatch result;
+            using (await EnterRelationalReferenceReadAsync(pending.CancellationToken))
+            {
+                scope = await CurrentRelationalReferenceViewAsync(pending.CancellationToken);
+                result = await ResolveRelationalReferencesAsync(scope, request, sourceFilePath, pending.CancellationToken);
+            }
+            var candidates = result.Targets[0].Candidates;
             if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalReferenceScope, scope) ||
                 !lifetime.IsCurrent(pending.Stamp) || sourceWindow != null && !_openWindows.Values.Contains(sourceWindow)) return;
             if (candidates.IsEmpty)
@@ -361,20 +413,31 @@ public partial class MainWindow
                 return;
             }
             var choices = candidates.Select(s => RelationalDocumentService.Reference(s, s.Definition.Locator)).ToArray();
+            string availability = RelationalReferenceAvailabilityNote(scope, result.Coverage);
             var picked = choices.Length == 1 ? choices[0] : PickReference(request.Token +
-                (HasPendingPhysicalReferences(scope) ? " (verified targets only; file references not ready)" : ""), choices, sourceFilePath);
+                (availability.Length == 0 ? "" : " (" + availability + ")"), choices, sourceFilePath);
             if (picked == null) return;
             var symbol = candidates[Array.IndexOf(choices, picked)];
-            var indexed = await documents.ReferenceDocumentAsync(scope, symbol, pending.CancellationToken);
-            var address = await documents.ResolveReferenceAddressAsync(scope, indexed, pending.CancellationToken);
-            var plan = await documents.DescribeTextAsync(address, pending.CancellationToken);
-            RelationalDocumentService.ValidateReferenceSource(indexed, address, plan);
+            RelationalDocumentAddress address;
+            DocumentTextPlan plan;
+            using (await EnterRelationalReferenceReadAsync(pending.CancellationToken))
+            {
+                scope = await CurrentRelationalReferenceViewAsync(pending.CancellationToken);
+                var indexed = await documents.ReferenceDocumentAsync(scope, symbol, pending.CancellationToken);
+                address = await documents.ResolveReferenceAddressAsync(scope, indexed, pending.CancellationToken);
+                plan = await documents.DescribeTextAsync(address, pending.CancellationToken);
+                RelationalDocumentService.ValidateReferenceSource(indexed, address, plan);
+            }
             if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalReferenceScope, scope) ||
                 sourceWindow != null && !_openWindows.Values.Contains(sourceWindow)) return;
             var target = RelationalDocumentService.Reference(symbol, address.DocumentPath);
+            bool referenceOpened = false;
             // A new navigation uses the normal placement path, not an existing-state restore.
             await TryOpenRelationalFileCoreAsync(address.DocumentPath, null, null, null, target, sourceWindow, false,
-                pending.CancellationToken, plan.Key, scope.Context, preferredResolvedAddress: address);
+                pending.CancellationToken, plan.Key, scope.Context, preferredResolvedAddress: address, expectedSymbol: symbol,
+                referencePublished: () => referenceOpened = true);
+            scope = _relationalReferenceScope;
+            if (!referenceOpened || scope == null || !ReferenceEquals(_relational, runtime) || !lifetime.IsCurrent(pending.Stamp)) return;
             if (_openWindows.TryGetValue(address.DocumentPath, out var opened) && ReferenceEquals(_relationalReferenceScope, scope) && lifetime.IsCurrent(pending.Stamp) &&
                 _relationalOpenTextKeys.TryGetValue(address.Identity, out var resident) && resident == plan.Key)
             {
@@ -387,11 +450,14 @@ public partial class MainWindow
                         await TryOpenRelationalFileAsync(data.DocumentPath, sourceWindow: sourceWindow,
                             ct: pending.CancellationToken, preferredResolvedAddress: data);
                 }
+                if (availability.Length != 0 && ReferenceEquals(_relationalReferenceScope, scope) && lifetime.IsCurrent(pending.Stamp))
+                    StatusText = $"Opened verified reference '{symbol.Definition.Name}'. {availability}.";
             }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            InternalLogService.Error(ex, "Relational reference navigation failed.");
             if (ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalReferenceScope, scope))
                 lifetime.TryPublish(pending.Stamp, () => StatusText = ex.Message);
         }
@@ -399,6 +465,10 @@ public partial class MainWindow
 
     private bool HasPendingPhysicalReferences(ExplorerScope scope) =>
         ReferenceEquals(_relationalReferenceScope, scope) && _relationalPhysicalVerification;
+
+    private string RelationalReferenceAvailabilityNote(ExplorerScope scope, ReferenceCoverage coverage) =>
+        HasPendingPhysicalReferences(scope) ? "Verified targets only; physical-file references are not ready" :
+        !coverage.FullyPublished ? "Verified targets only; the reference index is incomplete" : "";
 
     private void AddRelationalReferenceLine(FloatingCodeWindow source, ReferenceNavigationRequestedEventArgs request,
         ReferenceEntity target, FloatingCodeWindow destination)
@@ -444,15 +514,18 @@ public partial class MainWindow
         string text = window.Text;
         try
         {
-            scope = await CurrentRelationalReferenceViewAsync(pending.CancellationToken);
             var tokens = await Task.Run(() => ReadRelationalMenuTokens(text, sql, vb, documents.Limits.MaximumMenuOccurrences, pending.CancellationToken), pending.CancellationToken);
+            using var publication = await EnterRelationalReferenceReadAsync(pending.CancellationToken);
+            scope = await CurrentRelationalReferenceViewAsync(pending.CancellationToken);
             var queries = tokens.Select(t => t.Query).Distinct().ToArray();
             var targets = new Dictionary<ReferenceQuery, ImmutableArray<SymbolSummary>>();
+            var coverage = _relationalReferenceCatalogue?.Coverage ?? new ReferenceCoverage(0, 0, false);
             long characters = 0;
             foreach (var batch in queries.Chunk(64))
             {
-                var resolved = await runtime.References.ResolveAsync(scope.Context, batch, pending.CancellationToken);
-                foreach (var target in resolved)
+                var resolved = await runtime.References.ResolveVerifiedWithCoverageAsync(scope, batch, pending.CancellationToken);
+                coverage = resolved.Coverage;
+                foreach (var target in resolved.Targets)
                 {
                     foreach (var candidate in target.Candidates)
                     {
@@ -509,11 +582,11 @@ public partial class MainWindow
             lifetime.TryPublish(pending.Stamp, () =>
             {
                 menu.Items.Clear();
-                if (HasPendingPhysicalReferences(scope))
-                    AddDisabledMenuItem(menu, "Verified targets only; physical-file references are not ready");
+                string availability = RelationalReferenceAvailabilityNote(scope, coverage);
+                if (availability.Length != 0) AddDisabledMenuItem(menu, availability);
                 if (sql)
                     foreach (var kind in SqlContextMenuReferenceKinds) AddSqlReferenceKindMenu(menu, window, kind, occurrences.Where(o => o.Target.Kind == kind));
-                else if (occurrences.Count == 0) AddDisabledMenuItem(menu, HasPendingPhysicalReferences(scope)
+                else if (occurrences.Count == 0) AddDisabledMenuItem(menu, availability.Length != 0
                     ? "No verified references found in this file" : "No references found in this file");
                 else
                 {

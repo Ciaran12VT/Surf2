@@ -158,6 +158,55 @@ Startup progress/failure messages identify the active operation. When logging is
 
 The isolated `--startup-resilience` gate passed 25 checks, including real SQL locks: a blocked reference catalogue leaves startup/saving available, while a preference-read timeout keeps saving disabled and preserves its original SQL stack and saved preference revision. Tests cover runtime defaults, persisted opt-out, frozen migration defaults and report redaction, using disposable LocalDB databases and owned temporary files only. The existing `--runtime-wpf` gate passed 451 checks, `--scope-dirty` passed 53, and the application/regression build completed with zero warnings or errors. This does not identify the timed-out query on the migration machine; reproduce there with the updated build and inspect the named stage and log before attributing the failure to indexing, blocking or SQL Server load.
 
+### Verified Reference Navigation
+
+Double-click navigation, previews and reference menus now resolve current positive targets even when unrelated documents or discovery are incomplete. The former whole-scope readiness check could reject an already indexed captured table merely because another source failed. The new explicitly coverage-bearing lookup filters out stale, failed and unindexed candidates before applying name/overload ranking. Authoritative whole-scope resolution retains its strict readiness contract.
+
+Navigation still checks runtime/scope/catalogue generations, loaded-resource membership, the selected symbol's revision, the current captured-source revision or physical-file fingerprint, and request ownership before displaying content. Incomplete coverage is shown in choice menus and preview/navigation status; a missing match is explicitly inconclusive. Clicking before any catalogue is available now reports that indexing is not ready rather than silently returning. Lookup reuses the bounded active-view metadata cache, not an eager code-body load or a whole-scope scan on each click. Captured table navigation continues to open related data through the paged grid presenter.
+
+SQL failures caught within source discovery/reconciliation/publication now record their exception stack and operation in the existing configured internal log. This does not diagnose or repair the separate `SQL_-2` timeout on the migration device; those logs are needed to identify the failed SQL operation and its cause. No schema, migration/recovery format or user database is changed by this navigation update.
+
+The application/regression build completed with zero warnings or errors. `--reference-navigation` passed 76 checks for cached current positives, stale-target exclusion, provisional discovery/subset coverage, unloaded-resource exclusions, generations, cancellation and budgets. `--runtime-wpf` passed 467 checks, including actual table preview/navigation and related paged-data opening while another document's index is stale, inconclusive misses, early-click feedback and restoration for subsequent workflows. SQL checks use disposable LocalDB fixtures; the migration machine and its database were not accessed.
+
+### Supplied Backup Verification (2026-10-07)
+
+Tested `sample-db/Surf2_20261007_020320.zip`, containing the migration device's `Surf2_20261007_020320.bak`. The SQL Server 2025 backup was restored into a newly created, private SQL Server 2025 LocalDB instance and a generated test database. No existing SQL instance was upgraded, no normal bootstrap connection was used, and the original archive was not modified. Archive SHA-256: `EBF01A408B2ECC320996A59BF441EF0EA0387EE7AC131CE088082CDDD7FADC49`.
+
+All scoped physical paths in the restored copy were redirected into an owned temporary directory before application startup. One scenario deliberately used missing paths; others reconstructed dummy source trees from the already persisted indexed text. Original machine-local files were never accessed. The saved Tempest scope and its intentionally unloaded NexusDev selection were preserved for the actual MainWindow scenarios. Separate captured-only checks exercised all four scopes, including normally unloaded captured databases, using production runtime limits.
+
+The real corpus exposed a **local index-generation race**: physical-file publications could repeatedly invalidate a captured-reference request between resolution and display. The four-retry rebasing loop alone was insufficient. Index mutations and foreground reference operations now share a short-lived asynchronous publication gate. Navigation releases it for dialogs and content fetching, then revalidates the chosen symbol/source before publishing the window. The shared-open provider owns its final publication lease; joined requests recheck cancellation, scope, window ownership and text identity after awaits. Rejected navigation cannot add reference lines or open related data. Cross-process SQL/domain/source fences remain active; this does not waive stale-target checks or lock the entire background refresh.
+
+Progress callbacks run outside the publication lease and source-failure handler. A cancelled callback therefore cannot incorrectly mark a successfully reused document stale. No schema script, migration checksum, recovery manifest or checkpoint identity changed in this follow-up.
+
+| Supplied-dataset scenario | Result |
+| --- | --- |
+| Missing physical roots | Expected incomplete-file status; the captured table still previews and opens; no SQL command failures |
+| First redirected physical reconciliation | 468 files checked and indexed; captured checkpoints reused; navigation works during reconciliation |
+| Edits while Surf was closed | 468 files checked, 351 changed files republished; a table preview and five real table opens succeed during background publication |
+| Fresh-process unchanged restart | 22 captured roots reused; 468 physical files verified; 11,676 unchanged documents; zero republished documents |
+| All four captured-only scopes | Full metadata coverage and a current table lookup passed for each; fresh coordinators checked/rebuilt zero documents |
+
+The screenshot case was exercised through the actual MainWindow resolver, preview and navigation handlers: `NexusLive / dbo.sproc_batchQs` opens `dbo.r_Zapp_Shifts`, plus its `calc_details`, `messages`, `recordIds` and `shift_parts` tables, before and after file reconciliation. Repeated cached lookup traces contain no reads of `SymbolDefinition`, `ResourceDocument`, code bodies, table-column payloads or assets. Source rowversions for saved scopes, preferences, workspace, workbenches, diagrams and captured catalogues remained unchanged by startup/navigation after the explicit test-only path setup. Legacy whole-library collections remained empty.
+
+Final normal-pooling restart observations on this machine:
+
+| Measurement | Observed |
+| --- | --- |
+| Core startup | 1.785 seconds |
+| Captured references usable, from startup | 5.836 seconds |
+| Background completion, including five navigation actions and highlight preparation | 32.838 seconds |
+| Repeated reference resolution, median / p95 of 20 calls | 9.499 / 33.927 ms |
+| First clicked table window open | 883.3 ms |
+| Test-process managed memory / working set | 105.4 / 426.4 MiB |
+
+The final edited-file stress run used disabled pooling deliberately: captured readiness was 8.141 seconds and full completion was 79.844 seconds, including the navigation actions. It republished 351 changed files with zero SQL failures. These are offscreen WPF test-process observations, not a legacy-build comparison, SQL Express/device guarantee, or standalone-app memory measurement. The original migration device's startup/reference `SQL_-2` was not reproduced by the supplied-database runs, so its cause is not established by this test.
+
+The fixture runner initially hit `RESOURCE_SEMAPHORE` during tiny bulk imports when this machine had about 1.5 GiB free RAM and SQL reported `process_physical_memory_low=1`. Those were disposable-fixture setup failures, not failures of the restored dataset's startup/reference queries. Stopping the temporary sample instance and running the standard gates sequentially resolved that test-environment obstruction. A temporary cache-cap experiment on the private instance was reverted; existing server configurations were not changed. The two initial harness-limit failures were also corrected: synthetic 8 KiB document / 4 Mi-character metadata limits must not be applied to this real corpus; the all-scope harness now constructs the production runtime directly.
+
+Final verification: application/regression build succeeded with zero warnings/errors; `--reference-warm-start` passed 191 checks, `--runtime-wpf` passed 469, `--reference-watch` passed 29, and `--startup-resilience` passed 25. Dataset modes passed 23 missing-root, 24 redirected-file, 25 changed-file, 24 restart, 24 pooled-restart and 19 all-scope checks; the changed-file and pooled modes were rerun successfully against the final build. Added checks cover publication-gate cancellation/idempotence, callback cancellation without stale marking, and stale-symbol rejection despite identical source text.
+
+Evidence is retained under `C:\Users\ciara\source\repos\Surf\build-check`: `sample-final-build.log`, `sample-reference-warm-start.log`, `sample-runtime-wpf.log`, `sample-reference-watch.log`, `sample-startup-resilience.log`, and the `sample-database` directory containing per-scenario logs, timings and offscreen PNGs. The guarded regression entry point is `--sample-database <owned LocalDB connection> <matching temporary directory> missing|mapped|changed|restart|pooled|views`; it refuses ordinary application connections. After retaining evidence, the isolated database/instance and abandoned owned SQL fixtures were removed. Recursive file cleanup was blocked by the execution policy, so the owned extracted backup/dummy directory remains at `%TEMP%\Surf2_Regression_Sample_ef7e00e3c51f4a2e8170e7404b7c6101`; it is not configured application storage. The original archive remains in `sample-db`. No redeployment was performed.
+
 ## Migration Trial and Rollback
 
 1. Preserve an application Export Database package as well as the original database backup when legacy diagrams use external pasted images. A legacy SQL backup alone does not include those files.

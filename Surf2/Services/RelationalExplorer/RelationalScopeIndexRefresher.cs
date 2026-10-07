@@ -41,6 +41,21 @@ public sealed partial class RelationalScopeIndexRefresher
     private readonly IPhysicalExplorerQueries _physical;
     private readonly ExplorerLimits _limits;
     private readonly SemaphoreSlim _singleFlight = new(1, 1);
+    private readonly SemaphoreSlim _publicationGate = new(1, 1);
+
+    // Pause local catalogue mutations for a foreground request, not for the whole refresh.
+    // SQL/domain fences still reject changes made by other writers or processes.
+    internal async Task<IDisposable> EnterReferenceReadAsync(CancellationToken ct)
+    {
+        await _publicationGate.WaitAsync(ct).ConfigureAwait(false);
+        return new PublicationLease(_publicationGate);
+    }
+
+    private sealed class PublicationLease(SemaphoreSlim gate) : IDisposable
+    {
+        private SemaphoreSlim? _gate = gate;
+        public void Dispose() => Interlocked.Exchange(ref _gate, null)?.Release();
+    }
     public RelationalScopeIndexRefresher(RelationalSession session, RelationalIndexStore index,
         RelationalSnapshotStore snapshots, IPhysicalExplorerQueries? physical = null, ExplorerLimits? limits = null)
     {
@@ -92,7 +107,11 @@ public sealed partial class RelationalScopeIndexRefresher
                     removed |= reusable.Remove(cached.ScopeResourceKey);
         } while (removed);
         bool hasWork = scope.Resources.Any(r => r.IsLoaded && !reusable.ContainsKey(r.ScopeResourceKey));
-        if (hasWork) await InvalidateDiscoveryAsync(scope, ct).ConfigureAwait(false);
+        if (hasWork)
+        {
+            using var publication = await EnterReferenceReadAsync(ct).ConfigureAwait(false);
+            await InvalidateDiscoveryAsync(scope, ct).ConfigureAwait(false);
+        }
         long considered = 0, published = 0, unchanged = 0, failed = 0;
         bool reusedPhysical = scope.Resources.Any(r => PhysicalRoot(r) && reusable.ContainsKey(r.ScopeResourceKey));
         if (reusedPhysical) unchanged = await CountReusedDocumentsAsync(reusable.Keys, ct).ConfigureAwait(false);
@@ -202,6 +221,8 @@ public sealed partial class RelationalScopeIndexRefresher
             }
             catch (Exception ex) when (IsSourceFailure(ex))
             {
+                if (ex is Microsoft.Data.SqlClient.SqlException)
+                    InternalLogService.Error(ex, "SQL failure while discovering a relational reference resource.");
                 failed++; rootComplete = false; await ReportAsync(FailureCode(ex)).ConfigureAwait(false);
             }
             if (rootComplete && failed == failuresBeforeRoot) completedRoots.Add(resource.ScopeResourceKey);
@@ -225,7 +246,11 @@ public sealed partial class RelationalScopeIndexRefresher
                         else await FileAsync(entry.Path).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (IsSourceFailure(ex))
-                    { failed++; rootComplete = false; await ReportAsync(FailureCode(ex)).ConfigureAwait(false); }
+                    {
+                        if (ex is Microsoft.Data.SqlClient.SqlException)
+                            InternalLogService.Error(ex, "SQL failure while reconciling physical-file references.");
+                        failed++; rootComplete = false; await ReportAsync(FailureCode(ex)).ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -235,9 +260,11 @@ public sealed partial class RelationalScopeIndexRefresher
         {
             currentResource = ExplorerCompatibility.ResourceDisplayName(scope.Resources.Single(r => r.ScopeResourceKey == resource));
             await ReportAsync().ConfigureAwait(false);
+            using var publication = await EnterReferenceReadAsync(ct).ConfigureAwait(false);
             await PruneAsync(scope, resource, seen, ct).ConfigureAwait(false);
         }
-        await CompleteRootsAsync(scope, completedRoots, seen, languagePolicy, failed != 0, ct).ConfigureAwait(false);
+        using (await EnterReferenceReadAsync(ct).ConfigureAwait(false))
+            await CompleteRootsAsync(scope, completedRoots, seen, languagePolicy, failed != 0, ct).ConfigureAwait(false);
         await RequireDomainAsync(scope, ct).ConfigureAwait(false);
         var context = await _index.CaptureContextAsync(scope.Context.ScopeKey, scope.Context.UnloadedScopeResourceKeys, token: ct).ConfigureAwait(false);
         RequireSameDomain(scope.Context, context);
@@ -251,6 +278,7 @@ public sealed partial class RelationalScopeIndexRefresher
         // The persisted marker describes the entire scope, never an intentionally unloaded view.
         if (reconciled && unloaded == 0 && !context.DiscoveryReconciled)
         {
+            using var publication = await EnterReferenceReadAsync(ct).ConfigureAwait(false);
             await _index.MarkDiscoveryReconciledAsync(context, ct).ConfigureAwait(false);
             context = await _index.CaptureContextAsync(context.ScopeKey, token: ct).ConfigureAwait(false);
             RequireSameDomain(scope.Context, context);
@@ -275,7 +303,9 @@ public sealed partial class RelationalScopeIndexRefresher
 
         async Task DatabasePageAsync(IReadOnlyList<DatabaseIndexEntry> entries)
         {
-            var prepared = await PrimeDatabaseBatchAsync(scope, entries, ct).ConfigureAwait(false);
+            Dictionary<long, PreparedDocument> prepared;
+            using (await EnterReferenceReadAsync(ct).ConfigureAwait(false))
+                prepared = await PrimeDatabaseBatchAsync(scope, entries, ct).ConfigureAwait(false);
             foreach (var entry in entries)
                 await DocumentAsync(entry.Registration.Owner, entry.Registration.DisplayName, entry.Registration.Language,
                     entry.Policy, entry.Memberships, entry.Locators, entry.SourceRevision, entry.Prepare, null, true,
@@ -289,67 +319,78 @@ public sealed partial class RelationalScopeIndexRefresher
             ct.ThrowIfCancellationRequested();
             currentDocument = name; phase = "Indexing";
             await ReportAsync().ConfigureAwait(false);
-            var prepared = primed ?? await GetOrRegisterAsync(new(owner, name, language), ct).ConfigureAwait(false);
-            var handle = prepared.Handle;
-            foreach (var m in memberships)
-            {
-                seen.Add((m.ScopeResourceKey, handle.DocumentKey));
-                if (seen.Count > _limits.MaximumMetadataRows) throw new ExplorerLimitException("Discovery membership budget exceeded.");
-            }
-            if (!visited.Add(handle.DocumentKey)) return;
-            budget.Add(name);
-            considered++;
-            if (primed == null) await SetScopeMembershipAsync(scope, handle.DocumentKey, memberships, locators, ct).ConfigureAwait(false);
-            var previous = prepared.Published;
-            IndexWorkLease? lease = null;
-            IndexedFileRead? file = null;
-            try
-            {
-                PreparedIndexSource source;
-                if (physicalPath != null)
-                {
-                    file = await IndexedFileRead.OpenAsync(physicalPath, _limits.MaximumDocumentCharacters, ct).ConfigureAwait(false);
-                    if (CanReuse(previous.Freshness, previous.Fingerprint, previous.Policy, previous.SourceRevisionKey, previous.Language,
-                        file.Fingerprint.Sha256, policy, null, language)) { unchanged++; await ReportAsync().ConfigureAwait(false); return; }
-                    lease = await _index.BeginWorkAsync(handle, Guid.NewGuid(), file.Fingerprint.Sha256, policy, ct).ConfigureAwait(false);
-                    var definitions = symbols ? await Task.Run(() => RelationalIndexStore.ExtractFileSymbols(physicalPath, file.Text,
-                        ParserFor(language), ct), ct).ConfigureAwait(false) : ImmutableArray<SymbolInput>.Empty;
-                    source = new(file.Text, file.Fingerprint.Sha256, language, definitions);
-                }
-                else
-                {
-                    // Typed owner identity pins immutable diagram revisions; captured code additionally pins its source revision.
-                    if ((sourceRevision.HasValue || owner is DiagramDocumentOwner) && CanReuse(previous.Freshness, previous.Fingerprint, previous.Policy, previous.SourceRevisionKey,
-                        previous.Language, previous.Fingerprint, policy, sourceRevision, language))
-                    { unchanged++; await ReportAsync().ConfigureAwait(false); return; }
-                    source = await prepare!().ConfigureAwait(false);
-                    if (CanReuse(previous.Freshness, previous.Fingerprint, previous.Policy, previous.SourceRevisionKey, previous.Language,
-                        source.Fingerprint, policy, sourceRevision, source.Language)) { unchanged++; await ReportAsync().ConfigureAwait(false); return; }
-                    lease = await _index.BeginWorkAsync(handle, Guid.NewGuid(), source.Fingerprint, policy, ct).ConfigureAwait(false);
-                }
-                ct.ThrowIfCancellationRequested();
-                await RequireDomainAsync(scope, ct).ConfigureAwait(false);
-                await _index.PublishAsync(new(lease, source.Text, source.Language, source.Symbols, source.SourceRevisionKey, file?.Fingerprint), ct).ConfigureAwait(false);
-                published++;
-            }
-            catch (Exception ex) when (ex is OperationCanceledException || IsSourceFailure(ex))
-            {
-                // Even a read/parse failure before BeginWork must not leave an old successful generation looking current.
-                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                if (lease == null)
-                {
-                    var current = await _index.GetHandleAsync(handle.DocumentKey, cleanup.Token).ConfigureAwait(false);
-                    lease = await _index.BeginWorkAsync(current, Guid.NewGuid(), previous.Fingerprint ?? new string('0', 64), policy, cleanup.Token).ConfigureAwait(false);
-                }
-                await _index.FailWorkAsync(lease, ex is OperationCanceledException ? "Cancelled" : FailureCode(ex),
-                    ex is FileNotFoundException or DirectoryNotFoundException ? IndexFreshness.Missing : ex is UnauthorizedAccessException
-                        ? IndexFreshness.Inaccessible : ex is OperationCanceledException ? IndexFreshness.Stale : IndexFreshness.Failed, cleanup.Token).ConfigureAwait(false);
-                if (ex is OperationCanceledException) throw;
-                failed++;
-                lastFailure = FailureCode(ex); failedResource = currentResource; failedDocument = currentDocument;
-            }
-            finally { if (file != null) await file.DisposeAsync().ConfigureAwait(false); }
+            using var publication = await EnterReferenceReadAsync(ct).ConfigureAwait(false);
+            await PublishDocumentAsync().ConfigureAwait(false);
+            publication.Dispose();
             await ReportAsync().ConfigureAwait(false);
+
+            async Task PublishDocumentAsync()
+            {
+                var prepared = primed ?? await GetOrRegisterAsync(new(owner, name, language), ct).ConfigureAwait(false);
+                var handle = prepared.Handle;
+                foreach (var m in memberships)
+                {
+                    seen.Add((m.ScopeResourceKey, handle.DocumentKey));
+                    if (seen.Count > _limits.MaximumMetadataRows) throw new ExplorerLimitException("Discovery membership budget exceeded.");
+                }
+                if (!visited.Add(handle.DocumentKey)) return;
+                budget.Add(name);
+                considered++;
+                if (primed == null) await SetScopeMembershipAsync(scope, handle.DocumentKey, memberships, locators, ct).ConfigureAwait(false);
+                var previous = prepared.Published;
+                IndexWorkLease? lease = null;
+                IndexedFileRead? file = null;
+                try
+                {
+                    PreparedIndexSource source;
+                    if (physicalPath != null)
+                    {
+                        file = await IndexedFileRead.OpenAsync(physicalPath, _limits.MaximumDocumentCharacters, ct).ConfigureAwait(false);
+                        if (CanReuse(previous.Freshness, previous.Fingerprint, previous.Policy, previous.SourceRevisionKey, previous.Language,
+                            file.Fingerprint.Sha256, policy, null, language))
+                        { unchanged++; return; }
+                        lease = await _index.BeginWorkAsync(handle, Guid.NewGuid(), file.Fingerprint.Sha256, policy, ct).ConfigureAwait(false);
+                        var definitions = symbols ? await Task.Run(() => RelationalIndexStore.ExtractFileSymbols(physicalPath, file.Text,
+                            ParserFor(language), ct), ct).ConfigureAwait(false) : ImmutableArray<SymbolInput>.Empty;
+                        source = new(file.Text, file.Fingerprint.Sha256, language, definitions);
+                    }
+                    else
+                    {
+                        // Typed owner identity pins immutable diagram revisions; captured code additionally pins its source revision.
+                        if ((sourceRevision.HasValue || owner is DiagramDocumentOwner) && CanReuse(previous.Freshness, previous.Fingerprint, previous.Policy, previous.SourceRevisionKey,
+                            previous.Language, previous.Fingerprint, policy, sourceRevision, language))
+                        { unchanged++; return; }
+                        source = await prepare!().ConfigureAwait(false);
+                        if (CanReuse(previous.Freshness, previous.Fingerprint, previous.Policy, previous.SourceRevisionKey, previous.Language,
+                            source.Fingerprint, policy, sourceRevision, source.Language))
+                        { unchanged++; return; }
+                        lease = await _index.BeginWorkAsync(handle, Guid.NewGuid(), source.Fingerprint, policy, ct).ConfigureAwait(false);
+                    }
+                    ct.ThrowIfCancellationRequested();
+                    await RequireDomainAsync(scope, ct).ConfigureAwait(false);
+                    await _index.PublishAsync(new(lease, source.Text, source.Language, source.Symbols, source.SourceRevisionKey, file?.Fingerprint), ct).ConfigureAwait(false);
+                    published++;
+                }
+                catch (Exception ex) when (ex is OperationCanceledException || IsSourceFailure(ex))
+                {
+                    if (ex is Microsoft.Data.SqlClient.SqlException)
+                        InternalLogService.Error(ex, "SQL failure while preparing or publishing a reference document.");
+                    // Even a read/parse failure before BeginWork must not leave an old successful generation looking current.
+                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    if (lease == null)
+                    {
+                        var current = await _index.GetHandleAsync(handle.DocumentKey, cleanup.Token).ConfigureAwait(false);
+                        lease = await _index.BeginWorkAsync(current, Guid.NewGuid(), previous.Fingerprint ?? new string('0', 64), policy, cleanup.Token).ConfigureAwait(false);
+                    }
+                    await _index.FailWorkAsync(lease, ex is OperationCanceledException ? "Cancelled" : FailureCode(ex),
+                        ex is FileNotFoundException or DirectoryNotFoundException ? IndexFreshness.Missing : ex is UnauthorizedAccessException
+                            ? IndexFreshness.Inaccessible : ex is OperationCanceledException ? IndexFreshness.Stale : IndexFreshness.Failed, cleanup.Token).ConfigureAwait(false);
+                    if (ex is OperationCanceledException) throw;
+                    failed++;
+                    lastFailure = FailureCode(ex); failedResource = currentResource; failedDocument = currentDocument;
+                }
+                finally { if (file != null) await file.DisposeAsync().ConfigureAwait(false); }
+            }
         }
     }
 

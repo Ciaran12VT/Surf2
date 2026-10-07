@@ -141,15 +141,25 @@ public sealed partial class RelationalReferenceService(RelationalSession session
     }
 
     // Consumers that deliberately display provisional/loaded-subset results must carry this coverage to their UI.
-    public async Task<ReferenceResolutionBatch> ResolveWithCoverageAsync(ExplorerScope scope,
-        IEnumerable<ReferenceQuery> queries, CancellationToken ct = default)
+    public Task<ReferenceResolutionBatch> ResolveWithCoverageAsync(ExplorerScope scope,
+        IEnumerable<ReferenceQuery> queries, CancellationToken ct = default) =>
+        ResolveWithCoverageAsync(scope, queries, verifiedOnly: false, ct);
+
+    // Navigation can use a current positive target before every other document has been indexed.
+    // Coverage remains explicit: an empty result here is not necessarily an authoritative miss.
+    public Task<ReferenceResolutionBatch> ResolveVerifiedWithCoverageAsync(ExplorerScope scope,
+        IEnumerable<ReferenceQuery> queries, CancellationToken ct = default) =>
+        ResolveWithCoverageAsync(scope, queries, verifiedOnly: true, ct);
+
+    private async Task<ReferenceResolutionBatch> ResolveWithCoverageAsync(ExplorerScope scope,
+        IEnumerable<ReferenceQuery> queries, bool verifiedOnly, CancellationToken ct)
     {
         await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         var context = scope.Context;
         var input = ValidateQueries(queries);
         var catalogue = await GetMetadataAsync(scope, ct).ConfigureAwait(false);
         await RequireCurrentAsync(context, ct).ConfigureAwait(false);
-        return new(Resolve(catalogue, input, ct), Coverage(catalogue));
+        return new(Resolve(catalogue, input, ct, verifiedOnly), Coverage(catalogue));
     }
 
     private ReferenceCoverage Coverage(MetadataCatalogue catalogue) =>
@@ -166,7 +176,7 @@ public sealed partial class RelationalReferenceService(RelationalSession session
     }
 
     private static ImmutableArray<ReferenceTargets> Resolve(MetadataCatalogue catalogue,
-        ImmutableArray<ReferenceQuery> queries, CancellationToken ct)
+        ImmutableArray<ReferenceQuery> queries, CancellationToken ct, bool verifiedOnly = false)
     {
         var result = ImmutableArray.CreateBuilder<ReferenceTargets>(queries.Length);
         foreach (var query in queries)
@@ -178,7 +188,9 @@ public sealed partial class RelationalReferenceService(RelationalSession session
                 key = key.Split('.', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? string.Empty;
                 catalogue.Candidates.TryGetValue(key, out candidates);
             }
-            result.Add(new(query, ReferenceMetadata.Resolve(candidates.IsDefault ? [] : candidates, query.Token, query.ArgumentCount)));
+            IEnumerable<SymbolSummary> eligible = candidates.IsDefault ? [] : candidates;
+            if (verifiedOnly) eligible = eligible.Where(s => s.Freshness == IndexFreshness.Indexed);
+            result.Add(new(query, ReferenceMetadata.Resolve(eligible, query.Token, query.ArgumentCount)));
         }
         return result.ToImmutable();
     }

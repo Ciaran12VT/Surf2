@@ -25,7 +25,30 @@ public static partial class StorageRegressionSuite
             new RelationalCaptureStore(initial.Session), initial.State);
         var policy = ExplorerIndexLanguagePolicy.Capture(new CodeWindowSettings());
         var scope = await initial.Explorer.OpenScopeAsync(seeded.ScopeToken.Key);
-        var cold = await initial.Refresher.RefreshAsync(scope, policy);
+        using (var held = await initial.Refresher.EnterReferenceReadAsync(CancellationToken.None))
+        {
+            using var cancellation = new CancellationTokenSource();
+            var waiting = initial.Refresher.EnterReferenceReadAsync(cancellation.Token);
+            check(!waiting.IsCompleted, "A foreground publication lease excludes another local publication unit");
+            cancellation.Cancel();
+            await ThrowsAsync<OperationCanceledException>(async () => { using var lease = await waiting; }, check,
+                "Cancelling a queued reference request does not strand the publication gate");
+            held.Dispose(); held.Dispose();
+            using var reacquired = await initial.Refresher.EnterReferenceReadAsync(CancellationToken.None);
+            using var secondCancellation = new CancellationTokenSource();
+            var second = initial.Refresher.EnterReferenceReadAsync(secondCancellation.Token);
+            check(!second.IsCompleted, "Idempotent lease disposal cannot admit simultaneous publishers");
+            secondCancellation.Cancel();
+            try { using var ignored = await second; } catch (OperationCanceledException) { }
+        }
+        int callbacks = 0;
+        using var callbackTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var cold = await initial.Refresher.RefreshAsync(scope, policy, async _ =>
+        {
+            using var foreground = await initial.Refresher.EnterReferenceReadAsync(callbackTimeout.Token);
+            callbacks++;
+        }, callbackTimeout.Token);
+        check(callbacks > 3, "Index progress callbacks run outside publication leases and can await foreground reference work");
         check(cold.FullyPublished && cold.Considered == 3 && cold.Published == 3 && cold.ReusedResources == 0,
             "Cold captured reference discovery publishes a procedure, table and diagram once despite two database aliases");
         check(await ReferenceWarmStartProofCountAsync(fixture, seeded.ScopeToken.Key) == 3,
@@ -64,6 +87,28 @@ public static partial class StorageRegressionSuite
         check(policyResult.FullyPublished && policyResult.ReusedResources == 1 && policyResult.Considered == 2 &&
             policyResult.Published == 0 && policyResult.Unchanged == 3,
             "An incompatible policy dependency rebuilds both aliases of that captured owner while retaining the independent diagram proof");
+
+        await fixture.DestinationSqlAsync("""
+            UPDATE c SET DependencyHash=HASHBYTES('SHA2_256',CONVERT(varbinary(max),N'progress-cancellation-check'))
+            FROM surf.ReferenceResourceCompletion c JOIN surf.ScopeResource sr ON sr.ScopeResourceKey=c.ScopeResourceKey
+            WHERE sr.ScopeKey=@Scope AND sr.ResourceId=N'db-a';
+            """, RelationalSession.Parameter("@Scope", SqlDbType.BigInt, seeded.ScopeToken.Key));
+        var cancelledProgress = new ReferenceWarmStartOwner(connection);
+        var cancelledScope = await cancelledProgress.Explorer.OpenScopeAsync(seeded.ScopeToken.Key);
+        await ThrowsAsync<OperationCanceledException>(() => cancelledProgress.Refresher.RefreshAsync(cancelledScope, policy,
+            progress => progress.Unchanged > 0 ? Task.FromException(new OperationCanceledException("Owned progress callback cancellation")) : Task.CompletedTask),
+            check, "Cancellation from a reused-document progress callback exits reconciliation");
+        check(await ReferenceWarmStartCountAsync(fixture, """
+            SELECT COUNT_BIG(*) FROM surf.Document d WHERE d.Freshness<>1 AND EXISTS(
+              SELECT 1 FROM surf.ResourceDocument m JOIN surf.ScopeResource sr ON sr.ScopeResourceKey=m.ScopeResourceKey
+              WHERE m.DocumentKey=d.DocumentKey AND sr.ScopeKey=@Scope);
+            """, RelationalSession.Parameter("@Scope", SqlDbType.BigInt, seeded.ScopeToken.Key)) == 0,
+            "A progress callback failure cannot mark a successfully reused reference document stale or failed");
+        using (await cancelledProgress.Refresher.EnterReferenceReadAsync(callbackTimeout.Token))
+            check(true, "A throwing progress callback releases the local reference publication gate");
+        var recoveredProgress = await cancelledProgress.Refresher.RefreshAsync(await cancelledProgress.Explorer.OpenScopeAsync(seeded.ScopeToken.Key), policy);
+        check(recoveredProgress.FullyPublished && recoveredProgress.Published == 0,
+            "A refresh resumes after progress cancellation without republishing unchanged documents");
 
         var selected = Required(await initial.State.ReadScopeAsync(seeded.ScopeToken.Key), "warm scope resource edit");
         selected.Value.Name = "Warm scope edited";
