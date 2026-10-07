@@ -35,6 +35,14 @@ public partial class MainWindow
     private Guid _relationalExplorerSearchIdentity;
     private Guid _relationalExplorerOwner;
     private ExplorerIndexRefreshProgress? _relationalIndexProgress;
+    private ExplorerScope? _relationalReferenceScope;
+    private PhysicalReferenceWatch? _relationalPhysicalWatch;
+    private DispatcherTimer? _relationalPhysicalReconciliationTimer;
+    private bool _relationalPhysicalRefreshPending;
+    private readonly HashSet<long> _relationalPendingPhysicalRoots = [];
+    private bool _relationalPhysicalVerification;
+    private bool _relationalUnwatchedPhysicalReferences;
+    private bool _relationalHighlightsFailed;
     private DispatcherTimer? _relationalIndexStatusTimer;
     private Stopwatch? _relationalIndexElapsed;
     private ExplorerIndexLanguagePolicy? _relationalIndexLanguages;
@@ -64,6 +72,12 @@ public partial class MainWindow
         _relationalHighlightStyles = new Dictionary<string, FrozenDictionary<string, ReferenceHighlightStyleSetting>>()
             .ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
         _relationalIndexProgress = null;
+        _relationalReferenceScope = null;
+        _relationalPhysicalRefreshPending = false;
+        _relationalPendingPhysicalRoots.Clear();
+        _relationalPhysicalVerification = false;
+        _relationalUnwatchedPhysicalReferences = false;
+        _relationalHighlightsFailed = false;
         if (_relational == null || _relationalExplorerScope == null) return;
         var runtime = _relational; var scope = _relationalExplorerScope;
         _relationalExplorerCancellation = new();
@@ -81,18 +95,75 @@ public partial class MainWindow
         if (_relationalReferenceCatalogue != null) RebuildRelationalReferenceHighlightStyles();
         var owner = _relationalExplorerOwner; var token = _relationalExplorerCancellation.Token;
         var retirement = _relationalExplorerRetirement; var languages = _relationalIndexLanguages;
-        _relationalIndexElapsed = Stopwatch.StartNew();
-        _relationalIndexStatusTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) =>
-        {
-            if (AcceptsRelationalExplorer(owner, runtime) && _relationalExplorerSearchTask.IsCompleted && _relationalIndexProgress != null)
-                StatusText = RelationalIndexStatus(_relationalIndexProgress with { Elapsed = _relationalIndexElapsed?.Elapsed ?? _relationalIndexProgress.Elapsed });
-        }, Dispatcher);
+        StartRelationalIndexClock(owner, runtime);
+        _relationalIndexProgress = new(0, 0, 0, 0, scope.Resources.Count(r => !r.IsLoaded), false, false,
+            Phase: "Preparing source watchers");
         // This bounded job includes per-document rendering/parsing and metadata assembly, not synchronous SQL wrappers.
         _relationalIndexRefreshTask = Task.Run(() => RefreshRelationalScopeIndexAsync(runtime, scope, languages, owner, retirement, token));
     }
 
+    private void StartRelationalIndexClock(Guid owner, RelationalRuntime runtime)
+    {
+        _relationalIndexStatusTimer?.Stop();
+        _relationalIndexElapsed = Stopwatch.StartNew();
+        _relationalIndexStatusTimer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) =>
+        {
+            if (AcceptsRelationalExplorer(owner, runtime) && _relationalExplorerSearchTask.IsCompleted && _relationalIndexProgress != null)
+                StatusText = RelationalActiveIndexStatus(_relationalIndexProgress with { Elapsed = _relationalIndexElapsed?.Elapsed ?? _relationalIndexProgress.Elapsed });
+        }, Dispatcher);
+    }
+
+    private void QueueRelationalPhysicalRefresh(IEnumerable<long> roots)
+    {
+        Dispatcher.VerifyAccess();
+        foreach (long root in roots) _relationalPendingPhysicalRoots.Add(root);
+        _relationalPhysicalRefreshPending = true;
+        if (!_relationalPhysicalVerification || _relationalReferenceScope?.Resources.Any(r => r.IsLoaded &&
+            r.Kind is ResourceKind.File or ResourceKind.Folder && _relationalPendingPhysicalRoots.Contains(r.ScopeResourceKey)) == true)
+            _relationalReferenceScope = null;
+        if (_relationalIndexRefreshTask.IsCompleted) StartRelationalPhysicalRefresh();
+    }
+
+    private void StartRelationalPhysicalRefresh()
+    {
+        Dispatcher.VerifyAccess();
+        if (_relational == null || _relationalExplorerScope == null || _relationalExplorerCancellation == null ||
+            !_relationalIndexRefreshTask.IsCompleted || !_relationalPhysicalRefreshPending) return;
+        var runtime = _relational; var scope = _relationalExplorerScope; var owner = _relationalExplorerOwner;
+        var token = _relationalExplorerCancellation.Token; var languages = _relationalIndexLanguages!;
+        var roots = _relationalPendingPhysicalRoots.ToHashSet();
+        if (_relationalPhysicalWatch != null)
+            roots.UnionWith(_relationalPhysicalWatch.UnwatchedRoots.Select(r => r.ScopeResourceKey));
+        _relationalPhysicalRefreshPending = false; _relationalPendingPhysicalRoots.Clear();
+        StartRelationalIndexClock(owner, runtime);
+        _relationalIndexProgress = new(0, 0, 0, 0, scope.Resources.Count(r => !r.IsLoaded), false, false,
+            Phase: "Checking physical changes");
+        _relationalIndexRefreshTask = Task.Run(async () =>
+        {
+            try
+            {
+                var unloaded = scope.Resources.Where(r => !r.IsLoaded).Select(r => r.ResourceId).ToHashSet(StringComparer.Ordinal);
+                var current = await runtime.Explorer.OpenScopeAsync(scope.Context.ScopeKey, unloaded, scope.SortCultureName, token).ConfigureAwait(false);
+                await RefreshRelationalScopeIndexAsync(runtime, current, languages, owner,
+                    Task.CompletedTask, token, roots).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                InternalLogService.Error(ex, "Physical reference reconciliation could not start.");
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (AcceptsRelationalExplorer(owner, runtime)) RequestRelationalReferenceRefresh();
+                });
+            }
+        });
+    }
+
     private void RetireRelationalExplorerContext()
     {
+        _relationalReferenceScope = null;
+        _relationalPhysicalWatch?.Dispose(); _relationalPhysicalWatch = null;
+        _relationalPhysicalReconciliationTimer?.Stop(); _relationalPhysicalReconciliationTimer = null;
         _relationalIndexStatusTimer?.Stop(); _relationalIndexStatusTimer = null;
         _relationalIndexElapsed?.Stop(); _relationalIndexElapsed = null;
         _relationalExplorerOwner = Guid.Empty;
@@ -132,36 +203,145 @@ public partial class MainWindow
         _relationalExplorerCancellation is { IsCancellationRequested: false };
 
     private async Task RefreshRelationalScopeIndexAsync(RelationalRuntime runtime, ExplorerScope scope,
-        ExplorerIndexLanguagePolicy languages, Guid owner, Task retirement, CancellationToken ct)
+        ExplorerIndexLanguagePolicy languages, Guid owner, Task retirement, CancellationToken ct,
+        IReadOnlySet<long>? physicalRootsToReconcile = null)
     {
         try
         {
             await retirement.ConfigureAwait(false); ct.ThrowIfCancellationRequested();
+            // Opening network-backed watcher roots can block: establish subscriptions on the worker,
+            // before discovery, and make their lifetime belong to this exact scope owner.
+            if (physicalRootsToReconcile == null)
+            {
+                var watch = new PhysicalReferenceWatch(scope, notification => Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (AcceptsRelationalExplorer(owner, runtime) &&
+                        (notification.Reason & (PhysicalReferenceInvalidationReason.Changed | PhysicalReferenceInvalidationReason.WatcherError)) != 0)
+                        QueueRelationalPhysicalRefresh(notification.ScopeResourceKeys);
+                })));
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (AcceptsRelationalExplorer(owner, runtime))
+                    {
+                        _relationalPhysicalWatch = watch;
+                        // Watcher errors/offline roots require fallback reconciliation, not a freshness claim.
+                        _relationalPhysicalReconciliationTimer = new DispatcherTimer(TimeSpan.FromMinutes(5), DispatcherPriority.Background,
+                            (_, _) =>
+                            {
+                                if (!AcceptsRelationalExplorer(owner, runtime) || watch.UnwatchedRoots.IsEmpty) return;
+                                QueueRelationalPhysicalRefresh(watch.UnwatchedRoots.Select(r => r.ScopeResourceKey));
+                            }, Dispatcher);
+                    }
+                    else watch.Dispose();
+                });
+            }
+            ct.ThrowIfCancellationRequested();
             DateTime lastStatus = DateTime.MinValue;
             var refresher = _relationalIndexRefresher!;
-            var result = await refresher.RefreshAsync(scope, languages, async progress =>
+            async Task ReportProgressAsync(ExplorerIndexRefreshProgress progress)
             {
                 if (!progress.Completed && DateTime.UtcNow - lastStatus < TimeSpan.FromMilliseconds(250)) return;
                 lastStatus = DateTime.UtcNow;
                 await Dispatcher.InvokeAsync(() =>
                 {
                     if (!AcceptsRelationalExplorer(owner, runtime)) return;
-                    _relationalIndexProgress = progress.Completed ? progress with { Phase = "Preparing highlights" } : progress;
-                    // A search owns the status while it is active; refresh still exposes its own coverage field.
-                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalIndexStatus(_relationalIndexProgress);
+                    _relationalIndexProgress = progress with
+                    {
+                        Phase = progress.Completed ? "Preparing highlights" : progress.Phase,
+                        Elapsed = _relationalIndexElapsed?.Elapsed ?? progress.Elapsed
+                    };
+                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
                 });
-            }, ct).ConfigureAwait(false);
-            ct.ThrowIfCancellationRequested();
-            if (result.FullyPublished) runtime.References.AcceptCompletedDiscovery(result);
-            var currentScope = scope with { Context = result.Context ?? scope.Context };
-            var catalogue = await runtime.References.LoadPaintAsync(currentScope, ct).ConfigureAwait(false);
-            await Dispatcher.InvokeAsync(() =>
+            }
+            var physicalRoots = scope.Resources.Where(r => r.IsLoaded && r.Kind is ResourceKind.File or ResourceKind.Folder).ToArray();
+            ExplorerScope? captured = null;
+            if (physicalRoots.Length != 0 && scope.Resources.Any(r => r.IsLoaded && r.Kind is ResourceKind.DatabaseSnapshot or ResourceKind.Diagram))
             {
-                if (!AcceptsRelationalExplorer(owner, runtime)) return;
-                _relationalExplorerScope = currentScope; _relationalReferenceCatalogue = catalogue; _relationalIndexProgress = result;
-                RebuildRelationalReferenceHighlightStyles();
-                if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalIndexStatus(result);
-            });
+                var excluded = scope.Context.UnloadedScopeResourceKeys.Concat(physicalRoots.Select(r => r.ScopeResourceKey)).Distinct().Order().ToImmutableArray();
+                var context = await runtime.Index.CaptureContextAsync(scope.Context.ScopeKey, excluded, token: ct).ConfigureAwait(false);
+                captured = scope with { Context = context, Resources = scope.Resources.Select(r => r with
+                    { IsLoaded = r.IsLoaded && r.Kind is not (ResourceKind.File or ResourceKind.Folder) }).ToImmutableArray() };
+                var ready = await refresher.RefreshAsync(captured, languages, ReportProgressAsync, ct,
+                    physicalRootsToReconcile: physicalRootsToReconcile ?? new HashSet<long>()).ConfigureAwait(false);
+                await InstallAsync(captured, ready, capturedOnly: true).ConfigureAwait(false);
+            }
+            var result = await refresher.RefreshAsync(scope, languages, ReportProgressAsync, ct, physicalRootsToReconcile).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (captured != null && !result.FullyPublished)
+            {
+                // File errors cannot make verified captured targets unusable, or certify negative file results.
+                var context = await runtime.Index.CaptureContextAsync(scope.Context.ScopeKey, captured.Context.UnloadedScopeResourceKeys, token: ct).ConfigureAwait(false);
+                captured = captured with { Context = context };
+                var ready = await refresher.RefreshAsync(captured, languages, ct: ct,
+                    physicalRootsToReconcile: new HashSet<long>()).ConfigureAwait(false);
+                await InstallAsync(captured, ready, capturedOnly: true).ConfigureAwait(false);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!AcceptsRelationalExplorer(owner, runtime)) return;
+                    _relationalIndexProgress = result with { Elapsed = _relationalIndexElapsed?.Elapsed ?? result.Elapsed };
+                    StatusText = (ready.FullyPublished ? "Captured references ready; physical references incomplete. " : "") +
+                        RelationalIndexStatus(_relationalIndexProgress);
+                });
+            }
+            else
+            {
+                var unwatched = _relationalPhysicalWatch?.UnwatchedRoots.Select(r => r.ScopeResourceKey).ToHashSet() ?? [];
+                var excluded = scope.Resources.Where(r => r.IsLoaded && unwatched.Contains(r.ScopeResourceKey)).ToArray();
+                if (result.FullyPublished && excluded.Length != 0)
+                {
+                    // Keep the Explorer selection intact, but never certify unwatched files as current.
+                    var unloaded = scope.Context.UnloadedScopeResourceKeys.Concat(excluded.Select(r => r.ScopeResourceKey)).Distinct().Order().ToImmutableArray();
+                    var context = await runtime.Index.CaptureContextAsync(scope.Context.ScopeKey, unloaded, token: ct).ConfigureAwait(false);
+                    var verified = scope with { Context = context, Resources = scope.Resources.Select(r => r with
+                        { IsLoaded = r.IsLoaded && !unwatched.Contains(r.ScopeResourceKey) }).ToImmutableArray() };
+                    var proof = await refresher.VerifyCompletedViewAsync(verified, languages, ct).ConfigureAwait(false);
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        if (!AcceptsRelationalExplorer(owner, runtime)) return;
+                        _relationalExplorerScope = scope with { Context = result.Context ?? scope.Context };
+                        _relationalUnwatchedPhysicalReferences = true;
+                    });
+                    await InstallAsync(verified, proof, capturedOnly: true).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        if (AcceptsRelationalExplorer(owner, runtime)) _relationalUnwatchedPhysicalReferences = false;
+                    });
+                    await InstallAsync(scope, result, capturedOnly: false).ConfigureAwait(false);
+                }
+            }
+
+            async Task InstallAsync(ExplorerScope view, ExplorerIndexRefreshProgress completed, bool capturedOnly)
+            {
+                if (completed.FullyPublished) runtime.References.AcceptCompletedDiscovery(completed);
+                var current = view with { Context = completed.Context ?? view.Context };
+                var catalogue = await runtime.References.LoadPaintAsync(current, ct).ConfigureAwait(false);
+                Task highlights = Task.CompletedTask;
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!AcceptsRelationalExplorer(owner, runtime)) return;
+                    var timed = completed with { Elapsed = _relationalIndexElapsed?.Elapsed ?? completed.Elapsed };
+                    _relationalReferenceScope = current; _relationalReferenceCatalogue = catalogue;
+                    _relationalIndexProgress = timed with { Phase = "Preparing highlights" };
+                    if (_relationalPhysicalRefreshPending && (!capturedOnly || current.Resources.Any(r => r.IsLoaded &&
+                        r.Kind is ResourceKind.File or ResourceKind.Folder && _relationalPendingPhysicalRoots.Contains(r.ScopeResourceKey))))
+                        _relationalReferenceScope = null;
+                    if (!capturedOnly) _relationalExplorerScope = current;
+                    _relationalPhysicalVerification = capturedOnly && completed.FullyPublished;
+                    RebuildRelationalReferenceHighlightStyles();
+                    highlights = _relationalHighlightTask;
+                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
+                });
+                await highlights.ConfigureAwait(false); ct.ThrowIfCancellationRequested();
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!AcceptsRelationalExplorer(owner, runtime) || !ReferenceEquals(_relationalReferenceCatalogue, catalogue)) return;
+                    _relationalIndexProgress = completed with { Elapsed = _relationalIndexElapsed?.Elapsed ?? completed.Elapsed };
+                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
+                });
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
@@ -186,15 +366,45 @@ public partial class MainWindow
                 if (!AcceptsRelationalExplorer(owner, runtime)) return;
                 _relationalIndexStatusTimer?.Stop(); _relationalIndexStatusTimer = null;
                 _relationalIndexElapsed?.Stop();
+                if (_relationalIndexProgress != null)
+                {
+                    _relationalIndexProgress = _relationalIndexProgress with
+                        { Elapsed = _relationalIndexElapsed?.Elapsed ?? _relationalIndexProgress.Elapsed };
+                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
+                }
+                if (_relationalPhysicalRefreshPending)
+                {
+                    var finishing = _relationalIndexRefreshTask;
+                    Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () =>
+                    {
+                        await finishing;
+                        if (AcceptsRelationalExplorer(owner, runtime)) StartRelationalPhysicalRefresh();
+                    }));
+                }
             });
         }
+    }
+
+    private string RelationalActiveIndexStatus(ExplorerIndexRefreshProgress progress)
+    {
+        if (_relationalPhysicalRefreshPending && _relationalReferenceScope == null)
+            return $"Physical reference changes queued; reference verification is not ready; {progress.Elapsed:hh\\:mm\\:ss}.";
+        string readiness = _relationalUnwatchedPhysicalReferences && _relationalPhysicalVerification && _relationalReferenceScope != null
+            ? "Verified targets only; unwatched physical references remain provisional. "
+            : _relationalPhysicalVerification && _relationalReferenceScope != null && _relationalReferenceCatalogue?.Coverage.FullyPublished == true
+            ? progress.Completed && progress.Phase != "Preparing highlights" && !progress.FullyPublished
+                ? "Captured references ready; physical references incomplete. "
+                : "Captured references ready; verifying physical files. "
+            : "";
+        return (_relationalHighlightsFailed ? "Reference highlights could not be prepared. " : "") + readiness + RelationalIndexStatus(progress);
     }
 
     internal static string RelationalIndexStatus(ExplorerIndexRefreshProgress progress)
     {
         string elapsed = progress.Elapsed.TotalDays >= 1 ? progress.Elapsed.ToString(@"d\.hh\:mm\:ss") : progress.Elapsed.ToString(@"hh\:mm\:ss");
         if (progress.Completed && progress.Phase != "Preparing highlights" && progress.FullyPublished)
-            return $"References ready: {progress.Published:N0} indexed, {progress.Unchanged:N0} unchanged; " +
+            return $"References ready: {progress.Published:N0} indexed, {progress.Unchanged:N0} unchanged" +
+                (progress.ReusedResources == 0 ? "; " : $" ({progress.ReusedResources:N0} resource checkpoints reused); ") +
                 $"{progress.UnloadedResources:N0} unloaded resources excluded; {elapsed}.";
         string state = progress.Phase == "Preparing highlights" ? "preparing highlights" : progress.Completed ? "finished (incomplete)" : progress.Phase.ToLowerInvariant();
         string current = progress.Resource == null ? "" : "; " + ShortName(progress.Resource);
@@ -652,6 +862,7 @@ public partial class MainWindow
         catch (ExplorerLimitException ex)
         {
             InternalLogService.Error(ex, "Relational highlight metadata exceeds its budget.");
+            _relationalHighlightsFailed = true;
             StatusText = "Reference highlight rules exceed the metadata budget; the last prepared styles are retained.";
             return;
         }
@@ -675,6 +886,7 @@ public partial class MainWindow
                 {
                     if (!AcceptsRelationalExplorer(owner, runtime) || generation != _relationalHighlightGeneration) return;
                     _relationalHighlightStyles = maps;
+                    _relationalHighlightsFailed = false;
                     ApplyReferenceHighlightsToOpenWindows(); ApplyReferenceHighlightsToPreview();
                 });
             }
@@ -685,7 +897,10 @@ public partial class MainWindow
                 await Dispatcher.InvokeAsync(() =>
                 {
                     if (AcceptsRelationalExplorer(owner, runtime) && generation == _relationalHighlightGeneration)
+                    {
+                        _relationalHighlightsFailed = true;
                         StatusText = "Reference highlights could not be prepared. Reference coverage is not proof of paint readiness.";
+                    }
                 });
             }
         }
@@ -695,11 +910,11 @@ public partial class MainWindow
     private async Task<ExplorerScope> CaptureRelationalReferenceScopeAsync(CancellationToken ct = default)
     {
         Dispatcher.VerifyAccess();
-        if (_relationalIndexProgress?.FullyPublished != true || _relationalReferenceCatalogue?.Coverage.FullyPublished != true)
+        if (_relationalReferenceScope == null || _relationalReferenceCatalogue?.Coverage.FullyPublished != true)
             throw new InvalidOperationException("Derived references are still indexing or incomplete.");
         var runtime = RelationalStateRuntime; var owner = _relationalExplorerOwner;
         await using var linked = new ExplorerCancellationLifetime(ct, _relationalExplorerCancellation!.Token);
-        var scope = _relationalExplorerScope ?? throw new InvalidOperationException("No relational scope is selected.");
+        var scope = await CurrentRelationalReferenceViewAsync(ct);
         var context = await ReadContextAsync();
         if (!AcceptsRelationalExplorer(owner, runtime) || !runtime.References.IsDiscoveryReady(context) ||
             context.CatalogueGeneration != _relationalReferenceCatalogue.Paint.Context.CatalogueGeneration ||
@@ -712,6 +927,39 @@ public partial class MainWindow
             await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
             return await runtime.Index.CaptureContextAsync(scope.Context.ScopeKey, scope.Context.UnloadedScopeResourceKeys,
                 token: linked.Token).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<ExplorerScope> CurrentRelationalReferenceViewAsync(CancellationToken ct)
+    {
+        Dispatcher.VerifyAccess();
+        var observed = _relationalReferenceScope ?? throw new InvalidOperationException("Derived references are not ready.");
+        if (!_relationalPhysicalVerification) return observed;
+        var runtime = RelationalStateRuntime; var owner = _relationalExplorerOwner;
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                if (await runtime.Index.IsContextCurrentAsync(observed.Context, ct))
+                {
+                    if (!AcceptsRelationalExplorer(owner, runtime) || !ReferenceEquals(_relationalReferenceScope, observed))
+                        throw new OperationCanceledException("The reference view changed.");
+                    return observed;
+                }
+                var proof = await _relationalIndexRefresher!.VerifyCompletedViewAsync(observed, _relationalIndexLanguages!, ct);
+                if (RelationalReferenceService.ContextMatches(observed.Context, proof.Context!)) return observed;
+                var current = observed with { Context = proof.Context! };
+                var catalogue = await runtime.References.RebaseVerifiedViewAsync(current, proof, ct);
+                if (!AcceptsRelationalExplorer(owner, runtime) || !ReferenceEquals(_relationalReferenceScope, observed))
+                    throw new OperationCanceledException("The reference view changed.");
+                _relationalReferenceScope = current; _relationalReferenceCatalogue = catalogue;
+                return current;
+            }
+            catch (IndexGenerationChangedException) when (attempt < 3)
+            {
+                await Task.Delay(20, ct);
+                if (!AcceptsRelationalExplorer(owner, runtime) || !ReferenceEquals(_relationalReferenceScope, observed)) throw;
+            }
         }
     }
 

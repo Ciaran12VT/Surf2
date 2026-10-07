@@ -1,8 +1,6 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
-using System.Data;
 using System.Globalization;
-using Microsoft.Data.SqlClient;
 using Surf2.Models;
 using Surf2.Storage.Relational;
 using Surf2.Storage.Relational.Index;
@@ -29,6 +27,8 @@ public sealed class ReferenceIndexNotReadyException(ReferenceCoverage coverage) 
 // Painting cannot reach a provider, parser, task, file, or WPF object through this object.
 public sealed class SharedReferencePaintLookup
 {
+    internal SharedReferencePaintLookup(IndexRequestContext context, SharedReferencePaintLookup previous)
+    { Context = context; Names = previous.Names; }
     public SharedReferencePaintLookup(IndexRequestContext context, IEnumerable<PaintName> names, string sortCultureName)
     {
         Context = context;
@@ -62,13 +62,19 @@ public sealed class SharedReferencePaintLookup
     };
 }
 
-public sealed class RelationalReferenceService(RelationalSession session, RelationalIndexStore index,
+public sealed partial class RelationalReferenceService(RelationalSession session, RelationalIndexStore index,
     ExplorerLimits? limits = null)
 {
     private readonly ExplorerLimits _limits = Validated(limits);
     private readonly object _discoveryGate = new();
     private IndexRequestContext? _completedDiscovery;
-    private static ExplorerLimits Validated(ExplorerLimits? limits) { var value = limits ?? new(); value.Validate(); return value; }
+    private static ExplorerLimits Validated(ExplorerLimits? limits)
+    {
+        // Candidate addresses/overloads are larger than explorer row labels; retain a bounded compact
+        // catalogue without reinstating a cache of code bodies or syntax trees.
+        var value = limits ?? new ExplorerLimits(MaximumMetadataCharacters: 16 * 1024 * 1024);
+        value.Validate(); return value;
+    }
 
     // An unloaded-resource view cannot publish a global SQL discovery marker. Retain only the
     // worker's completed, exact view; a different selection/generation or a new runtime must recheck it.
@@ -98,37 +104,32 @@ public sealed class RelationalReferenceService(RelationalSession session, Relati
     public async Task<ReferenceCatalogue> LoadPaintAsync(ExplorerScope scope, CancellationToken ct = default)
     {
         await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        var names = new List<PaintName>();
-        var budget = new ExplorerMetadataBudget(_limits);
-        long after = 0;
-        bool exhausted;
-        do
-        {
-            var page = await ReadPaintPageAsync(scope, after, ct).ConfigureAwait(false);
-            foreach (var name in page.Items)
-            {
-                budget.Add(name.Name, name.Language);
-                names.Add(name);
-            }
-            after = page.AfterKey; exhausted = page.Exhausted;
-        } while (!exhausted);
-        var coverage = await ReadCoverageAsync(scope.Context, ct).ConfigureAwait(false);
+        var catalogue = await GetMetadataAsync(scope, ct).ConfigureAwait(false);
         await RequireCurrentAsync(scope.Context, ct).ConfigureAwait(false);
-        return new(new(scope.Context, names, scope.SortCultureName), coverage);
+        return new(catalogue.Paint, Coverage(catalogue));
     }
 
-    // All candidate pages are completed before applying overload and fallback rules.
+    // Complete, bounded candidate metadata is shared with painting before applying overload rules.
     // Oversized candidate sets fail explicitly; they never become a truncated navigation result.
     public async Task<ImmutableArray<ReferenceTargets>> ResolveAsync(IndexRequestContext context,
         IEnumerable<ReferenceQuery> queries, CancellationToken ct = default)
     {
         await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        var input = ValidateQueries(queries);
+        var cached = Volatile.Read(ref _metadata);
+        if (cached != null && ContextMatches(cached.Context, context))
+        {
+            await RequireCurrentAsync(context, ct).ConfigureAwait(false);
+            var coverage = Coverage(cached);
+            if (!coverage.FullyPublished) throw new ReferenceIndexNotReadyException(coverage);
+            return Resolve(cached, input, ct);
+        }
         var scope = await new RelationalExplorerMetadataQueries(session, index).ReadScopeAsync(context.ScopeKey, null,
             CultureInfo.CurrentCulture.Name, ct).ConfigureAwait(false);
         // Keep the caller's generation/subset/unloaded fence, not the newer capture made by the summary reader.
         scope = scope with { Context = context, Resources = scope.Resources.Select(r => r with
             { IsLoaded = !context.UnloadedScopeResourceKeys.Contains(r.ScopeResourceKey) }).ToImmutableArray() };
-        return await ResolveAsync(scope, queries, ct).ConfigureAwait(false);
+        return await ResolveAsync(scope, input, ct).ConfigureAwait(false);
     }
 
     public async Task<ImmutableArray<ReferenceTargets>> ResolveAsync(ExplorerScope scope,
@@ -145,80 +146,41 @@ public sealed class RelationalReferenceService(RelationalSession session, Relati
     {
         await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         var context = scope.Context;
+        var input = ValidateQueries(queries);
+        var catalogue = await GetMetadataAsync(scope, ct).ConfigureAwait(false);
+        await RequireCurrentAsync(context, ct).ConfigureAwait(false);
+        return new(Resolve(catalogue, input, ct), Coverage(catalogue));
+    }
+
+    private ReferenceCoverage Coverage(MetadataCatalogue catalogue) =>
+        new(catalogue.Documents, catalogue.StaleOrUnindexed, IsDiscoveryReady(catalogue.Context), catalogue.Context.RestrictDocumentKeys);
+
+    private static ImmutableArray<ReferenceQuery> ValidateQueries(IEnumerable<ReferenceQuery> queries)
+    {
+        ArgumentNullException.ThrowIfNull(queries);
         var input = queries.Take(65).ToImmutableArray();
         if (input.Length > 64) throw new ArgumentException("Reference requests contain at most 64 tokens.", nameof(queries));
-        var coverage = await ReadCoverageAsync(context, ct).ConfigureAwait(false);
-        var candidates = new List<SymbolSummary>();
-        var budget = new ExplorerMetadataBudget(_limits);
-        long after = 0;
-        IndexPage<SymbolSummary> page;
-        do
-        {
-            page = await index.LookupNamesPageAsync(context, input.Select(q => q.Token), after, _limits.PageSize, ct).ConfigureAwait(false);
-            foreach (var symbol in page.Items)
-            {
-                var d = symbol.Definition;
-                budget.Add(d.Name, d.QualifiedName, d.Locator, d.Language, d.ContainerName);
-                if (!ReferenceAllowed(scope, d.Locator)) continue;
-                candidates.Add(symbol);
-            }
-            after = page.AfterKey;
-        } while (!page.Exhausted);
-        await RequireCurrentAsync(context, ct).ConfigureAwait(false);
-        return new(input.Select(q => new ReferenceTargets(q, ReferenceMetadata.Resolve(candidates, q.Token, q.ArgumentCount))).ToImmutableArray(), coverage);
+        if (input.Any(q => q == null || q.Token == null || q.Token.Length > 65536))
+            throw new ArgumentException("Invalid reference token.", nameof(queries));
+        return input;
     }
 
-    private async Task<ReferenceCoverage> ReadCoverageAsync(IndexRequestContext context, CancellationToken ct)
+    private static ImmutableArray<ReferenceTargets> Resolve(MetadataCatalogue catalogue,
+        ImmutableArray<ReferenceQuery> queries, CancellationToken ct)
     {
-        long documents = 0, stale = 0; SearchCursor? cursor = null; bool exhausted;
-        do
+        var result = ImmutableArray.CreateBuilder<ReferenceTargets>(queries.Length);
+        foreach (var query in queries)
         {
-            var page = await index.ReadDocumentsPageAsync(context, cursor, _limits.PageSize, ct).ConfigureAwait(false);
-            documents += page.Items.Length; stale += page.Items.Count(d => d.Freshness != IndexFreshness.Indexed);
-            cursor = page.Next; exhausted = page.Exhausted;
-        } while (!exhausted);
-        return new(documents, stale, IsDiscoveryReady(context), context.RestrictDocumentKeys);
-    }
-
-    private async Task<IndexPage<PaintName>> ReadPaintPageAsync(ExplorerScope scope, long after, CancellationToken ct)
-    {
-        var context = scope.Context;
-        await session.RequireReadyAsync(ct).ConfigureAwait(false);
-        await using var connection = await session.OpenAsync(ct).ConfigureAwait(false);
-        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
-        await IndexSql.CheckContextAsync(connection, transaction, session, context, ct).ConfigureAwait(false);
-        await using var command = IndexSql.Command(connection, transaction, $"""
-SELECT TOP (@Take) s.SymbolKey,LEFT(s.Name,65537),s.Language,s.Kind,LEFT(f.OriginalPath,65537)
-FROM surf.SymbolDefinition s JOIN surf.Document d ON d.DocumentKey=s.DocumentKey AND d.CurrentRevisionKey=s.DocumentRevisionKey
-LEFT JOIN surf.FileSource f ON f.FileSourceKey=d.FileSourceKey
-WHERE s.SymbolKey>@After AND s.Kind<>0 AND DATALENGTH(s.Name)>2
-AND EXISTS(SELECT 1 FROM surf.ResourceDocument m JOIN surf.ScopeResource sr ON sr.ScopeResourceKey=m.ScopeResourceKey
- WHERE m.DocumentKey=d.DocumentKey AND {IndexSql.ScopePredicate}) ORDER BY s.SymbolKey;
-""");
-        IndexSql.ScopeParameters(command, context);
-        IndexSql.Add(command, "@Take", SqlDbType.Int, _limits.PageSize);
-        IndexSql.Add(command, "@After", SqlDbType.BigInt, after);
-        using var cancel = RelationalSession.CancelCommand(command, ct);
-        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        var items = ImmutableArray.CreateBuilder<PaintName>();
-        var budget = new ExplorerMetadataBudget(_limits);
-        int read = 0;
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
-        {
-            after = reader.GetInt64(0);
-            read++;
-            string name = reader.GetString(1), language = reader.GetString(2);
-            if (name.Length > 65536) throw new ExplorerLimitException("A reference name exceeds its metadata limit.");
-            budget.Add(name, language);
-            if (!reader.IsDBNull(4))
+            ct.ThrowIfCancellationRequested();
+            string key = ReferenceMetadata.Normalize(query.Token);
+            if (!catalogue.Candidates.TryGetValue(key, out var candidates) && key.Contains('.', StringComparison.Ordinal))
             {
-                string path = reader.GetString(4); budget.Add(path);
-                if (path.Length > 65536) throw new ExplorerLimitException("A reference locator exceeds its metadata limit.");
-                if (!ReferenceAllowed(scope, path)) continue;
+                key = key.Split('.', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? string.Empty;
+                catalogue.Candidates.TryGetValue(key, out candidates);
             }
-            items.Add(new(name, language, (ReferenceEntityKind)reader.GetInt32(3)));
+            result.Add(new(query, ReferenceMetadata.Resolve(candidates.IsDefault ? [] : candidates, query.Token, query.ArgumentCount)));
         }
-        return new(items.ToImmutable(), after, read < _limits.PageSize);
+        return result.ToImmutable();
     }
     internal static bool ReferenceAllowed(ExplorerScope scope, string locator) =>
         locator.StartsWith("db://", StringComparison.OrdinalIgnoreCase) || locator.StartsWith("surf2://", StringComparison.OrdinalIgnoreCase) ||

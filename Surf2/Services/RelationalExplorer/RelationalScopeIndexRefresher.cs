@@ -25,7 +25,8 @@ public sealed record ExplorerIndexLanguagePolicy(ImmutableArray<(string Extensio
 public sealed record ExplorerIndexRefreshProgress(long Considered, long Published, long Unchanged, long Failed,
     long UnloadedResources, bool Completed, bool DiscoveryReconciled, IndexRequestContext? Context = null,
     string? FailureCode = null, string? Resource = null, string? Document = null,
-    string Phase = "Discovering", TimeSpan Elapsed = default, string? FailedResource = null, string? FailedDocument = null)
+    string Phase = "Discovering", TimeSpan Elapsed = default, string? FailedResource = null, string? FailedDocument = null,
+    long ReusedResources = 0)
 {
     public bool FullyPublished => Completed && DiscoveryReconciled && Failed == 0;
 }
@@ -48,34 +49,68 @@ public sealed partial class RelationalScopeIndexRefresher
     }
 
     public async Task<ExplorerIndexRefreshProgress> RefreshAsync(ExplorerScope scope, ExplorerIndexLanguagePolicy languagePolicy,
-        Func<ExplorerIndexRefreshProgress, Task>? progress = null, CancellationToken ct = default)
+        Func<ExplorerIndexRefreshProgress, Task>? progress = null, CancellationToken ct = default,
+        IReadOnlySet<long>? physicalRootsToReconcile = null)
     {
         _session.RejectValidationWrite();
         await _singleFlight.WaitAsync(ct).ConfigureAwait(false);
-        try { return await RefreshCoreAsync(scope, languagePolicy, progress, ct).ConfigureAwait(false); }
+        try
+        {
+            // Reuse file completion only inside a continuously watched session. Default calls and
+            // every app/scope reopen reconcile files, including changes made while Surf was closed.
+            if (physicalRootsToReconcile == null) _verifiedPhysicalRoots.Clear();
+            else foreach (long root in physicalRootsToReconcile) _verifiedPhysicalRoots.TryRemove(root, out _);
+            return await RefreshCoreAsync(scope, languagePolicy, progress, ct).ConfigureAwait(false);
+        }
         finally { _singleFlight.Release(); }
     }
 
     private async Task<ExplorerIndexRefreshProgress> RefreshCoreAsync(ExplorerScope scope, ExplorerIndexLanguagePolicy languagePolicy,
         Func<ExplorerIndexRefreshProgress, Task>? progress, CancellationToken ct)
     {
+        var elapsed = Stopwatch.StartNew();
+        if (progress != null) await progress(new(0, 0, 0, 0, scope.Resources.Count(r => !r.IsLoaded), false, false,
+            Phase: "Checking resource checkpoints", Elapsed: elapsed.Elapsed)).ConfigureAwait(false);
         await _session.RequireReadyAsync(ct).ConfigureAwait(false);
-        await InvalidateDiscoveryAsync(scope, ct).ConfigureAwait(false);
+        await EnsureCompletionStoreAsync(ct).ConfigureAwait(false);
+        var reusable = await ReadCompletedRootsAsync(scope, languagePolicy, ct).ConfigureAwait(false);
+        // A changed alias rebuilds its entire typed owner group, so no cached alias can be pruned accidentally.
+        foreach (var resource in scope.Resources.Where(r => r.IsLoaded && CapturedRoot(r)))
+        {
+            var aliases = scope.Resources.Where(r => r.IsLoaded && (resource.Snapshot != null
+                ? r.Snapshot?.SnapshotKey == resource.Snapshot.SnapshotKey : r.DiagramRevisionKey == resource.DiagramRevisionKey));
+            if (aliases.Any(r => !reusable.ContainsKey(r.ScopeResourceKey)))
+                foreach (var alias in aliases) reusable.Remove(alias.ScopeResourceKey);
+        }
+        bool removed;
+        do
+        {
+            removed = false;
+            var changedRoots = scope.Resources.Where(r => r.IsLoaded && PhysicalRoot(r) && !reusable.ContainsKey(r.ScopeResourceKey)).ToArray();
+            foreach (var cached in scope.Resources.Where(r => PhysicalRoot(r) && reusable.ContainsKey(r.ScopeResourceKey)))
+                if (changedRoots.Any(r => OwnsFile(r, cached.Path) || OwnsFile(cached, r.Path)))
+                    removed |= reusable.Remove(cached.ScopeResourceKey);
+        } while (removed);
+        bool hasWork = scope.Resources.Any(r => r.IsLoaded && !reusable.ContainsKey(r.ScopeResourceKey));
+        if (hasWork) await InvalidateDiscoveryAsync(scope, ct).ConfigureAwait(false);
         long considered = 0, published = 0, unchanged = 0, failed = 0;
+        bool reusedPhysical = scope.Resources.Any(r => PhysicalRoot(r) && reusable.ContainsKey(r.ScopeResourceKey));
+        if (reusedPhysical) unchanged = await CountReusedDocumentsAsync(reusable.Keys, ct).ConfigureAwait(false);
+        long reusedResources = 0;
         long unloaded = scope.Resources.Count(r => !r.IsLoaded);
         var visited = new HashSet<long>();
         var seen = new HashSet<(long Resource, long Document)>();
         var completedRoots = new HashSet<long>();
         var discoveredSnapshots = new Dictionary<long, bool>();
         var discoveredDiagrams = new Dictionary<long, bool>();
+        var reusedOwners = new HashSet<(ResourceKind Kind, long Key)>();
         var budget = new ExplorerMetadataBudget(_limits);
-        var elapsed = Stopwatch.StartNew();
         string? currentResource = null, currentDocument = null, lastFailure = null;
         string? failedResource = null, failedDocument = null;
         string phase = "Discovering";
         ExplorerIndexRefreshProgress Status(bool done = false, bool reconciled = false, IndexRequestContext? context = null,
             string? error = null) => new(considered, published, unchanged, failed, unloaded, done, reconciled, context,
-                error ?? lastFailure, currentResource, currentDocument, phase, elapsed.Elapsed, failedResource, failedDocument);
+                error ?? lastFailure, currentResource, currentDocument, phase, elapsed.Elapsed, failedResource, failedDocument, reusedResources);
         async Task ReportAsync(string? error = null)
         {
             if (error != null) { lastFailure = error; failedResource = currentResource; failedDocument = currentDocument; }
@@ -85,11 +120,18 @@ public sealed partial class RelationalScopeIndexRefresher
         foreach (var resource in scope.Resources.Where(r => r.IsLoaded))
         {
             ct.ThrowIfCancellationRequested();
+            if (reusable.TryGetValue(resource.ScopeResourceKey, out long count))
+            {
+                reusedResources++;
+                if (!reusedPhysical && reusedOwners.Add((resource.Kind, resource.Snapshot?.SnapshotKey ?? resource.DiagramRevisionKey!.Value))) unchanged += count;
+                continue;
+            }
             await RequireDomainAsync(scope, ct).ConfigureAwait(false);
             currentResource = ExplorerCompatibility.ResourceDisplayName(resource);
             currentDocument = null; phase = "Discovering";
             await ReportAsync().ConfigureAwait(false);
             bool rootComplete = true;
+            long failuresBeforeRoot = failed;
             try
             {
                 if (resource.Kind == ResourceKind.File)
@@ -110,9 +152,8 @@ public sealed partial class RelationalScopeIndexRefresher
                         {
                             var page = await _snapshots.ListObjectsAsync(resource.Snapshot.SnapshotKey, pageSize: _limits.PageSize,
                                 cursor: cursor, ct: ct).ConfigureAwait(false);
-                            foreach (var item in page.Items)
+                            var entries = page.Items.Where(item => item.ObjectKind != SqlDatabaseObjectKind.Unknown).Select(item =>
                             {
-                                if (item.ObjectKind == SqlDatabaseObjectKind.Unknown) continue;
                                 var category = item.ObjectKind switch
                                 {
                                     SqlDatabaseObjectKind.StoredProcedure => ExplorerCategory.Procedures,
@@ -121,8 +162,9 @@ public sealed partial class RelationalScopeIndexRefresher
                                     SqlDatabaseObjectKind.Trigger => ExplorerCategory.Triggers,
                                     _ => throw new InvalidOperationException("Unsupported object kind.")
                                 };
-                                await DatabaseAsync(resource, new(item.Resource, item.ObjectKind), category).ConfigureAwait(false);
-                            }
+                                return CreateDatabaseEntry(scope, resource, new(item.Resource, item.ObjectKind), category, ct);
+                            }).ToArray();
+                            await DatabasePageAsync(entries).ConfigureAwait(false);
                             cursor = page.Next;
                         } while (cursor != null);
                         cursor = null;
@@ -130,11 +172,12 @@ public sealed partial class RelationalScopeIndexRefresher
                         {
                             var page = await _snapshots.ListTablesAsync(resource.Snapshot.SnapshotKey, pageSize: _limits.PageSize,
                                 cursor: cursor, ct: ct).ConfigureAwait(false);
-                            foreach (var item in page.Items)
-                                await DatabaseAsync(resource, new(item.Resource, null, item.HasFullData, item.FullDataRowCount), ExplorerCategory.Tables).ConfigureAwait(false);
+                            var entries = page.Items.Select(item => CreateDatabaseEntry(scope, resource,
+                                new(item.Resource, null, item.HasFullData, item.FullDataRowCount), ExplorerCategory.Tables, ct)).ToArray();
+                            await DatabasePageAsync(entries).ConfigureAwait(false);
                             cursor = page.Next;
                         } while (cursor != null);
-                        discoveredSnapshots[resource.Snapshot.SnapshotKey] = true;
+                        discoveredSnapshots[resource.Snapshot.SnapshotKey] = failed == failuresBeforeRoot;
                     }
                 }
                 else if (resource.Kind == ResourceKind.Diagram)
@@ -153,7 +196,7 @@ public sealed partial class RelationalScopeIndexRefresher
                             new("none-v1", RelationalIndexStore.DiagramRendererVersion, "explorer-v1"), memberships,
                             aliases.Select(r => new IndexLocator(r.ScopeResourceKey, 2, path)).ToImmutableArray(), null,
                             () => _index.PrepareDiagramAsync(revision, ct), null, true).ConfigureAwait(false);
-                        discoveredDiagrams[revision] = true;
+                        discoveredDiagrams[revision] = failed == failuresBeforeRoot;
                     }
                 }
             }
@@ -161,7 +204,7 @@ public sealed partial class RelationalScopeIndexRefresher
             {
                 failed++; rootComplete = false; await ReportAsync(FailureCode(ex)).ConfigureAwait(false);
             }
-            if (rootComplete) completedRoots.Add(resource.ScopeResourceKey);
+            if (rootComplete && failed == failuresBeforeRoot) completedRoots.Add(resource.ScopeResourceKey);
 
             async Task WalkAsync(string directory, int depth)
             {
@@ -194,12 +237,19 @@ public sealed partial class RelationalScopeIndexRefresher
             await ReportAsync().ConfigureAwait(false);
             await PruneAsync(scope, resource, seen, ct).ConfigureAwait(false);
         }
+        await CompleteRootsAsync(scope, completedRoots, seen, languagePolicy, failed != 0, ct).ConfigureAwait(false);
         await RequireDomainAsync(scope, ct).ConfigureAwait(false);
         var context = await _index.CaptureContextAsync(scope.Context.ScopeKey, scope.Context.UnloadedScopeResourceKeys, token: ct).ConfigureAwait(false);
         RequireSameDomain(scope.Context, context);
+        if (reusable.Count != 0)
+        {
+            var stillReady = await ReadCompletedRootsAsync(scope, languagePolicy, ct).ConfigureAwait(false);
+            if (reusable.Keys.Any(key => !stillReady.ContainsKey(key)) || !await _index.IsContextCurrentAsync(context, ct).ConfigureAwait(false))
+                throw new IndexGenerationChangedException();
+        }
         bool reconciled = failed == 0;
         // The persisted marker describes the entire scope, never an intentionally unloaded view.
-        if (reconciled && unloaded == 0)
+        if (reconciled && unloaded == 0 && !context.DiscoveryReconciled)
         {
             await _index.MarkDiscoveryReconciledAsync(context, ct).ConfigureAwait(false);
             context = await _index.CaptureContextAsync(context.ScopeKey, token: ct).ConfigureAwait(false);
@@ -223,38 +273,23 @@ public sealed partial class RelationalScopeIndexRefresher
                 aliases.Select(r => new IndexLocator(r.ScopeResourceKey, 0, path)).ToImmutableArray(), null, null, path, true).ConfigureAwait(false);
         }
 
-        async Task DatabaseAsync(ExplorerResource root, ExplorerDatabaseItem item, ExplorerCategory category)
+        async Task DatabasePageAsync(IReadOnlyList<DatabaseIndexEntry> entries)
         {
-            var source = item.Resource;
-            var aliases = scope.Resources.Where(r => r.Snapshot?.SnapshotKey == source.SnapshotKey).ToArray();
-            string locator = ExplorerCompatibility.DatabaseLocator(root.Snapshot!, category, source.SchemaName, source.ObjectName, canonical: true);
-            string name = SqlName.FormatPlainMultipartName(source.SchemaName, source.ObjectName);
-            var memberships = aliases.Select(r =>
-            {
-                string readable = ExplorerCompatibility.DatabaseLocator(r.Snapshot!, category, source.SchemaName, source.ObjectName);
-                return new DocumentMembership(r.ScopeResourceKey, name + (item.HasFullData ? $" ({item.ReportedRowCount} rows)" : ""), readable,
-                    readable, r.Snapshot!.SnapshotId + "/" + ExplorerCompatibility.CategoryName(category), source.SortOrdinal);
-            }).ToImmutableArray();
-            var locators = aliases.SelectMany(r => new[] { new IndexLocator(r.ScopeResourceKey, 1,
-                ExplorerCompatibility.DatabaseLocator(r.Snapshot!, category, source.SchemaName, source.ObjectName)), new IndexLocator(r.ScopeResourceKey, 2, locator) }).ToImmutableArray();
-            bool table = category == ExplorerCategory.Tables;
-            string container = root.Snapshot!.DisplayName;
-            var policy = new IndexPolicy("database-metadata-v1", table ? RelationalIndexStore.TableRendererVersion : "definition-v1",
-                "explorer-v1:" + Convert.ToHexString(IndexSql.Hash(container)));
-            await DocumentAsync(new SnapshotDocumentOwner(source.SnapshotKey, source.ResourceKey, table), name, "SQL Server",
-                policy, memberships, locators, source.RevisionKey, table
-                    ? () => _index.PrepareTableCodeAsync(source.RevisionKey, locator, container, ct)
-                    : () => _index.PrepareDefinitionAsync(source.RevisionKey, locator, container, _limits.MaximumDocumentCharacters, ct), null, true).ConfigureAwait(false);
+            var prepared = await PrimeDatabaseBatchAsync(scope, entries, ct).ConfigureAwait(false);
+            foreach (var entry in entries)
+                await DocumentAsync(entry.Registration.Owner, entry.Registration.DisplayName, entry.Registration.Language,
+                    entry.Policy, entry.Memberships, entry.Locators, entry.SourceRevision, entry.Prepare, null, true,
+                    prepared[((SnapshotDocumentOwner)entry.Registration.Owner).ResourceKey]).ConfigureAwait(false);
         }
 
         async Task DocumentAsync(DocumentOwner owner, string name, string language, IndexPolicy policy,
             ImmutableArray<DocumentMembership> memberships, ImmutableArray<IndexLocator> locators, long? sourceRevision,
-            Func<Task<PreparedIndexSource>>? prepare, string? physicalPath, bool symbols)
+            Func<Task<PreparedIndexSource>>? prepare, string? physicalPath, bool symbols, PreparedDocument? primed = null)
         {
             ct.ThrowIfCancellationRequested();
             currentDocument = name; phase = "Indexing";
             await ReportAsync().ConfigureAwait(false);
-            var prepared = await GetOrRegisterAsync(new(owner, name, language), ct).ConfigureAwait(false);
+            var prepared = primed ?? await GetOrRegisterAsync(new(owner, name, language), ct).ConfigureAwait(false);
             var handle = prepared.Handle;
             foreach (var m in memberships)
             {
@@ -264,7 +299,7 @@ public sealed partial class RelationalScopeIndexRefresher
             if (!visited.Add(handle.DocumentKey)) return;
             budget.Add(name);
             considered++;
-            await SetScopeMembershipAsync(scope, handle.DocumentKey, memberships, locators, ct).ConfigureAwait(false);
+            if (primed == null) await SetScopeMembershipAsync(scope, handle.DocumentKey, memberships, locators, ct).ConfigureAwait(false);
             var previous = prepared.Published;
             IndexWorkLease? lease = null;
             IndexedFileRead? file = null;

@@ -202,6 +202,7 @@ public static partial class StorageRegressionSuite
             host.RootVisual = root;
             await RuntimeWpfIdleAsync();
             await RuntimeWpfCheckSelectedScopeAsync(main, connection, seeded, check);
+            await RuntimeWpfCheckWarmReferencesAsync(main, connection, seeded, fixture, check);
 
             var snapshotHeader = new DatabaseMetadataSnapshot { SnapshotId = "query-snapshot", DisplayName = "Query snapshot" };
             string codePath = DatabaseDocumentService.CreateCanonicalObjectDocumentPath(snapshotHeader, seeded.ProcedureValue);

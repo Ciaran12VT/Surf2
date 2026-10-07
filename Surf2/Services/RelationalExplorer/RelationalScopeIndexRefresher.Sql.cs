@@ -82,14 +82,21 @@ WHERE d.DocumentKey=@Document;
     {
         await using var connection = await _session.OpenAsync(ct).ConfigureAwait(false);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
-        await IndexSql.MutateHeadAsync(connection, transaction, ct).ConfigureAwait(false);
+        await using (var head = IndexSql.Command(connection, transaction,
+            "SELECT Generation FROM surf.IndexCatalogueHead WITH(UPDLOCK,HOLDLOCK) WHERE Singleton=1;"))
+        {
+            using var headCancellation = RelationalSession.CancelCommand(head, ct);
+            await head.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        }
         await FenceDomainAsync(connection, transaction, scope.Context, ct).ConfigureAwait(false);
         await using var command = IndexSql.Command(connection, transaction, """
-UPDATE surf.ScopeIndexState SET ReconciledScopeVersion=NULL,ReconciledAtUtc=NULL WHERE ScopeKey=@Scope;
+UPDATE surf.ScopeIndexState SET ReconciledScopeVersion=NULL,ReconciledAtUtc=NULL
+ WHERE ScopeKey=@Scope AND ReconciledScopeVersion IS NOT NULL;
 """);
         IndexSql.Add(command, "@Scope", SqlDbType.BigInt, scope.Context.ScopeKey);
         using var cancel = RelationalSession.CancelCommand(command, ct);
-        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        if (await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 0)
+            await IndexSql.MutateHeadAsync(connection, transaction, ct).ConfigureAwait(false);
         await transaction.CommitAsync(ct).ConfigureAwait(false);
     }
 

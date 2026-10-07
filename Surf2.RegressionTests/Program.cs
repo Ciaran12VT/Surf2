@@ -13,6 +13,18 @@ using Surf2.Storage.Relational.Access.State;
 using Surf2.Services.RelationalExplorer;
 
 int passed = 0;
+if (args.Contains("--reference-warm-start", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunReferenceWarmStartChecksAsync(Check);
+    await StorageRegressionSuite.RunReferenceMetadataHotPathChecksAsync(Check);
+    await StorageRegressionSuite.RunReferenceDatabaseBatchChecksAsync(Check);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} reference warm-start checks."); return; }
+}
+if (args.Contains("--reference-watch", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunPhysicalReferenceWatchChecksAsync(Check);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} physical reference watch checks."); return; }
+}
 if (args.Contains("--scope-ui", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunScopePickerUiChecksAsync(Check);
