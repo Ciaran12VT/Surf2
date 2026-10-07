@@ -247,7 +247,8 @@ public partial class MainWindow
                     if (!AcceptsRelationalExplorer(owner, runtime)) return;
                     _relationalIndexProgress = progress with
                     {
-                        Phase = progress.Completed ? "Preparing highlights" : progress.Phase,
+                        Completed = false,
+                        Phase = progress.Completed ? "Loading reference catalogue" : progress.Phase,
                         Elapsed = _relationalIndexElapsed?.Elapsed ?? progress.Elapsed
                     };
                     if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
@@ -317,6 +318,13 @@ public partial class MainWindow
             {
                 if (completed.FullyPublished) runtime.References.AcceptCompletedDiscovery(completed);
                 var current = view with { Context = completed.Context ?? view.Context };
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (!AcceptsRelationalExplorer(owner, runtime)) return;
+                    _relationalIndexProgress = completed with { Completed = false, Phase = "Loading reference catalogue",
+                        Elapsed = _relationalIndexElapsed?.Elapsed ?? completed.Elapsed };
+                    if (_relationalExplorerSearchTask.IsCompleted) StatusText = RelationalActiveIndexStatus(_relationalIndexProgress);
+                });
                 using var publication = await refresher.EnterReferenceReadAsync(ct).ConfigureAwait(false);
                 var catalogue = await runtime.References.LoadPaintAsync(current, ct).ConfigureAwait(false);
                 Task highlights = Task.CompletedTask;
@@ -325,7 +333,7 @@ public partial class MainWindow
                     if (!AcceptsRelationalExplorer(owner, runtime)) return;
                     var timed = completed with { Elapsed = _relationalIndexElapsed?.Elapsed ?? completed.Elapsed };
                     _relationalReferenceScope = current; _relationalReferenceCatalogue = catalogue;
-                    _relationalIndexProgress = timed with { Phase = "Preparing highlights" };
+                    _relationalIndexProgress = timed with { Completed = false, Phase = "Preparing highlights" };
                     if (_relationalPhysicalRefreshPending && (!capturedOnly || current.Resources.Any(r => r.IsLoaded &&
                         r.Kind is ResourceKind.File or ResourceKind.Folder && _relationalPendingPhysicalRoots.Contains(r.ScopeResourceKey))))
                         _relationalReferenceScope = null;
@@ -357,7 +365,7 @@ public partial class MainWindow
                     Math.Max(1, prior?.Failed ?? 0), prior?.UnloadedResources ?? 0, true, false,
                     FailureCode: ex is Microsoft.Data.SqlClient.SqlException sql ? "SQL_" + sql.Number : ex.GetType().Name,
                     Resource: prior?.Resource, Document: prior?.Document, Phase: "Stopped", Elapsed: _relationalIndexElapsed?.Elapsed ?? default,
-                    FailedResource: prior?.Resource, FailedDocument: prior?.Document);
+                    FailedResource: prior?.Resource, FailedDocument: prior?.Document, FailedPhase: prior?.Phase);
                 StatusText = RelationalIndexStatus(_relationalIndexProgress);
             });
         }
@@ -412,6 +420,7 @@ public partial class MainWindow
         string current = progress.Resource == null ? "" : "; " + ShortName(progress.Resource);
         if (progress.Document != null) current += " / " + ShortName(progress.Document);
         string failure = progress.FailureCode == null ? "" : " (" + progress.FailureCode + ")";
+        if (progress.FailedPhase != null) failure += " during " + progress.FailedPhase.ToLowerInvariant();
         if (progress.Completed && progress.FailedResource != null)
             failure += " at " + ShortName(progress.FailedResource) + (progress.FailedDocument == null ? "" : " / " + ShortName(progress.FailedDocument));
         return $"Reference index {state}: {progress.Considered:N0} checked, {progress.Published:N0} indexed, {progress.Unchanged:N0} unchanged; " +
@@ -523,15 +532,17 @@ public partial class MainWindow
         var runtime = RelationalStateRuntime; var scope = _relationalExplorerNodeViews.GetValueOrDefault(node) ?? _relationalExplorerScope;
         var loader = _relationalChildrenLoader; var owner = _relationalExplorerOwner;
         if (scope == null || loader == null || !_relationalExplorerNodes.TryGetValue(node, out var summary)) return;
+        if (!AcceptsRelationalExplorer(owner, runtime)) return;
         var ct = _relationalExplorerCancellation!.Token;
+        ForgetRelationalExplorerDescendants(node); node.Children.Clear(); node.AddLoadingPlaceholder();
         try
         {
             var batch = await loader.ReadAsync(scope, summary, ct);
-            if (!AcceptsRelationalExplorer(owner, runtime) || !_relationalExplorerNodes.ContainsKey(node)) return;
+            if (!AcceptsRelationalExplorer(owner, runtime) || !_relationalExplorerNodes.ContainsKey(node) || node.IsLoaded) return;
             if (!batch.Completed || batch.State == ExplorerChildrenState.Failed)
             {
-                StatusText = "Explorer children are unavailable or exceed the metadata limit. Expansion is not complete.";
-                return; // Retain retryable placeholder; never cache a failure as an empty successful folder.
+                FailExpansion(batch.FailureCode ?? "Incomplete");
+                return;
             }
             if ((long)_relationalExplorerNodes.Count + batch.Nodes.Length > RelationalRuntimeStateLimits.MaximumRows)
                 throw new ExplorerLimitException("Loaded explorer metadata exceeds the scope budget.");
@@ -546,8 +557,25 @@ public partial class MainWindow
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            InternalLogService.Error(ex, "Relational explorer expansion failed.");
-            if (AcceptsRelationalExplorer(owner, runtime)) StatusText = "Explorer expansion did not complete. Retry after refreshing the scope.";
+            string code = ex is Microsoft.Data.SqlClient.SqlException sql ? "SQL_" + sql.Number
+                : ex is ExplorerLimitException ? "MetadataLimit" : ex.GetType().Name;
+            FailExpansion(code, ex.GetType().Name, new StackTrace(ex, fNeedFileInfo: false).ToString());
+        }
+
+        void FailExpansion(string failureCode, string? exceptionType = null, string? stackTrace = null)
+        {
+            // Omit provider messages, source locators and stack file paths from diagnostics.
+            InternalLogService.Warning("Relational explorer expansion failed.",
+                ("FailureCode", failureCode), ("ExceptionType", exceptionType), ("StackTrace", stackTrace),
+                ("ScopeKey", scope.Context.ScopeKey), ("ScopeResourceKey", summary.ScopeResourceKey),
+                ("SnapshotKey", summary.SnapshotKey), ("Role", summary.Role), ("Category", summary.Category));
+            if (!AcceptsRelationalExplorer(owner, runtime) || !_relationalExplorerNodes.ContainsKey(node) || node.IsLoaded) return;
+            ForgetRelationalExplorerDescendants(node); node.Children.Clear();
+            node.Children.Add(new FileSystemNode(node.FullPath, false, exists: false,
+                displayName: "Unavailable - retry expansion", parentKey: node.NodeKey,
+                toolTip: "Collapse and expand this folder to retry."));
+            node.IsLoaded = false;
+            StatusText = "Explorer expansion did not complete. Collapse and expand to retry.";
         }
     }
 

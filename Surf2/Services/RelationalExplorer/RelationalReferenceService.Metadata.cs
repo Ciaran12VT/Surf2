@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Data;
+using System.Diagnostics;
 using Microsoft.Data.SqlClient;
 using Surf2.Models;
 using Surf2.Storage.Relational;
@@ -13,6 +14,44 @@ public sealed partial class RelationalReferenceService
     // Only one active view is retained. No source bodies, parsed models or providers reach this cache.
     private readonly SemaphoreSlim _metadataGate = new(1, 1);
     private MetadataCatalogue? _metadata;
+
+    // Sort/group only numeric scope membership here, never the wide symbol strings. The bounded
+    // cache restores symbol-key order after streaming, preserving duplicate and style tie-breaks.
+    internal static string MetadataSql => $"""
+SELECT TOP (@MaximumRows) m.DocumentKey,COUNT_BIG(*) Memberships
+INTO #ReferenceMembership
+FROM surf.ResourceDocument m JOIN surf.ScopeResource sr ON sr.ScopeResourceKey=m.ScopeResourceKey
+JOIN surf.Document d ON d.DocumentKey=m.DocumentKey
+WHERE {IndexSql.ScopePredicate}
+GROUP BY m.DocumentKey OPTION(RECOMPILE);
+CREATE UNIQUE CLUSTERED INDEX IX_ReferenceMembership ON #ReferenceMembership(DocumentKey);
+
+SELECT d.DocumentKey,d.CurrentRevisionKey,d.FileSourceKey,({IndexSql.FreshnessExpression}) Freshness,m.Memberships
+INTO #ReferenceDocuments
+FROM #ReferenceMembership m JOIN surf.Document d ON d.DocumentKey=m.DocumentKey
+LEFT JOIN surf.DocumentRevision r ON r.DocumentRevisionKey=d.CurrentRevisionKey
+{IndexSql.OwnerJoins};
+CREATE UNIQUE CLUSTERED INDEX IX_ReferenceDocuments ON #ReferenceDocuments(DocumentKey);
+
+SELECT COALESCE(SUM(Memberships),0),COALESCE(SUM(CASE WHEN Freshness<>1 THEN Memberships ELSE CONVERT(bigint,0) END),0)
+FROM #ReferenceDocuments;
+
+SELECT TOP (@MaximumRows) s.SymbolKey,s.DocumentKey
+INTO #ReferenceSymbols
+FROM surf.SymbolDefinition s JOIN #ReferenceDocuments d ON d.DocumentKey=s.DocumentKey AND d.CurrentRevisionKey=s.DocumentRevisionKey
+OPTION(RECOMPILE);
+CREATE UNIQUE CLUSTERED INDEX IX_ReferenceSymbols ON #ReferenceSymbols(SymbolKey);
+
+SELECT s.SymbolKey,s.DocumentKey,s.DocumentRevisionKey,LEFT(s.Name,65537),LEFT(s.QualifiedName,65537),s.Kind,
+ LEFT(s.Locator,65537),s.LineNumber,s.ColumnNumber,s.EndLineNumber,s.EndColumnNumber,s.ParameterCount,s.MinimumArgumentCount,
+ s.MaximumArgumentCount,s.Language,LEFT(s.ContainerName,65537),d.Freshness,LEFT(f.OriginalPath,65537)
+FROM #ReferenceSymbols k JOIN surf.SymbolDefinition s ON s.SymbolKey=k.SymbolKey
+JOIN #ReferenceDocuments d ON d.DocumentKey=k.DocumentKey
+LEFT JOIN surf.FileSource f ON f.FileSourceKey=d.FileSourceKey OPTION(LOOP JOIN,FORCE ORDER,RECOMPILE);
+DROP TABLE #ReferenceSymbols;
+DROP TABLE #ReferenceDocuments;
+DROP TABLE #ReferenceMembership;
+""";
 
     internal async Task<ReferenceCatalogue> RebaseVerifiedViewAsync(ExplorerScope verified,
         ExplorerIndexRefreshProgress proof, CancellationToken ct)
@@ -84,41 +123,36 @@ public sealed partial class RelationalReferenceService
     private async Task<MetadataCatalogue> ReadMetadataAsync(ExplorerScope scope, CancellationToken ct)
     {
         var context = scope.Context;
+        var elapsed = Stopwatch.StartNew();
+        InternalLogService.Info("Loading reference catalogue.", ("ScopeKey", context.ScopeKey),
+            ("ExcludedResources", context.UnloadedScopeResourceKeys.Length), ("Restricted", context.RestrictDocumentKeys));
         await session.RequireReadyAsync(ct).ConfigureAwait(false);
         await using var connection = await session.OpenAsync(ct).ConfigureAwait(false);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
         await IndexSql.CheckContextAsync(connection, transaction, session, context, ct).ConfigureAwait(false);
-        // Stream bounded candidate metadata once. Coverage is one SQL aggregate in the same fenced
-        // transaction, rather than materializing every document in 64-record pages on each click.
-        await using var command = IndexSql.Command(connection, transaction, $"""
-SELECT TOP (@MaximumRows) s.SymbolKey,s.DocumentKey,s.DocumentRevisionKey,LEFT(s.Name,65537),LEFT(s.QualifiedName,65537),s.Kind,
- LEFT(s.Locator,65537),s.LineNumber,s.ColumnNumber,s.EndLineNumber,s.EndColumnNumber,s.ParameterCount,s.MinimumArgumentCount,
- s.MaximumArgumentCount,s.Language,LEFT(s.ContainerName,65537),{IndexSql.FreshnessExpression},LEFT(f.OriginalPath,65537)
-FROM surf.SymbolDefinition s JOIN surf.Document d ON d.DocumentKey=s.DocumentKey AND d.CurrentRevisionKey=s.DocumentRevisionKey
-JOIN surf.DocumentRevision r ON r.DocumentRevisionKey=s.DocumentRevisionKey
-LEFT JOIN surf.FileSource f ON f.FileSourceKey=d.FileSourceKey
-{IndexSql.OwnerJoins}
-WHERE EXISTS(SELECT 1 FROM surf.ResourceDocument m JOIN surf.ScopeResource sr ON sr.ScopeResourceKey=m.ScopeResourceKey
- WHERE m.DocumentKey=d.DocumentKey AND {IndexSql.ScopePredicate}) ORDER BY s.SymbolKey;
-
-SELECT COUNT_BIG(*),COALESCE(SUM(CONVERT(bigint,CASE WHEN ({IndexSql.FreshnessExpression})<>1 THEN 1 ELSE 0 END)),0)
-FROM surf.ResourceDocument m JOIN surf.ScopeResource sr ON sr.ScopeResourceKey=m.ScopeResourceKey
-JOIN surf.Document d ON d.DocumentKey=m.DocumentKey
-LEFT JOIN surf.DocumentRevision r ON r.DocumentRevisionKey=d.CurrentRevisionKey
-{IndexSql.OwnerJoins}
-WHERE {IndexSql.ScopePredicate};
-""");
+        await using var command = IndexSql.Command(connection, transaction, MetadataSql);
         IndexSql.ScopeParameters(command, context);
         IndexSql.Add(command, "@MaximumRows", SqlDbType.BigInt, (long)_limits.MaximumMetadataRows + 1);
         using var cancel = RelationalSession.CancelCommand(command, ct);
-        var names = new List<PaintName>();
+        var names = new List<(long SymbolKey, PaintName Name)>();
         var candidates = new Dictionary<string, List<SymbolSummary>>(StringComparer.OrdinalIgnoreCase);
         var budget = new ExplorerMetadataBudget(_limits);
         long documents, stale;
         await using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false))
         {
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                throw new InvalidOperationException("Reference metadata coverage was not returned.");
+            documents = reader.GetInt64(0); stale = reader.GetInt64(1);
+            if (documents > _limits.MaximumMetadataRows)
+                throw new ExplorerLimitException("Selected reference documents exceed their metadata row budget.");
+            InternalLogService.Info("Reference catalogue scope selected.", ("ScopeKey", context.ScopeKey),
+                ("Memberships", documents), ("StaleMemberships", stale), ("ElapsedMilliseconds", elapsed.Elapsed.TotalMilliseconds));
+            if (!await reader.NextResultAsync(ct).ConfigureAwait(false))
+                throw new InvalidOperationException("Reference symbol metadata was not returned.");
+            long symbols = 0;
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
+                symbols++;
                 long symbolKey = reader.GetInt64(0), documentKey = reader.GetInt64(1), revisionKey = reader.GetInt64(2);
                 string name = MetadataString(reader, 3), qualified = MetadataString(reader, 4);
                 var kind = (ReferenceEntityKind)reader.GetInt32(5);
@@ -130,7 +164,7 @@ WHERE {IndexSql.ScopePredicate};
                 string? physical = reader.IsDBNull(17) ? null : MetadataString(reader, 17);
                 budget.Add(name, qualified, locator, language, container, physical ?? string.Empty);
                 if (name.Length > 1 && kind != ReferenceEntityKind.File && (physical == null || ReferenceAllowed(scope, physical)))
-                    names.Add(new(name, language, kind));
+                    names.Add((symbolKey, new(name, language, kind)));
                 if (!ReferenceAllowed(scope, locator)) continue;
                 var symbol = new SymbolSummary(symbolKey, documentKey, revisionKey,
                     new(name, qualified, kind, locator, line, column, endLine, endColumn, parameterCount, minimum, maximum, language, container), freshness);
@@ -139,16 +173,19 @@ WHERE {IndexSql.ScopePredicate};
                 if (!normalizedQualified.Equals(ReferenceMetadata.Normalize(name), StringComparison.OrdinalIgnoreCase))
                     AddCandidate(candidates, normalizedQualified, symbol);
             }
-            if (!await reader.NextResultAsync(ct).ConfigureAwait(false) || !await reader.ReadAsync(ct).ConfigureAwait(false))
-                throw new InvalidOperationException("Reference metadata coverage was not returned.");
-            documents = reader.GetInt64(0); stale = reader.GetInt64(1);
-            if (documents > _limits.MaximumMetadataRows)
-                throw new ExplorerLimitException("Selected reference documents exceed their metadata row budget.");
+            InternalLogService.Info("Reference catalogue symbols read.", ("ScopeKey", context.ScopeKey),
+                ("Symbols", symbols), ("ElapsedMilliseconds", elapsed.Elapsed.TotalMilliseconds));
         }
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        return new(context, scope.Resources.Select(ResourceSelection.From).ToImmutableArray(), scope.SortCultureName, new(context, names, scope.SortCultureName),
+        names.Sort((left, right) => left.SymbolKey.CompareTo(right.SymbolKey));
+        foreach (var entries in candidates.Values) entries.Sort((left, right) => left.SymbolKey.CompareTo(right.SymbolKey));
+        var result = new MetadataCatalogue(context, scope.Resources.Select(ResourceSelection.From).ToImmutableArray(), scope.SortCultureName,
+            new(context, names.Select(n => n.Name), scope.SortCultureName),
             candidates.ToFrozenDictionary(p => p.Key, p => p.Value.ToImmutableArray(), StringComparer.OrdinalIgnoreCase), documents, stale);
+        InternalLogService.Info("Reference catalogue prepared.", ("ScopeKey", context.ScopeKey),
+            ("ElapsedMilliseconds", elapsed.Elapsed.TotalMilliseconds));
+        return result;
     }
 
     private static void AddCandidate(Dictionary<string, List<SymbolSummary>> candidates, string name, SymbolSummary symbol)

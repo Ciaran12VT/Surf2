@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Microsoft.Data.SqlClient;
 using Surf2.Controls;
 using Surf2.Models;
@@ -93,6 +94,7 @@ public static partial class StorageRegressionSuite
             var catalogue = await owner.References.LoadPaintAsync(view, deadline.Token);
             check(catalogue.Coverage.FullyPublished && catalogue.Coverage.Documents > 0,
                 "The actual scope's full captured-symbol catalogue fits its metadata budgets: " + view.Name);
+            await SampleMetadataPlanAsync(owner, view, directory, check, deadline.Token);
             long document; string token;
             await using (var sql = await owner.Session.OpenAsync(deadline.Token))
             await using (var command = sql.CreateCommand())
@@ -124,6 +126,45 @@ WHERE d.Kind=2 AND s.Kind=@Kind AND EXISTS(SELECT 1 FROM surf.ResourceDocument m
         check(keys.Count == 4 && owner.Session.Metrics.Snapshot().Failed == 0, "All four supplied scopes have captured reference coverage without SQL command failures");
         await File.WriteAllTextAsync(Path.Combine(directory, "views-results.txt"), report.ToString());
         Console.WriteLine(report);
+    }
+
+    private static async Task SampleMetadataPlanAsync(RelationalRuntime owner, ExplorerScope view, string directory,
+        Action<bool, string> check, CancellationToken ct)
+    {
+        await using var connection = await owner.Session.OpenAsync(ct);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        await IndexSql.CheckContextAsync(connection, transaction, owner.Session, view.Context, ct);
+        await using var command = IndexSql.Command(connection, transaction, "SET STATISTICS XML ON;\n" + RelationalReferenceService.MetadataSql);
+        IndexSql.ScopeParameters(command, view.Context);
+        IndexSql.Add(command, "@MaximumRows", SqlDbType.BigInt, 100001L);
+        var plans = new List<XDocument>();
+        long memberships = -1, symbols = 0;
+        await using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct))
+        {
+            do
+            {
+                while (await reader.ReadAsync(ct))
+                {
+                    if (reader.FieldCount == 1 && reader.GetFieldType(0) == typeof(string))
+                        plans.Add(XDocument.Parse(reader.GetString(0)));
+                    else if (reader.FieldCount == 2) memberships = reader.GetInt64(0);
+                    else if (reader.FieldCount == 18) symbols++;
+                    else throw new InvalidOperationException("Unexpected sample metadata-plan result.");
+                }
+            } while (await reader.NextResultAsync(ct));
+        }
+        await transaction.CommitAsync(ct);
+        XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
+        long maximumGrant = plans.SelectMany(p => p.Descendants(ns + "MemoryGrantInfo"))
+            .Select(p => (long?)p.Attribute("RequestedMemory") ?? (long?)p.Attribute("SerialDesiredMemory") ?? 0).DefaultIfEmpty().Max();
+        bool wideSort = plans.SelectMany(p => p.Descendants(ns + "RelOp")).Any(p =>
+            (string?)p.Attribute("PhysicalOp") == "Sort" && ((long?)p.Attribute("AvgRowSize") ?? 0) > 512);
+        for (int i = 0; i < plans.Count; i++)
+            await File.WriteAllTextAsync(Path.Combine(directory, $"metadata-scope-{view.Context.ScopeKey}-{i}.sqlplan"), plans[i].ToString(), ct);
+        check(plans.Count > 0 && !wideSort && maximumGrant <= 16 * 1024,
+            $"Actual captured metadata plan has no wide sort and requests at most 16 MiB: {view.Name} ({maximumGrant} KiB)");
+        check(memberships > 0 && symbols > 0, "Plan verification consumes the actual scope's full metadata result: " + view.Name);
+        Console.WriteLine($"SAMPLE metadata plan: {view.Name}; {memberships} memberships; {symbols} symbols; maximum requested grant={maximumGrant} KiB");
     }
 
     private static async Task<string> SampleSourceVersionsAsync(RelationalSession session)
@@ -287,6 +328,7 @@ WHERE d.Kind=0 AND d.Freshness=1 ORDER BY d.DocumentKey;
             startup = clock.Elapsed;
             var runtime = RuntimeWpfField<RelationalRuntime>(main, "_relational");
             check(RuntimeWpfField<ExplorerScope>(main, "_relationalExplorerScope").Name == "Tempest and Friends", "Restored sample loads the actual saved scope and unloaded selection");
+            Task expansion = ExpandProceduresAsync();
             string last = "";
             while (RuntimeWpfOptionalField<ReferenceCatalogue>(main, "_relationalReferenceCatalogue")?.Coverage.FullyPublished != true)
             {
@@ -299,6 +341,7 @@ WHERE d.Kind=0 AND d.Freshness=1 ORDER BY d.DocumentKey;
             }
             captured = clock.Elapsed;
             Console.WriteLine($"SAMPLE {mode}: startup={startup.TotalSeconds:F3}s; captured-ready={captured.TotalSeconds:F3}s");
+            await expansion.WaitAsync(TimeSpan.FromSeconds(90));
             var scope = await (Task<ExplorerScope>)RuntimeWpfInvoke(main, "CurrentRelationalReferenceViewAsync", CancellationToken.None)!;
             var documents = RuntimeWpfField<RelationalDocumentService>(main, "_relationalDocuments");
             var source = await documents.ResolveResourceAsync(5, 1193, scope);
@@ -374,6 +417,17 @@ WHERE d.Kind=0 AND d.Freshness=1 ORDER BY d.DocumentKey;
                 $"sql_commands={metrics.Started}\nsql_failures={metrics.Failed}\nstatus={main.StatusText}\n";
             await File.WriteAllTextAsync(Path.Combine(directory, mode + "-results.txt"), report);
             Console.WriteLine("SAMPLE RESULT: " + report.Replace('\n', ';'));
+
+            async Task ExpandProceduresAsync()
+            {
+                var nodes = RuntimeWpfField<Dictionary<FileSystemNode, ExplorerNodeSummary>>(main, "_relationalExplorerNodes");
+                var database = nodes.Single(p => p.Value.Role == ExplorerNodeRole.Resource && p.Key.Name == "TempestTest").Key;
+                await RuntimeWpfInvokeTaskAsync(main, "LoadRelationalChildrenAsync", database);
+                var procedures = database.Children.Single(n => nodes.TryGetValue(n, out var summary) && summary.Category == ExplorerCategory.Procedures);
+                await RuntimeWpfInvokeTaskAsync(main, "LoadRelationalChildrenAsync", procedures);
+                check(procedures.IsLoaded && procedures.Children.Count > 100 && procedures.Children.All(n => n.Name != "Loading..."),
+                    "Actual TempestTest Stored Procedures expand while reference preparation runs, without a stuck loading row");
+            }
         }
         finally
         {

@@ -12,6 +12,13 @@ public static partial class StorageRegressionSuite
 {
     public static async Task RunReferenceMetadataHotPathChecksAsync(Action<bool, string> check)
     {
+        var loading = new ExplorerIndexRefreshProgress(0, 0, 11208, 0, 8, false, true, Phase: "Loading reference catalogue");
+        check(!loading.FullyPublished && Surf2.MainWindow.RelationalIndexStatus(loading).Contains("loading reference catalogue", StringComparison.Ordinal) &&
+            !Surf2.MainWindow.RelationalIndexStatus(loading).Contains("References ready", StringComparison.Ordinal),
+            "Pending reference SQL has its own phase and never claims readiness from reused checkpoints");
+        var failed = loading with { Completed = true, Failed = 1, Phase = "Stopped", FailureCode = "SQL_-2", FailedPhase = loading.Phase };
+        check(Surf2.MainWindow.RelationalIndexStatus(failed).Contains("SQL_-2) during loading reference catalogue", StringComparison.Ordinal),
+            "Reference timeout status names the failing catalogue stage");
         await using var fixture = await SqlFixture.CreateAsync();
         await new RelationalSchemaInstaller().InitializeDestinationAsync(fixture.SourceConnectionString,
             fixture.DestinationConnectionString, fixture.MigrationIdentity, fixture.Fingerprint);
@@ -66,6 +73,10 @@ public static partial class StorageRegressionSuite
                     c.Text.Contains("FROM surf.ResourceDocument", StringComparison.OrdinalIgnoreCase)) == 1 &&
                 !commands.Any(c => c.Text.Contains("LEFT(m.DisplayName", StringComparison.OrdinalIgnoreCase)),
                 "Hundreds of symbols stream in one fenced metadata command with one coverage aggregate, even at PageSize=1");
+            check(commands.Any(c => c.Text.Contains("#ReferenceDocuments", StringComparison.OrdinalIgnoreCase) &&
+                c.Text.Contains("GROUP BY m.DocumentKey OPTION(RECOMPILE)", StringComparison.OrdinalIgnoreCase)) &&
+                !commands.Any(c => c.Text.Contains("ORDER BY s.SymbolKey", StringComparison.OrdinalIgnoreCase)),
+                "Reference metadata filters narrow document keys before streaming and never sorts wide symbol strings in SQL");
         }, check, "one bounded reference metadata stream");
         check(paint.Coverage.FullyPublished && paint.Coverage.Documents == 5 && paint.Paint.Names.ContainsKey("FixtureSymbol256"),
             "Bulk reference coverage preserves five alias memberships and every symbol beyond the previous page boundary");

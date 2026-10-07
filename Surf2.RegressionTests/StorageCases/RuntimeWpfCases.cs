@@ -68,6 +68,7 @@ public static partial class StorageRegressionSuite
                     app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                     Directory.CreateDirectory(directory);
                     await RuntimeWpfCheckCancellationAsync(check);
+                    await RunExplorerChildrenUiChecksAsync(check);
                     await RunRuntimeWpfFixtureAsync(check, directory, startupOnly);
                 }
                 catch (Exception error) { failure = error; }

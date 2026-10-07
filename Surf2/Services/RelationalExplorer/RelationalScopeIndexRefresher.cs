@@ -26,7 +26,7 @@ public sealed record ExplorerIndexRefreshProgress(long Considered, long Publishe
     long UnloadedResources, bool Completed, bool DiscoveryReconciled, IndexRequestContext? Context = null,
     string? FailureCode = null, string? Resource = null, string? Document = null,
     string Phase = "Discovering", TimeSpan Elapsed = default, string? FailedResource = null, string? FailedDocument = null,
-    long ReusedResources = 0)
+    long ReusedResources = 0, string? FailedPhase = null)
 {
     public bool FullyPublished => Completed && DiscoveryReconciled && Failed == 0;
 }
