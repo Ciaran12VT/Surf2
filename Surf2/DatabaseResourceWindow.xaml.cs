@@ -1,3 +1,6 @@
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -10,13 +13,22 @@ namespace Surf2;
 
 public partial class DatabaseResourceWindow : Window
 {
+    private enum QueryOutputMode
+    {
+        ClipboardText,
+        ClipboardFile,
+        FileExplorer
+    }
+
     private static readonly Brush EmptyCountBrush = Brushes.Gray;
     private static readonly Brush PopulatedCountBrush = Brushes.DarkGreen;
 
     private readonly DatabaseMetadataImportService _importService = new();
     private readonly DatabaseMetadataQueryService _queryService = new();
+    private readonly DatabaseQueryFileService _queryFileService = new();
     private readonly Dictionary<DatabaseEntityEditKind, int> _pendingEntityEditCounts = new();
     private readonly string? _editingSnapshotId;
+    private QueryOutputMode _queryOutputMode = QueryOutputMode.ClipboardText;
 
     public DatabaseResourceWindow()
     {
@@ -44,9 +56,78 @@ public partial class DatabaseResourceWindow : Window
 
     private void CopyQueryButton_Click(object sender, RoutedEventArgs e)
     {
-        string query = _queryService.CreateImportQuery(GetFullDataTableNames());
-        Clipboard.SetText(query);
-        StatusTextBlock.Text = "Copied metadata query to the clipboard.";
+        string? filePath = null;
+        string operation = "generate the metadata query";
+        try
+        {
+            string query = _queryService.CreateImportQuery(GetFullDataTableNames());
+            if (_queryOutputMode == QueryOutputMode.ClipboardText)
+            {
+                operation = "copy the query text to the clipboard";
+                TextClipboardService.CopyText(query);
+                StatusTextBlock.Text = "Copied metadata query to the clipboard.";
+                return;
+            }
+
+            operation = "create the query file";
+            filePath = _queryFileService.CreateQueryFile(query);
+            if (_queryOutputMode == QueryOutputMode.ClipboardFile)
+            {
+                operation = "copy the query file to the clipboard";
+                _queryFileService.CopyFileToClipboard(filePath);
+                StatusTextBlock.Text = "Copied the query file. Paste it to transfer the file.";
+            }
+            else
+            {
+                operation = "open the query file in File Explorer";
+                _queryFileService.OpenInExplorer(filePath);
+                StatusTextBlock.Text = "Opened the query file in File Explorer for dragging.";
+            }
+
+            ImportMessagesTextBox.Text = $"Created metadata query file:{Environment.NewLine}{filePath}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ExternalException or
+                                       InvalidOperationException or ArgumentException or NotSupportedException or SecurityException)
+        {
+            StatusTextBlock.Text = "Query action failed. See the details above.";
+            ImportMessagesTextBox.Text = $"Could not {operation}: {ex.Message}";
+            if (filePath != null)
+            {
+                ImportMessagesTextBox.AppendText($"{Environment.NewLine}The query file is still available at:{Environment.NewLine}{filePath}");
+            }
+        }
+    }
+
+    private void QueryModeButton_Click(object sender, RoutedEventArgs e)
+    {
+        QueryModeButton.ContextMenu.PlacementTarget = QueryModeButton;
+        QueryModeButton.ContextMenu.IsOpen = true;
+    }
+
+    private void QueryModeMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string tag } ||
+            !Enum.TryParse(tag, out QueryOutputMode mode))
+        {
+            return;
+        }
+
+        _queryOutputMode = mode;
+        CopyQueryTextMenuItem.IsChecked = mode == QueryOutputMode.ClipboardText;
+        CopyQueryFileMenuItem.IsChecked = mode == QueryOutputMode.ClipboardFile;
+        OpenQueryFileMenuItem.IsChecked = mode == QueryOutputMode.FileExplorer;
+        CopyQueryButton.Content = mode switch
+        {
+            QueryOutputMode.ClipboardFile => "Copy Query File to Clipboard",
+            QueryOutputMode.FileExplorer => "Create Query File and Open Folder",
+            _ => "Copy Query to Clipboard"
+        };
+        CopyQueryButton.ToolTip = mode switch
+        {
+            QueryOutputMode.ClipboardFile => "Create the complete query as a .txt file and copy the file for transfer.",
+            QueryOutputMode.FileExplorer => "Create the complete query as a .txt file and select it in File Explorer.",
+            _ => "Copy the complete metadata query as text."
+        };
     }
 
     private void PasteClipboardButton_Click(object sender, RoutedEventArgs e)

@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Windows;
 
 namespace Surf2.Services;
@@ -40,7 +41,7 @@ public static class TextClipboardService
         return filePath;
     }
 
-    private static string CreateTextFile(string content, string? fileNameSeed)
+    public static string CreateTextFile(string content, string? fileNameSeed, Encoding? encoding = null)
     {
         string directoryPath = Path.Combine(Path.GetTempPath(), "Surf2", "ClipboardText", Guid.NewGuid().ToString("N"));
         int maximumFileNameLength = Math.Min(255, 259 - directoryPath.Length - 1);
@@ -48,7 +49,14 @@ public static class TextClipboardService
         Directory.CreateDirectory(directoryPath);
 
         string filePath = Path.Combine(directoryPath, fileName);
-        File.WriteAllText(filePath, content);
+        if (encoding == null)
+        {
+            File.WriteAllText(filePath, content);
+        }
+        else
+        {
+            File.WriteAllText(filePath, content, encoding);
+        }
         return filePath;
     }
 

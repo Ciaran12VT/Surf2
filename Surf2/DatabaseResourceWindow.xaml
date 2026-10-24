@@ -8,12 +8,51 @@
         MinHeight="500"
         Background="{DynamicResource Theme.WindowBackgroundBrush}"
         WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="QuerySplitButtonStyle"
+               TargetType="{x:Type Button}"
+               BasedOn="{StaticResource SurfPrimaryButtonStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"
+                                Padding="{TemplateBinding Padding}">
+                            <TextBlock HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontFamily="{TemplateBinding FontFamily}"
+                                       FontSize="{TemplateBinding FontSize}"
+                                       FontWeight="{TemplateBinding FontWeight}"
+                                       Foreground="{TemplateBinding Foreground}"
+                                       Text="{TemplateBinding Content}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.9" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonChrome" Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
     <Grid Margin="12"
           Background="{DynamicResource Theme.WindowBackgroundBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" MinHeight="64" MaxHeight="190" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="6*" MinHeight="220" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -38,13 +77,22 @@
                        Text="Full data tables" />
             <TextBox x:Name="FullDataTablesTextBox"
                      Grid.Column="1"
-                     MinHeight="74"
                      AcceptsReturn="True"
                      TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" />
         </Grid>
 
-        <Grid Grid.Row="2" Margin="0,12,0,0">
+        <GridSplitter Grid.Row="2"
+                      Height="8"
+                      Margin="130,2,0,2"
+                      HorizontalAlignment="Stretch"
+                      Background="{DynamicResource Theme.BorderBrush}"
+                      ResizeDirection="Rows"
+                      ResizeBehavior="PreviousAndNext"
+                      AutomationProperties.Name="Resize full data tables"
+                      ToolTip="Drag to adjust the height of the full data tables list." />
+
+        <Grid Grid.Row="3" Margin="0,4,0,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -52,11 +100,50 @@
             </Grid.RowDefinitions>
 
             <UniformGrid Columns="2">
-                <Button Height="30"
-                        Margin="0,0,6,0"
-                        Style="{StaticResource SurfPrimaryButtonStyle}"
-                        Click="CopyQueryButton_Click"
-                        Content="Copy Query to Clipboard" />
+                <Grid Height="30" Margin="0,0,6,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="30" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="CopyQueryButton"
+                            Style="{StaticResource QuerySplitButtonStyle}"
+                            Click="CopyQueryButton_Click"
+                            Content="Copy Query to Clipboard"
+                            ToolTip="Copy the complete metadata query as text."
+                            Tag="8,0,0,8" />
+                    <Button x:Name="QueryModeButton"
+                            Grid.Column="1"
+                            Padding="0"
+                            BorderBrush="#80FFFFFF"
+                            BorderThickness="1,0,0,0"
+                            Style="{StaticResource QuerySplitButtonStyle}"
+                            Click="QueryModeButton_Click"
+                            Content="▾"
+                            Tag="0,8,8,0"
+                            AutomationProperties.Name="Choose query output mode"
+                            ToolTip="Choose what the query button does. Selecting a mode does not run it.">
+                        <Button.ContextMenu>
+                            <ContextMenu Placement="Bottom">
+                                <MenuItem x:Name="CopyQueryTextMenuItem"
+                                          Header="Copy query text to clipboard"
+                                          IsCheckable="True"
+                                          IsChecked="True"
+                                          Tag="ClipboardText"
+                                          Click="QueryModeMenuItem_Click" />
+                                <MenuItem x:Name="CopyQueryFileMenuItem"
+                                          Header="Create .txt file and copy file to clipboard"
+                                          IsCheckable="True"
+                                          Tag="ClipboardFile"
+                                          Click="QueryModeMenuItem_Click" />
+                                <MenuItem x:Name="OpenQueryFileMenuItem"
+                                          Header="Create .txt file and open folder"
+                                          IsCheckable="True"
+                                          Tag="FileExplorer"
+                                          Click="QueryModeMenuItem_Click" />
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                </Grid>
                 <Button Grid.Column="1"
                         Height="30"
                         Margin="6,0,0,0"
@@ -129,17 +216,24 @@
             <TextBox x:Name="ImportMessagesTextBox"
                      Grid.Row="2"
                      Margin="0,12,0,0"
+                     MinHeight="36"
                      IsReadOnly="True"
                      TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" />
         </Grid>
 
-        <DockPanel Grid.Row="3" Margin="0,12,0,0">
+        <Grid Grid.Row="4" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
             <TextBlock x:Name="StatusTextBlock"
+                       Margin="0,0,12,0"
                        VerticalAlignment="Center"
                        Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                       TextWrapping="Wrap"
                        Text="Copy the query, run it in SSMS, copy the result set, then paste it here." />
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Orientation="Horizontal">
                 <Button x:Name="AddButton"
                         Width="104"
                         Margin="0,0,8,0"
@@ -152,6 +246,6 @@
                         Click="CloseButton_Click"
                         Content="Close" />
             </StackPanel>
-        </DockPanel>
+        </Grid>
     </Grid>
 </Window>
