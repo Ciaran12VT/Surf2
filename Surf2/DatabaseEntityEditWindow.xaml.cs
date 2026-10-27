@@ -46,15 +46,30 @@ public partial class DatabaseEntityEditWindow : Window
             return;
         }
 
-        string query = _queryService.CreateEntityQuery(
-            _kind,
-            item.SchemaName,
-            item.EntityName,
-            item.TableName,
-            item.ColumnName,
-            item.ConstraintName);
-        Clipboard.SetText(query);
-        StatusTextBlock.Text = $"Copied query for {item.DisplayName}.";
+        try
+        {
+            string? fullDataTableSelection = _kind == DatabaseEntityEditKind.FullDataTables
+                ? Snapshot.FullDataTableNames.FirstOrDefault(selection => string.Equals(
+                    FullTableDataSelection.GetTableIdentity(selection),
+                    SqlName.FormatMultipartName(item.SchemaName, item.EntityName),
+                    StringComparison.OrdinalIgnoreCase))
+                : null;
+            string query = _queryService.CreateEntityQuery(
+                _kind,
+                item.SchemaName,
+                item.EntityName,
+                item.TableName,
+                item.ColumnName,
+                item.ConstraintName,
+                fullDataTableSelection: fullDataTableSelection);
+            Clipboard.SetText(query);
+            StatusTextBlock.Text = $"Copied query for {item.DisplayName}.";
+        }
+        catch (ArgumentException ex)
+        {
+            StatusTextBlock.Text = $"Could not generate the query for {item.DisplayName}.";
+            MessagesTextBox.Text = ex.Message;
+        }
     }
 
     private void PasteEntityUpdateButton_Click(object sender, RoutedEventArgs e)
@@ -180,11 +195,9 @@ public partial class DatabaseEntityEditWindow : Window
             Snapshot.TableDataSets.Add(importedDataSet);
 
             string fullName = SqlName.FormatPlainMultipartName(item.SchemaName, item.EntityName);
-            Snapshot.FullDataTableNames ??= [];
-            if (!Snapshot.FullDataTableNames.Contains(fullName, StringComparer.OrdinalIgnoreCase))
-            {
-                Snapshot.FullDataTableNames.Add(fullName);
-            }
+            Snapshot.FullDataTableNames = FullTableDataSelection.MergeTableNames(
+                Snapshot.FullDataTableNames ?? [],
+                [fullName]);
         }
 
         return true;

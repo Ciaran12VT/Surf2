@@ -291,12 +291,9 @@ public sealed class DatabaseMetadataImportService
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        snapshot.FullDataTableNames = snapshot.FullDataTableNames
-            .Concat(importedFullDataTables)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        snapshot.FullDataTableNames = FullTableDataSelection.MergeTableNames(
+            snapshot.FullDataTableNames,
+            importedFullDataTables);
     }
 
     private static SqlTableDataSet GetOrCreateDataSet(DatabaseMetadataSnapshot snapshot, string schemaName, string tableName)

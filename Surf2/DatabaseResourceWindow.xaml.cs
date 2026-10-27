@@ -202,6 +202,56 @@ public partial class DatabaseResourceWindow : Window
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
+    private void FullDataTableSnippetMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem { Tag: string snippet })
+        {
+            return;
+        }
+
+        string text = FullDataTablesTextBox.Text;
+        int lineStart = FullDataTablesTextBox.CaretIndex;
+        while (lineStart > 0 && text[lineStart - 1] != '\r' && text[lineStart - 1] != '\n')
+        {
+            lineStart--;
+        }
+
+        int lineEnd = text.IndexOfAny(['\r', '\n'], FullDataTablesTextBox.CaretIndex);
+        if (lineEnd < 0)
+        {
+            lineEnd = text.Length;
+        }
+
+        int selectionStart = FullTableDataSelection.GetSelectionStart(text[lineStart..lineEnd]);
+        int insertionIndex = selectionStart < 0 ? lineEnd : lineStart + selectionStart;
+        while (insertionIndex > lineStart && char.IsWhiteSpace(text[insertionIndex - 1]))
+        {
+            insertionIndex--;
+        }
+
+        FullDataTablesTextBox.BeginChange();
+        try
+        {
+            FullDataTablesTextBox.Select(insertionIndex, lineEnd - insertionIndex);
+            FullDataTablesTextBox.SelectedText = snippet;
+            int predicateOffset = snippet.IndexOf("Id = 1", StringComparison.Ordinal);
+            if (predicateOffset >= 0)
+            {
+                FullDataTablesTextBox.Select(insertionIndex + predicateOffset, "Id = 1".Length);
+            }
+            else
+            {
+                FullDataTablesTextBox.CaretIndex = insertionIndex + snippet.Length;
+            }
+        }
+        finally
+        {
+            FullDataTablesTextBox.EndChange();
+        }
+
+        FullDataTablesTextBox.Focus();
+    }
+
     private void UpdateCounts(DatabaseImportCounts counts)
     {
         SetCount(StoredProceduresCountText, "Stored Procedures", counts.StoredProcedures, GetPendingEditCount(DatabaseEntityEditKind.StoredProcedures));
@@ -229,6 +279,7 @@ public partial class DatabaseResourceWindow : Window
             return;
         }
 
+        Snapshot.FullDataTableNames = GetFullDataTableNames().ToList();
         var editWindow = new DatabaseEntityEditWindow(Snapshot, kind)
         {
             Owner = this
@@ -248,11 +299,8 @@ public partial class DatabaseResourceWindow : Window
                 : Snapshot.DatabaseName;
         }
 
-        Snapshot.FullDataTableNames = GetFullDataTableNames()
-            .Concat(GetPersistedFullDataTableNames(Snapshot))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        Snapshot.FullDataTableNames = FullTableDataSelection.MergeTableNames(
+            GetFullDataTableNames(), GetPersistedFullDataTableNames(Snapshot));
 
         if (editWindow.UpdatedCount > 0)
         {
@@ -278,11 +326,7 @@ public partial class DatabaseResourceWindow : Window
         IEnumerable<string> importedNames = snapshot.TableDataSets
             .Select(dataSet => SqlName.FormatPlainMultipartName(dataSet.SchemaName, dataSet.TableName));
 
-        return configuredNames
-            .Concat(importedNames)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase);
+        return FullTableDataSelection.MergeTableNames(configuredNames, importedNames);
     }
 
     private static string GetKindLabel(DatabaseEntityEditKind kind)

@@ -73,13 +73,45 @@
                 <ColumnDefinition Width="130" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
-            <TextBlock VerticalAlignment="Top"
-                       Text="Full data tables" />
+            <StackPanel VerticalAlignment="Top" Margin="0,0,8,0">
+                <TextBlock Text="Full data tables" />
+                <TextBlock Margin="0,4,0,0"
+                           FontSize="11"
+                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                           TextWrapping="Wrap"
+                           Text="One table per line. Right-click to add TOP 100 or WHERE." />
+            </StackPanel>
             <TextBox x:Name="FullDataTablesTextBox"
                      Grid.Column="1"
                      AcceptsReturn="True"
                      TextWrapping="Wrap"
-                     VerticalScrollBarVisibility="Auto" />
+                     VerticalScrollBarVisibility="Auto"
+                     ToolTip="Examples: dbo.Customers [TOP 100] or dbo.Customers [WHERE Id = 1]. A table name without a suffix exports all rows.">
+                <TextBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="TOP 100"
+                                  Tag=" [TOP 100]"
+                                  Click="FullDataTableSnippetMenuItem_Click" />
+                        <MenuItem Header="WHERE"
+                                  Tag=" [WHERE Id = 1]"
+                                  Click="FullDataTableSnippetMenuItem_Click" />
+                        <Separator />
+                        <MenuItem Header="Cut"
+                                  Command="ApplicationCommands.Cut"
+                                  CommandTarget="{Binding PlacementTarget, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" />
+                        <MenuItem Header="Copy"
+                                  Command="ApplicationCommands.Copy"
+                                  CommandTarget="{Binding PlacementTarget, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" />
+                        <MenuItem Header="Paste"
+                                  Command="ApplicationCommands.Paste"
+                                  CommandTarget="{Binding PlacementTarget, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" />
+                        <Separator />
+                        <MenuItem Header="Select All"
+                                  Command="ApplicationCommands.SelectAll"
+                                  CommandTarget="{Binding PlacementTarget, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}}" />
+                    </ContextMenu>
+                </TextBox.ContextMenu>
+            </TextBox>
         </Grid>
 
         <GridSplitter Grid.Row="2"

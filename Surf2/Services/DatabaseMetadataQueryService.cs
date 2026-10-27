@@ -13,7 +13,8 @@ public sealed class DatabaseMetadataQueryService
         string entityName,
         string tableName = "",
         string columnName = "",
-        string constraintName = "")
+        string constraintName = "",
+        string? fullDataTableSelection = null)
     {
         string schema = string.IsNullOrWhiteSpace(schemaName) ? "dbo" : schemaName.Trim();
         string name = entityName.Trim();
@@ -56,7 +57,9 @@ public sealed class DatabaseMetadataQueryService
 
             case DatabaseEntityEditKind.FullDataTables:
                 builder.AppendLine(CreateTableMetadataBlock(schema, name));
-                builder.AppendLine(CreateFullTableDataBlock(SqlTableName.FromParts(schema, name)));
+                builder.AppendLine(CreateFullTableDataBlock(string.IsNullOrWhiteSpace(fullDataTableSelection)
+                    ? FullTableDataSelection.FromParts(schema, name)
+                    : ParseFullTableDataSelection(fullDataTableSelection)));
                 break;
         }
 
@@ -67,11 +70,10 @@ public sealed class DatabaseMetadataQueryService
 
     public string CreateImportQuery(IEnumerable<string> fullDataTableNames)
     {
-        List<SqlTableName> fullDataTables = fullDataTableNames
-            .Select(SqlTableName.TryParse)
-            .Where(table => table != null)
-            .Cast<SqlTableName>()
-            .DistinctBy(table => $"{table.SchemaName}.{table.TableName}", StringComparer.OrdinalIgnoreCase)
+        List<FullTableDataSelection> fullDataTables = fullDataTableNames
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(ParseFullTableDataSelection)
+            .DistinctBy(table => SqlName.FormatMultipartName(table.SchemaName, table.TableName), StringComparer.OrdinalIgnoreCase)
             .OrderBy(table => table.SchemaName)
             .ThenBy(table => table.TableName)
             .ToList();
@@ -79,7 +81,7 @@ public sealed class DatabaseMetadataQueryService
         var builder = new StringBuilder();
         builder.AppendLine(CreateMetadataQueryHeader());
 
-        foreach (SqlTableName table in fullDataTables)
+        foreach (FullTableDataSelection table in fullDataTables)
         {
             builder.AppendLine();
             builder.AppendLine(CreateFullTableDataBlock(table));
@@ -399,7 +401,13 @@ WHERE kc.type = 'PK'
 """;
     }
 
-    private static string CreateFullTableDataBlock(SqlTableName table)
+    private static FullTableDataSelection ParseFullTableDataSelection(string value)
+    {
+        return FullTableDataSelection.TryParse(value)
+            ?? throw new ArgumentException($"Invalid full data table entry '{value}'. Use a table name followed by [TOP 100] or [WHERE Id = 1].");
+    }
+
+    private static string CreateFullTableDataBlock(FullTableDataSelection table)
     {
         string bracketedTableName = SqlName.FormatMultipartName(table.SchemaName, table.TableName);
         string tableKey = SqlName.FormatPlainMultipartName(table.SchemaName, table.TableName);
@@ -407,12 +415,25 @@ WHERE kc.type = 'PK'
         string tableKeyLiteral = ToSqlStringLiteral(tableKey);
         string schemaLiteral = ToSqlStringLiteral(table.SchemaName);
         string tableLiteral = ToSqlStringLiteral(table.TableName);
+        string topClause = table.TopCount is int topCount ? $" TOP ({topCount})" : string.Empty;
+        string whereClause = table.WhereClause == null ? string.Empty : $"\n    WHERE {table.WhereClause}";
 
         return $$"""
 IF OBJECT_ID(N{{tableObjectIdLiteral}}, N'U') IS NOT NULL
 BEGIN
     DECLARE @Surf2RowCount_{{table.VariableSuffix}} bigint;
-    SELECT @Surf2RowCount_{{table.VariableSuffix}} = COUNT_BIG(*) FROM {{bracketedTableName}};
+
+    INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
+    SELECT{{topClause}}
+        N'TableDataRow',
+        CONCAT(N{{tableKeyLiteral}}, N'#', ROW_NUMBER() OVER (ORDER BY (SELECT NULL))),
+        (
+            SELECT rowData.*
+            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
+        )
+    FROM {{bracketedTableName}} AS rowData{{whereClause}};
+
+    SET @Surf2RowCount_{{table.VariableSuffix}} = ROWCOUNT_BIG();
 
     INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
     SELECT
@@ -425,16 +446,6 @@ BEGIN
                 @Surf2RowCount_{{table.VariableSuffix}} AS [RowCount]
             FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
         );
-
-    INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
-    SELECT
-        N'TableDataRow',
-        CONCAT(N{{tableKeyLiteral}}, N'#', ROW_NUMBER() OVER (ORDER BY (SELECT NULL))),
-        (
-            SELECT rowData.*
-            FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
-        )
-    FROM {{bracketedTableName}} AS rowData;
 END;
 """;
     }
@@ -501,54 +512,4 @@ DROP TABLE #Surf2Payloads;
         return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
     }
 
-    private sealed class SqlTableName
-    {
-        private SqlTableName(string schemaName, string tableName)
-        {
-            SchemaName = schemaName;
-            TableName = tableName;
-            VariableSuffix = new string($"{schemaName}_{tableName}"
-                .Select(character => char.IsLetterOrDigit(character) ? character : '_')
-                .ToArray());
-
-            if (string.IsNullOrWhiteSpace(VariableSuffix))
-            {
-                VariableSuffix = "Table";
-            }
-        }
-
-        public string SchemaName { get; }
-
-        public string TableName { get; }
-
-        public string VariableSuffix { get; }
-
-        public static SqlTableName FromParts(string schemaName, string tableName)
-        {
-            return new SqlTableName(
-                string.IsNullOrWhiteSpace(schemaName) ? "dbo" : schemaName.Trim(),
-                tableName.Trim());
-        }
-
-        public static SqlTableName? TryParse(string? value)
-        {
-            string cleaned = (value ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(cleaned))
-            {
-                return null;
-            }
-
-            cleaned = cleaned
-                .Replace("[", string.Empty, StringComparison.Ordinal)
-                .Replace("]", string.Empty, StringComparison.Ordinal);
-
-            string[] parts = cleaned.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            return parts.Length switch
-            {
-                1 => new SqlTableName("dbo", parts[0]),
-                >= 2 => new SqlTableName(parts[^2], parts[^1]),
-                _ => null
-            };
-        }
-    }
 }

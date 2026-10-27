@@ -468,11 +468,9 @@ public sealed class DatabaseSnapshotHistoryService(DatabaseDocumentService docum
                     }
 
                     string fullName = SqlName.FormatPlainMultipartName(dataSet.SchemaName, dataSet.TableName);
-                    snapshot.FullDataTableNames ??= [];
-                    if (!snapshot.FullDataTableNames.Contains(fullName, StringComparer.OrdinalIgnoreCase))
-                    {
-                        snapshot.FullDataTableNames.Add(fullName);
-                    }
+                    snapshot.FullDataTableNames = FullTableDataSelection.MergeTableNames(
+                        snapshot.FullDataTableNames ?? [],
+                        [fullName]);
                 }
                 break;
         }
@@ -518,7 +516,8 @@ public sealed class DatabaseSnapshotHistoryService(DatabaseDocumentService docum
 
                 string fullName = SqlName.FormatPlainMultipartName(schemaName, name);
                 snapshot.FullDataTableNames?.RemoveAll(candidate =>
-                    string.Equals(candidate, fullName, StringComparison.OrdinalIgnoreCase));
+                    string.Equals(FullTableDataSelection.GetTableIdentity(candidate),
+                        FullTableDataSelection.GetTableIdentity(fullName), StringComparison.OrdinalIgnoreCase));
                 break;
         }
     }
@@ -540,7 +539,8 @@ public sealed class DatabaseSnapshotHistoryService(DatabaseDocumentService docum
 
         string fullName = SqlName.FormatPlainMultipartName(schemaName, tableName);
         snapshot.FullDataTableNames?.RemoveAll(candidate =>
-            string.Equals(candidate, fullName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(FullTableDataSelection.GetTableIdentity(candidate),
+                FullTableDataSelection.GetTableIdentity(fullName), StringComparison.OrdinalIgnoreCase));
     }
 
     private static void RenamePayload(
