@@ -5,6 +5,8 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Surf2", "Surf2\Surf2.csproj", "{EA0904C7-2F54-4C66-A818-E203927917FF}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Surf2.RegressionTests", "Surf2.RegressionTests\Surf2.RegressionTests.csproj", "{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,18 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Debug|x64.Build.0 = Debug|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Debug|x86.Build.0 = Debug|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Release|Any CPU.Build.0 = Release|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Release|x64.ActiveCfg = Release|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Release|x64.Build.0 = Release|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Release|x86.ActiveCfg = Release|Any CPU
+		{04E2F8DF-D23B-4DD2-8F2D-8E6544DB1232}.Release|x86.Build.0 = Release|Any CPU
 		{EA0904C7-2F54-4C66-A818-E203927917FF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{EA0904C7-2F54-4C66-A818-E203927917FF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{EA0904C7-2F54-4C66-A818-E203927917FF}.Debug|x64.ActiveCfg = Debug|Any CPU

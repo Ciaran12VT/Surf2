@@ -64,6 +64,7 @@ public partial class FloatingCodeWindow : UserControl
         Editor.FontSize = Math.Clamp(initialFontSize, MinimumFontSize, MaximumFontSize);
         State.FontSize = Editor.FontSize;
         _searchPanel = SearchPanel.Install(Editor);
+        InitializeSearchEnhancements();
         _shiftMouseScrollTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(16)
@@ -391,11 +392,9 @@ public partial class FloatingCodeWindow : UserControl
 
     private void ShowSearchPanel(string searchPattern, bool useRegex)
     {
-        _searchPanel.MatchCase = false;
-        _searchPanel.WholeWords = false;
-        _searchPanel.UseRegex = useRegex;
-        _searchPanel.SearchPattern = searchPattern;
+        SetSearchSettings(new CodeSearchReference(State.FilePath, searchPattern, UseRegex: useRegex));
         _searchPanel.Open();
+        UpdateSearchVisuals();
         Dispatcher.BeginInvoke(
             DispatcherPriority.Input,
             new Action(_searchPanel.Reactivate));
@@ -604,6 +603,10 @@ public partial class FloatingCodeWindow : UserControl
 
     private void EditorScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
+        if (e.ExtentHeightChange != 0 || e.ViewportHeightChange != 0 || e.ViewportWidthChange != 0)
+        {
+            SearchOverview.InvalidateDocumentGeometry();
+        }
         EditorViewportChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -765,6 +768,7 @@ public partial class FloatingCodeWindow : UserControl
 
         double multiplier = e.Delta > 0 ? FontZoomStep : 1 / FontZoomStep;
         Editor.FontSize = Math.Clamp(Editor.FontSize * multiplier, MinimumFontSize, MaximumFontSize);
+        SearchOverview.InvalidateDocumentGeometry();
         State.FontSize = Editor.FontSize;
         e.Handled = true;
         BoundsChanged?.Invoke(this, EventArgs.Empty);
@@ -972,6 +976,7 @@ public partial class FloatingCodeWindow : UserControl
         if (!_searchPanel.IsClosed)
         {
             _searchPanel.Close();
+            UpdateSearchVisuals();
             ScopeFindRequested?.Invoke(this, EventArgs.Empty);
             e.Handled = true;
             return;
@@ -982,10 +987,11 @@ public partial class FloatingCodeWindow : UserControl
             !selectedText.Contains('\r', StringComparison.Ordinal) &&
             !selectedText.Contains('\n', StringComparison.Ordinal))
         {
-            _searchPanel.SearchPattern = selectedText;
+            _searchState.SearchText = selectedText;
         }
 
         _searchPanel.Open();
+        UpdateSearchVisuals();
         Dispatcher.BeginInvoke(
             DispatcherPriority.Input,
             new Action(_searchPanel.Reactivate));
@@ -1086,6 +1092,7 @@ public partial class FloatingCodeWindow : UserControl
 
     private void Caret_PositionChanged(object? sender, EventArgs e)
     {
+        UpdateCurrentSearchMatch();
         if (_suppressCursorPositionChanged)
         {
             return;

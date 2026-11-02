@@ -2804,7 +2804,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return false;
         }
 
-        string targetLink = ParseMetadataLinkTarget(link).Link;
+        string targetLink;
+        if (CodeSearchReferenceService.TryDecode(link, out CodeSearchReference searchReference))
+        {
+            targetLink = searchReference.DocumentPath;
+        }
+        else if (CodeSearchReferenceService.IsSearchReference(link))
+        {
+            return false;
+        }
+        else
+        {
+            targetLink = ParseMetadataLinkTarget(link).Link;
+        }
         if (Uri.TryCreate(targetLink, UriKind.Absolute, out Uri? uri) && uri.IsFile)
         {
             targetLink = uri.LocalPath;
@@ -6282,6 +6294,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             link = link.Trim();
+            if (CodeSearchReferenceService.IsSearchReference(link))
+            {
+                if (!CodeSearchReferenceService.TryDecode(link, out CodeSearchReference searchReference))
+                {
+                    StatusText = "Search reference is invalid or uses an unsupported version.";
+                    return false;
+                }
+
+                return await OpenSearchReferenceAsync(searchReference);
+            }
+
             if (Uri.TryCreate(link, UriKind.Absolute, out Uri? externalUri) &&
                 (string.Equals(externalUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(externalUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
@@ -6370,6 +6393,47 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = $"Could not open metadata link: {ex.Message}";
             return false;
         }
+    }
+
+    private async Task<bool> OpenSearchReferenceAsync(CodeSearchReference reference)
+    {
+        string documentPath = reference.DocumentPath;
+        if (Uri.TryCreate(documentPath, UriKind.Absolute, out Uri? uri) && uri.IsFile)
+        {
+            documentPath = uri.LocalPath;
+        }
+
+        documentPath = GetCanonicalDatabaseDocumentPath(documentPath);
+        if (!_openWindows.ContainsKey(documentPath))
+        {
+            bool isDatabaseDocument = DatabaseDocumentService.IsDatabaseDocumentPath(documentPath);
+            if (!isDatabaseDocument && !File.Exists(documentPath))
+            {
+                StatusText = "Search reference target could not be found.";
+                return false;
+            }
+
+            if (IsSpreadsheetDocument(documentPath) ||
+                (isDatabaseDocument && !_databaseDocumentService.TryGetDocument(
+                    documentPath, _databaseSnapshots, out _, out _, out _)))
+            {
+                StatusText = "Search reference target is not an available code document.";
+                return false;
+            }
+        }
+
+        EnsureCodeViewVisible();
+        await OpenFileAsync(documentPath);
+        if (!_openWindows.TryGetValue(documentPath, out FloatingCodeWindow? window))
+        {
+            return false;
+        }
+
+        ActivateCodeWindow(window);
+        RevealWindow(window);
+        window.ApplySearchReference(reference with { DocumentPath = documentPath });
+        StatusText = $"Opened search reference: {GetDocumentDisplayName(window.State)}";
+        return true;
     }
 
     private async Task<string?> OpenMetadataFileLinkAsync(string filePath, MetadataLinkTarget target)
@@ -8320,6 +8384,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         window.ContextMenuOpeningRequested += FloatingWindow_ContextMenuOpeningRequested;
         window.ScopeFindRequested += FloatingWindow_ScopeFindRequested;
         window.LineAddressCopied += FloatingWindow_LineAddressCopied;
+        window.SearchReferenceCopyRequested += FloatingWindow_SearchReferenceCopyRequested;
         window.ClipboardCopyCompleted += FloatingWindow_ClipboardCopyCompleted;
         window.EditorViewportChanged += FloatingWindow_EditorViewportChanged;
 
@@ -8523,6 +8588,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         window.LineAddressCopied -= FloatingWindow_LineAddressCopied;
+        window.SearchReferenceCopyRequested -= FloatingWindow_SearchReferenceCopyRequested;
         window.ClipboardCopyCompleted -= FloatingWindow_ClipboardCopyCompleted;
         window.EditorViewportChanged -= FloatingWindow_EditorViewportChanged;
         RemoveReferenceConnectionLinesForFile(window.State.FilePath);
@@ -8843,6 +8909,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         StatusText = e.Copied
             ? $"Copied line address: {e.LineAddress}"
             : $"Could not copy line address: {e.ErrorMessage}";
+    }
+
+    private void FloatingWindow_SearchReferenceCopyRequested(object? sender, EventArgs e)
+    {
+        if (sender is not FloatingCodeWindow window || window.GetSearchReference() is not CodeSearchReference reference)
+        {
+            StatusText = "Enter a search string before copying a search reference.";
+            return;
+        }
+
+        reference = reference with { DocumentPath = GetCanonicalDatabaseDocumentPath(window.State.FilePath) };
+        try
+        {
+            TextClipboardService.CopyText(CodeSearchReferenceService.Encode(reference));
+            StatusText = $"Copied search reference for {GetDocumentDisplayName(window.State)}.";
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.Runtime.InteropServices.ExternalException)
+        {
+            StatusText = $"Could not copy search reference: {ex.Message}";
+        }
     }
 
     private void FloatingWindow_ClipboardCopyCompleted(object? sender, CodeWindowClipboardCopyEventArgs e)
@@ -16437,6 +16523,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return string.Empty;
         }
 
+        if (CodeSearchReferenceService.TryDecode(link, out CodeSearchReference searchReference))
+        {
+            return CodeSearchReferenceService.Encode(searchReference with
+            {
+                DocumentPath = GetCanonicalDatabaseDocumentPath(searchReference.DocumentPath)
+            });
+        }
+
+        if (CodeSearchReferenceService.IsSearchReference(link))
+        {
+            return link;
+        }
+
         MetadataLinkTarget target = ParseMetadataLinkTarget(link);
         string normalizedTarget = target.Link;
         DatabaseDocumentService.TryCreateCanonicalDocumentPath(target.Link, _databaseSnapshots, out normalizedTarget);
@@ -16449,6 +16548,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (string.IsNullOrWhiteSpace(link))
         {
             return string.Empty;
+        }
+
+        if (CodeSearchReferenceService.TryDecode(link, out CodeSearchReference searchReference))
+        {
+            return CodeSearchReferenceService.Encode(searchReference with
+            {
+                DocumentPath = GetCanonicalDatabaseDocumentPath(searchReference.DocumentPath)
+            });
+        }
+
+        if (CodeSearchReferenceService.IsSearchReference(link))
+        {
+            return link;
         }
 
         MetadataLinkTarget target = ParseMetadataLinkTarget(link);

@@ -2,10 +2,122 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:avalonEdit="http://icsharpcode.net/sharpdevelop/avalonedit"
+             xmlns:search="clr-namespace:ICSharpCode.AvalonEdit.Search;assembly=ICSharpCode.AvalonEdit"
+             xmlns:local="clr-namespace:Surf2.Controls"
              xmlns:primitives="clr-namespace:System.Windows.Controls.Primitives;assembly=PresentationFramework"
              MinWidth="320"
              MinHeight="220"
              ContextMenuOpening="FloatingCodeWindow_ContextMenuOpening">
+    <UserControl.Resources>
+        <Style x:Key="CodeSearchIconButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Padding" Value="3" />
+            <Setter Property="Margin" Value="1,0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource Theme.ToolButtonHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="{DynamicResource Theme.ToolButtonCheckedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <ControlTemplate x:Key="CodeSearchPanelTemplate" TargetType="search:SearchPanel">
+            <Border Width="{Binding Tag.PanelWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                    Padding="4" HorizontalAlignment="Right" VerticalAlignment="Top" Cursor="Arrow"
+                    Background="{DynamicResource Theme.SurfaceBrush}"
+                    BorderBrush="{DynamicResource Theme.StrongBorderBrush}" BorderThickness="1" CornerRadius="3">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="PART_searchTextBox" Height="24" MinHeight="0" MinWidth="30"
+                             Padding="3,1" VerticalContentAlignment="Center" FontSize="12">
+                        <TextBox.Text>
+                            <Binding Path="Tag.SearchText" RelativeSource="{RelativeSource TemplatedParent}"
+                                     UpdateSourceTrigger="PropertyChanged">
+                                <Binding.ValidationRules><ExceptionValidationRule /></Binding.ValidationRules>
+                            </Binding>
+                        </TextBox.Text>
+                    </TextBox>
+                    <search:DropDownButton Grid.Column="1" Width="21" Height="24" MinWidth="0" MinHeight="0"
+                                           ToolTip="Search options">
+                        <search:DropDownButton.DropDownContent>
+                            <Popup x:Name="PART_dropdownPopup" StaysOpen="False">
+                                <Border Padding="5" Background="{DynamicResource Theme.SurfaceBrush}"
+                                        BorderBrush="{DynamicResource Theme.StrongBorderBrush}" BorderThickness="1">
+                                    <StackPanel>
+                                        <CheckBox Margin="3" IsChecked="{Binding Tag.MatchCase, RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Content="{Binding Localization.MatchCaseText, RelativeSource={RelativeSource TemplatedParent}}" />
+                                        <CheckBox Margin="3" IsChecked="{Binding Tag.WholeWords, RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Content="{Binding Localization.MatchWholeWordsText, RelativeSource={RelativeSource TemplatedParent}}" />
+                                        <CheckBox Margin="3" IsChecked="{Binding Tag.UseRegex, RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Content="{Binding Localization.UseRegexText, RelativeSource={RelativeSource TemplatedParent}}" />
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                        </search:DropDownButton.DropDownContent>
+                    </search:DropDownButton>
+                    <TextBlock x:Name="SearchMatchCountText" Grid.Column="2" Margin="5,0" MinWidth="35" MaxWidth="90"
+                               FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                               Text="{Binding Tag.ResultText, RelativeSource={RelativeSource TemplatedParent}}"
+                               ToolTip="{Binding Tag.ResultToolTip, RelativeSource={RelativeSource TemplatedParent}}" />
+                    <Button Grid.Column="3" Style="{StaticResource CodeSearchIconButtonStyle}"
+                            Command="{x:Static search:SearchCommands.FindPrevious}"
+                            ToolTip="{Binding Localization.FindPreviousText, RelativeSource={RelativeSource TemplatedParent}}">
+                        <Path Data="M 9,2 L 3,8 L 9,14" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    </Button>
+                    <Button Grid.Column="4" Style="{StaticResource CodeSearchIconButtonStyle}"
+                            Command="{x:Static search:SearchCommands.FindNext}"
+                            ToolTip="{Binding Localization.FindNextText, RelativeSource={RelativeSource TemplatedParent}}">
+                        <Path Data="M 3,2 L 9,8 L 3,14" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                    </Button>
+                    <Button x:Name="CopySearchReferenceButton" Grid.Column="5" Style="{StaticResource CodeSearchIconButtonStyle}"
+                            Click="CopySearchReferenceButton_Click" ToolTip="Copy Search Reference"
+                            ToolTipService.ShowOnDisabled="True"
+                            AutomationProperties.Name="Copy Search Reference"
+                            IsEnabled="{Binding Tag.CanCopyReference, RelativeSource={RelativeSource TemplatedParent}}">
+                        <Canvas Width="16" Height="16">
+                            <Path Data="M 4,3 L 4,1 L 14,1 L 14,11 L 12,11 M 1,5 L 10,5 L 10,14 L 1,14 Z"
+                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                  StrokeThickness="1.4" StrokeLineJoin="Round" />
+                        </Canvas>
+                    </Button>
+                    <Button Grid.Column="6" Style="{StaticResource CodeSearchIconButtonStyle}"
+                            Command="{x:Static search:SearchCommands.CloseSearchPanel}" ToolTip="Close search">
+                        <Path Data="M 3,3 L 11,11 M 11,3 L 3,11" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                              StrokeThickness="1.4" />
+                    </Button>
+                </Grid>
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
     <UserControl.ContextMenu>
         <ContextMenu>
             <MenuItem Click="CopyLineAddressContextMenuItem_Click"
@@ -81,7 +193,8 @@
                     Grid.Row="1"
                     Padding="14,2,6,4"
                     Background="#FFFFFF">
-                <avalonEdit:TextEditor x:Name="Editor"
+                <Grid>
+                    <avalonEdit:TextEditor x:Name="Editor"
                                        Background="#FFFFFF"
                                        FontFamily="Consolas"
                                        FontSize="13"
@@ -98,7 +211,9 @@
                                       Header="Close" />
                         </ContextMenu>
                     </avalonEdit:TextEditor.ContextMenu>
-                </avalonEdit:TextEditor>
+                    </avalonEdit:TextEditor>
+                    <local:SearchMatchOverview x:Name="SearchOverview" IsHitTestVisible="False" />
+                </Grid>
             </Border>
 
             <primitives:Thumb Grid.RowSpan="2"
