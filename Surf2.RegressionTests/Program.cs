@@ -41,6 +41,7 @@ internal static class Program
             Run("An invalid regex remains editable without crashing", InvalidRegexSearch);
             Run("The search reference icon exposes its action and raises the copy request", CopyReferenceButton);
             Run("Typing and changing visible search options updates matches and copied references", ManualSearchBindings);
+            Run("Docking and search preserve visible, draggable editor scrollbar thumbs", DockedScrollbarThumbs);
             Run("Closing and reopening search removes and restores scrollbar markers", SearchLifecycle);
             Run("The search counter and copy icon fit a 320 pixel code window", NarrowSearchLayout);
             Run("Diagram search reference navigation and compatibility", SearchReferenceNavigationTests.Run);
@@ -308,6 +309,76 @@ internal static class Program
         }
     }
 
+    private static void DockedScrollbarThumbs()
+    {
+        string text = string.Join("\n", Enumerable.Range(1, 200).Select(line => $"needle at line {line}: {new string('x', 220)}"));
+        using var view = new SearchView(text);
+        Thumb[] editorThumbs = Descendants<Thumb>(view.Editor).ToArray();
+        Thumb[] resizeGrips = Descendants<Thumb>(view.Code).Except(editorThumbs).ToArray();
+        Check(resizeGrips.Length > 0, "The floating code window has no resize grips to exercise.");
+        ScrollBar vertical = Descendants<ScrollBar>(view.Editor).Single(bar => bar.Orientation == Orientation.Vertical);
+        ScrollBar horizontal = Descendants<ScrollBar>(view.Editor).Single(bar => bar.Orientation == Orientation.Horizontal);
+
+        AssertThumbs("floating before docking");
+        view.Code.SetDockedMode(true);
+        view.Flush();
+        AssertThumbs("docked after layout");
+        Check(resizeGrips.All(grip => !grip.IsVisible), "Docking left a floating window resize grip visible.");
+
+        view.Code.ApplySearchReference(new CodeSearchReference(DocumentPath, "needle"));
+        view.Flush();
+        AssertThumbs("docked with search open");
+        SearchMatchOverview overview = (SearchMatchOverview)view.Code.FindName("SearchOverview");
+        Check(overview.RenderedMarkerCount > 0, "The scrollbar drag check did not exercise visible search markers.");
+        DragScrollbar(vertical);
+        DragScrollbar(horizontal);
+
+        view.Search.Close();
+        view.Flush();
+        AssertThumbs("docked after closing search");
+        view.Code.SetDockedMode(false);
+        view.Flush();
+        AssertThumbs("floating after undocking");
+        Check(resizeGrips.All(grip => grip.IsVisible), "Undocking did not restore the floating window resize grips.");
+        view.Code.SetDockedMode(true);
+        view.Flush();
+        AssertThumbs("docked again");
+        view.Search.Open();
+        view.Flush();
+        AssertThumbs("docked after reopening search");
+
+        void AssertThumbs(string state)
+        {
+            foreach (ScrollBar bar in new[] { vertical, horizontal })
+            {
+                Check(bar.IsVisible && bar.Maximum > bar.Minimum, $"The {bar.Orientation} scrollbar is not scrollable while {state}.");
+                Thumb thumb = Descendants<Track>(bar).Single(track => track.Orientation == bar.Orientation && track.IsVisible).Thumb;
+                Check(thumb.IsVisible && thumb.ActualWidth > 0 && thumb.ActualHeight > 0,
+                    $"The {bar.Orientation} scrollbar thumb disappeared while {state}; visibility: {thumb.Visibility}, size: {thumb.ActualWidth} x {thumb.ActualHeight}.");
+            }
+        }
+
+        void DragScrollbar(ScrollBar bar)
+        {
+            bool isVertical = bar.Orientation == Orientation.Vertical;
+            Thumb thumb = Descendants<Track>(bar).Single(track => track.Orientation == bar.Orientation && track.IsVisible).Thumb;
+            double oldValue = bar.Value;
+            double oldOffset = isVertical ? view.Editor.VerticalOffset : view.Editor.HorizontalOffset;
+            double horizontalChange = isVertical ? 0 : 35;
+            double verticalChange = isVertical ? 35 : 0;
+            thumb.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+            thumb.RaiseEvent(new DragDeltaEventArgs(horizontalChange, verticalChange) { RoutedEvent = Thumb.DragDeltaEvent });
+            thumb.RaiseEvent(new DragCompletedEventArgs(horizontalChange, verticalChange, false) { RoutedEvent = Thumb.DragCompletedEvent });
+            view.Flush();
+            double offset = isVertical ? view.Editor.VerticalOffset : view.Editor.HorizontalOffset;
+            Check(bar.Value > oldValue && offset > oldOffset,
+                $"Dragging the {bar.Orientation} scrollbar thumb did not move the code viewport.");
+            Check(Math.Abs(bar.Value - offset) < 1,
+                $"The {bar.Orientation} scrollbar value and editor offset disagree after dragging.");
+            AssertThumbs($"docked after dragging the {bar.Orientation} thumb");
+        }
+    }
+
     private static void SearchLifecycle()
     {
         string text = string.Join("\n", Enumerable.Range(1, 150).Select(line => line % 20 == 0 ? $"needle at line {line}" : $"Line {line}"));
@@ -368,6 +439,8 @@ internal static class Program
             ? $"SELECT Client_Ref, Holiday_Days FROM dbo.Payroll WHERE Client_Ref = {line};"
             : $"-- {line:000}: Review annual leave and payroll processing."));
         using var view = new SearchView(text);
+        view.Code.SetDockedMode(true);
+        view.Flush();
         view.Code.ApplySearchReference(new CodeSearchReference(DocumentPath, "Client_Ref"));
         view.Flush();
         for (int i = 0; i < 12; i++)

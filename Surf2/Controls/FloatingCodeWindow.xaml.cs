@@ -156,7 +156,8 @@ public partial class FloatingCodeWindow : UserControl
         HeaderBar.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
         OuterBorder.BorderThickness = isDocked ? new Thickness(0) : new Thickness(1);
 
-        foreach (Thumb thumb in FindVisualChildren<Thumb>(this))
+        // Only hide the window resize grips; editor scrollbars also contain Thumb controls.
+        foreach (Thumb thumb in WindowChrome.Children.OfType<Thumb>())
         {
             thumb.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
         }

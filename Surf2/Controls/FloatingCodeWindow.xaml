@@ -133,7 +133,7 @@
             BorderThickness="1"
             Background="#FFFFFF"
             SnapsToDevicePixels="True">
-        <Grid>
+        <Grid x:Name="WindowChrome">
             <Grid.RowDefinitions>
                 <RowDefinition x:Name="HeaderRow" Height="32" />
                 <RowDefinition Height="*" />

@@ -664,32 +664,20 @@
                         <Grid x:Name="ScrollBarRoot"
                               Background="{TemplateBinding Background}"
                               SnapsToDevicePixels="True">
-                            <Track x:Name="VerticalTrack"
+                            <Track x:Name="PART_Track"
+                                   Orientation="{TemplateBinding Orientation}"
                                    IsDirectionReversed="True">
                                 <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"
+                                    <RepeatButton x:Name="DecreasePageButton"
+                                                  Command="{x:Static ScrollBar.PageUpCommand}"
                                                   Style="{StaticResource ThemeScrollBarPageButtonStyle}" />
                                 </Track.DecreaseRepeatButton>
                                 <Track.Thumb>
                                     <Thumb Style="{StaticResource ThemeScrollBarThumbStyle}" />
                                 </Track.Thumb>
                                 <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"
-                                                  Style="{StaticResource ThemeScrollBarPageButtonStyle}" />
-                                </Track.IncreaseRepeatButton>
-                            </Track>
-                            <Track x:Name="HorizontalTrack"
-                                   Orientation="Horizontal"
-                                   Visibility="Collapsed">
-                                <Track.DecreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageLeftCommand}"
-                                                  Style="{StaticResource ThemeScrollBarPageButtonStyle}" />
-                                </Track.DecreaseRepeatButton>
-                                <Track.Thumb>
-                                    <Thumb Style="{StaticResource ThemeScrollBarThumbStyle}" />
-                                </Track.Thumb>
-                                <Track.IncreaseRepeatButton>
-                                    <RepeatButton Command="{x:Static ScrollBar.PageRightCommand}"
+                                    <RepeatButton x:Name="IncreasePageButton"
+                                                  Command="{x:Static ScrollBar.PageDownCommand}"
                                                   Style="{StaticResource ThemeScrollBarPageButtonStyle}" />
                                 </Track.IncreaseRepeatButton>
                             </Track>
@@ -705,12 +693,15 @@
                                         Value="12" />
                                 <Setter Property="MinHeight"
                                         Value="12" />
-                                <Setter TargetName="VerticalTrack"
-                                        Property="Visibility"
-                                        Value="Collapsed" />
-                                <Setter TargetName="HorizontalTrack"
-                                        Property="Visibility"
-                                        Value="Visible" />
+                                <Setter TargetName="PART_Track"
+                                        Property="IsDirectionReversed"
+                                        Value="False" />
+                                <Setter TargetName="DecreasePageButton"
+                                        Property="Command"
+                                        Value="{x:Static ScrollBar.PageLeftCommand}" />
+                                <Setter TargetName="IncreasePageButton"
+                                        Property="Command"
+                                        Value="{x:Static ScrollBar.PageRightCommand}" />
                             </Trigger>
                             <Trigger Property="IsEnabled"
                                      Value="False">
