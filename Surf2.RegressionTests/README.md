@@ -8,6 +8,8 @@ dotnet run --project Surf2.RegressionTests/Surf2.RegressionTests.csproj
 
 The runner checks copied search references, match counts and navigation, search options, invalid and missing matches, the copy icon, and diagram link navigation for local files and database definitions. It loads the shared WPF resources in hidden windows without loading or saving the user's workspace or connecting to a database.
 
+It also checks diagram image replacement: saved-image ordering, thumbnails and scrolling, the browse action with an empty library, Save and Cancel, local file validation, embedded image persistence, and undo restoring the original picture and pasted-image reference.
+
 To also render a representative code window for visual inspection:
 
 ```powershell

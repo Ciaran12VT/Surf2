@@ -14584,20 +14584,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private DiagramImageControl? CreateDiagramImageFromSnapshot(DiagramObjectSnapshot snapshot)
     {
-        string imageData = snapshot.ImageDataBase64;
-        ImageSource? imageSource = null;
-
-        if (!string.IsNullOrWhiteSpace(snapshot.PastedImageFileName))
-        {
-            imageSource = CreateImageSourceFromFile(GetPastedDiagramImagePath(snapshot.PastedImageFileName));
-        }
-
-        if (imageSource == null && string.IsNullOrWhiteSpace(imageData))
-        {
-            imageData = FindDiagramImageDefinition(snapshot.ImageDefinitionId)?.ImageDataBase64 ?? string.Empty;
-        }
-
-        imageSource ??= CreateImageSource(imageData);
+        ImageSource? imageSource = GetDiagramImageSource(snapshot, out string imageData);
         if (imageSource == null)
         {
             return null;
@@ -14612,6 +14599,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             diagramObjectId: snapshot.Id);
         AttachDiagramImageHandlers(image);
         return image;
+    }
+
+    private ImageSource? GetDiagramImageSource(DiagramObjectSnapshot snapshot, out string imageData)
+    {
+        imageData = snapshot.ImageDataBase64;
+        ImageSource? imageSource = null;
+
+        if (!string.IsNullOrWhiteSpace(snapshot.PastedImageFileName))
+        {
+            imageSource = CreateImageSourceFromFile(GetPastedDiagramImagePath(snapshot.PastedImageFileName));
+        }
+
+        if (imageSource == null && string.IsNullOrWhiteSpace(imageData))
+        {
+            imageData = FindDiagramImageDefinition(snapshot.ImageDefinitionId)?.ImageDataBase64 ?? string.Empty;
+        }
+
+        return imageSource ?? CreateImageSource(imageData);
     }
 
     private DiagramLineControl CreateDiagramLineFromSnapshot(DiagramObjectSnapshot snapshot)
@@ -14684,6 +14689,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 break;
 
             case DiagramImageControl image:
+                if (image.ImageDefinitionId != snapshot.ImageDefinitionId ||
+                    image.ImageName != snapshot.ImageName ||
+                    image.ImageDataBase64 != snapshot.ImageDataBase64 ||
+                    image.PastedImageFileName != snapshot.PastedImageFileName)
+                {
+                    ImageSource? source = GetDiagramImageSource(snapshot, out string imageData);
+                    if (source != null)
+                    {
+                        image.ApplyImage(snapshot.ImageDefinitionId, snapshot.ImageName, source, imageData, snapshot.PastedImageFileName);
+                    }
+                }
+
                 image.SetCanvasBounds(snapshot.Left, snapshot.Top, snapshot.Width, snapshot.Height);
                 image.ApplyDetails(snapshot.LabelText, snapshot.LabelFontSize);
                 image.ApplyMetadata(snapshot.Metadata);
@@ -15143,7 +15160,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        var dialog = new DiagramImageDetailsWindow(image.LabelText, image.LabelFontSize)
+        var dialog = new DiagramImageDetailsWindow(
+            image.LabelText,
+            image.LabelFontSize,
+            _appSettings.DiagramImages.Images,
+            image.ImageSource,
+            image.ImageName)
         {
             Owner = this
         };
@@ -15151,6 +15173,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (dialog.ShowDialog() == true)
         {
             DiagramObjectSnapshot? before = CreateDiagramObjectSnapshot(image);
+            if (dialog.SelectedImage is DiagramImageDefinition replacement && dialog.SelectedImageSource is ImageSource source)
+            {
+                image.ApplyImage(replacement.Id, replacement.Name, source, replacement.ImageDataBase64);
+            }
+
             image.ApplyDetails(dialog.LabelText, dialog.LabelFontSize);
             DiagramObjectSnapshot? after = CreateDiagramObjectSnapshot(image);
             if (before != null && after != null)

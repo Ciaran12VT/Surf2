@@ -45,6 +45,7 @@ internal static class Program
             Run("Closing and reopening search removes and restores scrollbar markers", SearchLifecycle);
             Run("The search counter and copy icon fit a 320 pixel code window", NarrowSearchLayout);
             Run("Diagram search reference navigation and compatibility", SearchReferenceNavigationTests.Run);
+            Run("Diagram image picker, upload, cancel, persistence and undo", DiagramImageEditingTests.Run);
 
             if (args.Length == 2 && args[0] == "--preview")
             {

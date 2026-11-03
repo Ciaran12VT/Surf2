@@ -13,6 +13,7 @@ public sealed class DiagramImageControl : UserControl
     private const double ResizeHitThickness = 8;
 
     private readonly TextBlock _labelTextBlock;
+    private readonly Image _image;
     private readonly TextBox _labelTextBox;
     private readonly Border _selectionBorder;
     private readonly Border _queryWarningBadge;
@@ -50,7 +51,7 @@ public sealed class DiagramImageControl : UserControl
         Focusable = true;
         Background = Brushes.Transparent;
 
-        var image = new Image
+        _image = new Image
         {
             Source = imageSource,
             Stretch = Stretch.Fill,
@@ -98,11 +99,11 @@ public sealed class DiagramImageControl : UserControl
         var layout = new Grid { Background = Brushes.Transparent };
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(image, 0);
+        Grid.SetRow(_image, 0);
         Grid.SetRow(_labelTextBlock, 1);
         Grid.SetRow(_labelTextBox, 1);
         Grid.SetRowSpan(_selectionBorder, 2);
-        layout.Children.Add(image);
+        layout.Children.Add(_image);
         layout.Children.Add(_labelTextBlock);
         layout.Children.Add(_labelTextBox);
         layout.Children.Add(_selectionBorder);
@@ -150,13 +151,15 @@ public sealed class DiagramImageControl : UserControl
 
     public string DiagramObjectId { get; }
 
-    public string ImageDefinitionId { get; }
+    public string ImageDefinitionId { get; private set; }
 
-    public string ImageName { get; }
+    public string ImageName { get; private set; }
 
-    public string ImageDataBase64 { get; }
+    public ImageSource ImageSource => _image.Source;
 
-    public string PastedImageFileName { get; }
+    public string ImageDataBase64 { get; private set; }
+
+    public string PastedImageFileName { get; private set; }
 
     public string LabelText { get; private set; } = string.Empty;
 
@@ -209,6 +212,20 @@ public sealed class DiagramImageControl : UserControl
         _labelTextBox.Focus();
         Keyboard.Focus(_labelTextBox);
         _labelTextBox.SelectAll();
+    }
+
+    public void ApplyImage(
+        string imageDefinitionId,
+        string imageName,
+        ImageSource imageSource,
+        string imageDataBase64 = "",
+        string pastedImageFileName = "")
+    {
+        ImageDefinitionId = imageDefinitionId;
+        ImageName = imageName;
+        ImageDataBase64 = imageDataBase64;
+        PastedImageFileName = pastedImageFileName;
+        _image.Source = imageSource;
     }
 
     public void ApplyDetails(string labelText, double? labelFontSize = null)
