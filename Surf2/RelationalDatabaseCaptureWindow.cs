@@ -18,6 +18,8 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     private readonly RelationalDatabaseCaptureService _service;
     private readonly Scope _scope;
     private readonly StateToken _scopeToken;
+    private readonly SnapshotSummary? _replacement;
+    private readonly bool _allowTargetSelection;
     private readonly PasswordBox _connection = new();
     private readonly TextBox _name = new(), _version = new();
     private readonly CheckBox _replace = new()
@@ -51,12 +53,15 @@ public sealed class RelationalDatabaseCaptureWindow : Window
 
     public RelationalDatabaseCaptureWindow(RelationalRuntime runtime, Scope selected, StateToken expectedScope)
         : this(runtime, selected, expectedScope, null) { }
-    public RelationalDatabaseCaptureWindow(RelationalRuntime runtime, Scope selected, StateToken expectedScope, SnapshotSummary? replacement)
+    public RelationalDatabaseCaptureWindow(RelationalRuntime runtime, Scope selected, StateToken expectedScope,
+        SnapshotSummary? replacement, bool allowTargetSelection = true)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
-        _scope = selected ?? throw new ArgumentNullException(nameof(selected)); _scopeToken = expectedScope;
+        _scope = selected ?? throw new ArgumentNullException(nameof(selected)); _scopeToken = expectedScope; _replacement = replacement;
+        _allowTargetSelection = allowTargetSelection;
         if (expectedScope.Epoch != runtime.Session.Epoch) throw new ArgumentException("The selected scope belongs to another epoch.");
-        _service = new(runtime); Title = "Database Capture"; Width = 760; Height = 620; MinWidth = 620; MinHeight = 520;
+        _service = new(runtime); Title = replacement == null ? "Database Capture" : "Update Database — " + replacement.DisplayName;
+        Width = 760; Height = 620; MinWidth = 620; MinHeight = 520;
         ThemeWindow(this); ThemeInput(_connection);
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         var root = new Grid { Margin = new(16) };
@@ -71,6 +76,7 @@ public sealed class RelationalDatabaseCaptureWindow : Window
         target.Children.Add(_replace); Grid.SetColumn(_snapshots, 1); target.Children.Add(_snapshots);
         _snapshots.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(_nextSnapshots, 2); target.Children.Add(_nextSnapshots); Add(root, target, 1);
+        if (replacement == null && !allowTargetSelection) target.Visibility = Visibility.Collapsed;
         var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 4, 0, 8) };
         toolbar.Children.Add(_readTables); toolbar.Children.Add(_previousTables); toolbar.Children.Add(_nextTables); Add(root, toolbar, 2);
         var queryButton = Command("Query actions");
@@ -131,9 +137,16 @@ public sealed class RelationalDatabaseCaptureWindow : Window
         _previousTables.IsEnabled = _nextTables.IsEnabled = false;
         _connection.PasswordChanged += (_, _) => { _selectedTables.Clear(); _tablePage.Clear(); _previousTablePages.Clear();
             _tableNext = null; _previousTables.IsEnabled = _nextTables.IsEnabled = false; };
-        if (replacement != null) { _replace.IsChecked = true; _snapshots.Items.Add(replacement); _snapshots.SelectedItem = replacement; _name.Text = replacement.DisplayName; }
+        if (replacement != null)
+        {
+            _replace.IsChecked = true; _replace.IsEnabled = false;
+            _snapshots.Items.Add(replacement); _snapshots.SelectedItem = replacement; _snapshots.IsEnabled = false;
+            _nextSnapshots.Visibility = Visibility.Collapsed; _name.Text = replacement.DisplayName;
+        }
         else _snapshots.IsEnabled = false;
-        _replace.Checked += (_, _) => _snapshots.IsEnabled = !_busy; _replace.Unchecked += (_, _) => _snapshots.IsEnabled = false;
+        _replace.IsEnabled = replacement == null && allowTargetSelection;
+        _replace.Checked += (_, _) => _snapshots.IsEnabled = !_busy && _replacement == null && _allowTargetSelection;
+        _replace.Unchecked += (_, _) => _snapshots.IsEnabled = false;
         _snapshots.SelectionChanged += (_, _) => { if (_replace.IsChecked == true && _snapshots.SelectedItem is SnapshotSummary head) _name.Text = head.DisplayName; };
         _nextSnapshots.Click += async (_, _) => await RunAsync(() => ReadSnapshotsAsync(_snapshotNext));
         _readTables.Click += async (_, _) => await RunAsync(async () =>
@@ -144,12 +157,13 @@ public sealed class RelationalDatabaseCaptureWindow : Window
         { if (_previousTablePages.Count != 0) await ReadTablesAsync(_previousTablePages.Pop()); });
         _capture.Click += async (_, _) => await RunAsync(CaptureAsync);
         _cancel.Click += (_, _) => { if (_busy) RequestCancellation(); else Close(); };
-        Loaded += async (_, _) => { if (replacement == null) await RunAsync(() => ReadSnapshotsAsync(null)); };
+        Loaded += async (_, _) => { if (replacement == null && allowTargetSelection) await RunAsync(() => ReadSnapshotsAsync(null)); };
         Closing += OnClosing; Closed += (_, _) => { _closed = true; if (!_busy) CompleteClose(); };
     }
 
     private async Task ReadSnapshotsAsync(SnapshotCursor? cursor)
     {
+        if (_replacement != null || !_allowTargetSelection) return;
         var page = await _runtime.Snapshots.ListSnapshotsAsync(pageSize: 50, cursor: cursor, ct: _operation!.Token);
         _snapshots.Items.Clear(); foreach (var item in page.Items) _snapshots.Items.Add(item);
         _snapshotNext = page.Next; _nextSnapshots.IsEnabled = page.Next != null;
@@ -171,12 +185,7 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     {
         _tables.CommitEdit(DataGridEditingUnit.Cell, true); _tables.CommitEdit(DataGridEditingUnit.Row, true);
         if (string.IsNullOrWhiteSpace(_name.Text)) throw new ArgumentException("Enter a snapshot name.");
-        SnapshotRuntimeToken? expected = null;
-        if (_replace.IsChecked == true)
-        {
-            if (_snapshots.SelectedItem is not SnapshotSummary snapshot) throw new ArgumentException("Select the snapshot to replace.");
-            expected = new(_runtime.Session.Epoch, snapshot.SnapshotKey, snapshot.RowVersion);
-        }
+        SnapshotRuntimeToken? expected = CaptureTarget();
         var request = new RelationalDatabaseCaptureRequest(_connection.Password, _name.Text.Trim(), _selectedTables.Values.ToArray(),
             _scope, _scopeToken, expected, _version.Text.Trim(), _blockingConsent.IsChecked == true);
         var progress = new Progress<RelationalCaptureProgress>(value =>
@@ -184,6 +193,13 @@ public sealed class RelationalDatabaseCaptureWindow : Window
         var token = _operation!.Token;
         Result = await Task.Run(() => _service.CaptureAsync(request, progress, token), token);
         _connection.Clear(); DialogResult = true;
+    }
+    private SnapshotRuntimeToken? CaptureTarget()
+    {
+        if (_replacement != null) return new(_runtime.Session.Epoch, _replacement.SnapshotKey, _replacement.RowVersion);
+        if (!_allowTargetSelection || _replace.IsChecked != true) return null;
+        if (_snapshots.SelectedItem is not SnapshotSummary snapshot) throw new ArgumentException("Select the snapshot to replace.");
+        return new(_runtime.Session.Epoch, snapshot.SnapshotKey, snapshot.RowVersion);
     }
     private async Task RunAsync(Func<Task> action)
     {
@@ -209,9 +225,11 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     }
     private void SetBusy(bool value)
     {
-        _connection.IsEnabled = _name.IsEnabled = _version.IsEnabled = _replace.IsEnabled = _tables.IsEnabled =
+        _connection.IsEnabled = _name.IsEnabled = _version.IsEnabled = _tables.IsEnabled =
             _readTables.IsEnabled = _capture.IsEnabled = _blockingConsent.IsEnabled = !value;
-        _snapshots.IsEnabled = !value && _replace.IsChecked == true; _nextSnapshots.IsEnabled = !value && _snapshotNext != null;
+        _replace.IsEnabled = !value && _replacement == null && _allowTargetSelection;
+        _snapshots.IsEnabled = !value && _replacement == null && _allowTargetSelection && _replace.IsChecked == true;
+        _nextSnapshots.IsEnabled = !value && _replacement == null && _allowTargetSelection && _snapshotNext != null;
         _previousTables.IsEnabled = !value && _previousTablePages.Count != 0; _nextTables.IsEnabled = !value && _tableNext != null;
         _progress.IsIndeterminate = value;
         if (RequiresReload) _capture.IsEnabled = false;

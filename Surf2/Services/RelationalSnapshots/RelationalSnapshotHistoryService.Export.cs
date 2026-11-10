@@ -83,7 +83,7 @@ public sealed partial class RelationalSnapshotHistoryService
                         // Raw UTF-16 labels remain lossless even for legacy unmatched code units. Paths use generated ordinals only.
                         await JsonSerializer.SerializeAsync(stream, new
                         {
-                            SnapshotKey = snapshotKey, VersionKey = versionKey, entry.Collection, entry.ResourceKey, entry.RevisionKey,
+                            SnapshotKey = snapshotKey, VersionKey = versionKey, entry.Collection, entry.ObjectKind, entry.ResourceKey, entry.RevisionKey,
                             entry.EntryKey, entry.SortOrdinal, SchemaUtf16Le = RawName(entry.SchemaName), NameUtf16Le = RawName(entry.Name),
                             TextEncoding = collection == HistoricalCollection.TableDataSets ? "utf-8" : "utf-16le-raw"
                         }, cancellationToken: ct).ConfigureAwait(false);

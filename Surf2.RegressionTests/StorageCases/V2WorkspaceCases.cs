@@ -70,6 +70,7 @@ public static partial class StorageRegressionSuite
         models.Settings.Appearance.Theme = AppearanceSettings.LightTheme;
         models.Workbenches.Workbenches.Clear(); models.Workspace.OpenDocuments.Clear();
         await using var fixture = await SqlFixture.CreateAsync(models.Documents());
+        VerifyDatabaseWorkflowChoices(check, fixture.OwnedDirectory);
         await new RelationalMigrator().ConvertAsync(MigrationRequest(fixture));
         string connection = new SqlConnectionStringBuilder(fixture.DestinationConnectionString)
         { ApplicationName = "Surf2_Regression_StateAccess_V2_" + Guid.NewGuid().ToString("N") }.ConnectionString;

@@ -19,7 +19,7 @@ namespace Surf2;
 /// <summary>Resource-only STA checks: no Window.Show, SQL, connection settings or application startup.</summary>
 public static class RelationalScopePickerUiChecks
 {
-    private static readonly string[] ResourceCommands = ["Add Folder", "Add File", "Add Database", "Edit Database", "Add Snapshot", "Add Diagram", "Remove"];
+    private static readonly string[] ResourceCommands = ["Add"];
     private static readonly string[] ScopeCommands = ["New", "Save", "Delete", "Add Scope Resources", .. ResourceCommands, "Open", "Close"];
 
     // Hook: call on an STA with App.InitializeComponent(), without Application.Run/OnStartup.
@@ -49,15 +49,26 @@ public static class RelationalScopePickerUiChecks
                         using var surface = new OffscreenSurface(scopes, width - 16, height - 40);
                         surface.Layout();
                         CheckScopeLayout(surface, width >= 1000);
+                        CheckAddResourceMenu(scopes);
+                        CheckRowActions(scopes, surface);
                         if (large) CheckResourceVirtualization(surface, fixture.Resources.Count);
                         CheckScopeEditing(scopes, fixture, surface);
                         CheckButtons(surface.Root, "scopes", ScopeCommands);
                         string path = Path.Combine(directory, $"scopes-{theme.ToLowerInvariant()}-{width}x{height}-{(large ? "600-resources" : "5-resources")}-client-approx.png");
                         string hash = surface.Save(path);
+                        if (!large && width == 1300)
+                        {
+                            var resources = Field<DataGrid>(scopes, "_resources");
+                            resources.SelectedItem = null; surface.Layout();
+                            string unselected = surface.Save(Path.Combine(directory, $"scopes-{theme.ToLowerInvariant()}-no-resource-selected.png"));
+                            Require(hash != unselected, "Selecting a resource must visibly reveal its row actions.");
+                            resources.SelectedIndex = 0; surface.Layout();
+                            CheckResourceRemoval(scopes, fixture, surface);
+                        }
                         if (!large) hashes.Add((theme, width), hash);
                         Require(!scopes.IsVisible && new WindowInteropHelper(scopes).Handle == IntPtr.Zero,
                             "Scope fixture must remain offscreen without an HWND.");
-                        passed.Add($"Scopes {theme} {width}x{height} {fixture.Resources.Count} resources: columns, toolbar, long text, edits, identity, finite viewport and pixels: {path}");
+                        passed.Add($"Scopes {theme} {width}x{height} {fixture.Resources.Count} resources: Add menu, selected-row actions, columns, edits, identity, finite viewport and pixels: {path}");
                     }
                     finally { await scopes.DrainQueriesAsync(); scopes.Close(); }
                 }
@@ -87,6 +98,7 @@ public static class RelationalScopePickerUiChecks
         Field<TextBox>(window, "_name").Text = scope.Name;
         Field<TextBox>(window, "_description").Text = scope.Description;
         Field<Grid>(window, "Details").IsEnabled = true;
+        typeof(RelationalScopePickerWindow).GetField("_model", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(window, scope);
         var grid = Field<DataGrid>(window, "_resources"); grid.ItemsSource = scope.Resources; grid.SelectedIndex = 0;
         return scope;
     }
@@ -115,7 +127,9 @@ public static class RelationalScopePickerUiChecks
             Require(rect.Left >= -1 && rect.Right <= root.ActualWidth + 1, "Scope command is clipped horizontally: " + button.Content);
         }
         var grid = Descendants(root).OfType<DataGrid>().Single();
-        Require(grid.Columns.Select(c => Header(c.Header)).SequenceEqual(new[] { "Alias", "Type", "Path/Resource", "Added at" }), "Scope resource columns/order are incorrect.");
+        Require(grid.Columns.Count == 5 && grid.Columns.Take(4).Select(c => Header(c.Header)).SequenceEqual(new[] { "Alias", "Type", "Path/Resource", "Added at" }), "Scope resource columns/order are incorrect.");
+        Require(grid.Columns[4] is DataGridTemplateColumn { CellTemplate: not null, IsReadOnly: true },
+            "Resource actions need a trailing read-only template column.");
         Require(grid.Columns[0] is DataGridTemplateColumn { CellTemplate: not null, CellEditingTemplate: not null }, "Alias needs separate display-name and alias-edit templates.");
         string[] paths = [nameof(ScopedResource.ResourceTypeDisplay), nameof(ScopedResource.Details), nameof(ScopedResource.AddedDisplay)];
         for (int i = 0; i < paths.Length; i++)
@@ -133,7 +147,7 @@ public static class RelationalScopePickerUiChecks
         Require(added.ToolTip is string tooltip && tooltip.Contains("AddedAtUtc", StringComparison.Ordinal), "Added-at header must describe the actual timestamp.");
         Require(grid.Columns.All(c => c is not DataGridCheckBoxColumn), "IncludeChildren must not be an unexplained main-grid column.");
         var headers = Descendants(grid).OfType<DataGridColumnHeader>().Where(h => h.Column != null).ToArray();
-        Require(headers.Length == 4, "The resource column headers were not rendered.");
+        Require(headers.Length == 5, "The resource and action column headers were not rendered.");
         foreach (var header in headers)
         {
             CheckTextFits(header, Header(header.Content), 8);
@@ -153,7 +167,7 @@ public static class RelationalScopePickerUiChecks
         var optionBounds = Bounds(children, detailsScroll);
         Require(optionBounds.Top >= -1 && optionBounds.Bottom <= detailsScroll.ActualHeight + 1, "Selected-resource options cannot be reached by scrolling.");
         detailsScroll.ScrollToTop(); surface.Layout();
-        foreach (var text in Descendants(grid).OfType<TextBlock>().Where(t => t.DataContext is ScopedResource && !string.IsNullOrEmpty(t.Text)))
+        foreach (var text in Descendants(grid).OfType<TextBlock>().Where(t => t.DataContext is ScopedResource && !string.IsNullOrEmpty(t.Text) && !HasButtonAncestor(t)))
             Require(text.TextTrimming == TextTrimming.CharacterEllipsis && text.ToolTip as string == text.Text, "Long resource text must retain a full-value tooltip.");
     }
 
@@ -167,6 +181,137 @@ public static class RelationalScopePickerUiChecks
             $"Large resource grid realized {realized}/{total} rows instead of virtualizing.");
     }
 
+    private static void CheckAddResourceMenu(RelationalScopePickerWindow window)
+    {
+        var add = Field<Button>(window, "_addResource");
+        var menu = Field<ContextMenu>(window, "_addResourceMenu");
+        Require(add.Content as string == "Add" && AutomationProperties.GetName(add) == "Add resource",
+            "The single Add button needs an accessible resource label.");
+        Require(ReferenceEquals(add.ContextMenu, menu), "Add must own the tested resource menu.");
+        var groups = menu.Items.OfType<MenuItem>().ToArray();
+        Require(menu.Items.Count == 2 && groups.Select(item => Header(item.Header)).SequenceEqual(new[] { "New", "Existing" }),
+            "Add must offer exactly New and Existing, in that order.");
+        foreach (var group in groups)
+        {
+            var types = group.Items.OfType<MenuItem>().ToArray();
+            Require(group.Items.Count == 4 && types.Select(item => Header(item.Header)).SequenceEqual(new[] { "Folder", "File", "Database", "Diagram" }),
+                "Each Add branch must offer Folder, File, Database and Diagram.");
+            Require(types.All(item => item.Items.Count == 0 && item.IsEnabled),
+                "Every resource type must be an available action rather than another unexpected menu level.");
+        }
+        Require(!Descendants(Field<Grid>(window, "Details")).OfType<Button>().Any(button => button.Content as string is
+            "Add Folder" or "Add File" or "Add Database" or "Edit Database" or "Add Snapshot" or "Add Diagram" or "Remove"),
+            "The old resource-command toolbar must not remain beside Add.");
+    }
+
+    private static void CheckRowActions(RelationalScopePickerWindow window, OffscreenSurface surface)
+    {
+        var grid = Field<DataGrid>(window, "_resources");
+        Require(grid.SelectionMode == DataGridSelectionMode.Single, "Only one resource row may expose actions at a time.");
+        foreach (int selectedIndex in new[] { 0, 2, 1, 4 })
+        {
+            grid.SelectedIndex = selectedIndex; grid.ScrollIntoView(grid.SelectedItem); surface.Layout();
+            var selectedResource = grid.SelectedItem;
+            var rows = Descendants(grid).OfType<DataGridRow>().ToArray();
+            Require(rows.Any(row => ReferenceEquals(row.Item, selectedResource)), "The selected fixture row was not realized.");
+            foreach (var row in rows)
+            {
+                var buttons = Descendants(row).OfType<Button>().Where(IsResourceAction).ToArray();
+                Require(buttons.Select(button => button.ToolTip as string).SequenceEqual(new[] { "Edit resource", "Remove resource" }),
+                    "Row actions must place Edit before Remove and expose clear tooltips.");
+                Require(buttons.All(button => AutomationProperties.GetName(button) == button.ToolTip as string),
+                    "Icon-only row actions need matching accessible names.");
+                bool selected = ReferenceEquals(row.Item, selectedResource);
+                Require(buttons.All(button => IsPresentedWithin(button, row) == selected),
+                    "Pencil and X must be visible only on the selected resource row.");
+                if (!selected) continue;
+                Require(buttons[0].Content as string == "\uE70F" && buttons[1].Content as string == "×",
+                    "Selected-row controls must use the pencil and X symbols.");
+                var edit = ColorOf(buttons[0].Background); var remove = ColorOf(buttons[1].Background);
+                Require(edit.B > edit.R && edit.B > edit.G && remove.R > remove.G && remove.R > remove.B &&
+                    buttons.All(button => ColorOf(button.Foreground) == Colors.White), "Pencil must be blue/white and X red/white.");
+                Require(buttons.All(button => button.IsEnabled && Contrast(ColorOf(button.Background), ColorOf(button.Foreground)) >= 4.5),
+                    "Selected-row actions must be usable and readable in each theme.");
+                var first = Bounds(buttons[0], row); var second = Bounds(buttons[1], row);
+                Require(first.Right <= second.Left + 1 && second.Right <= row.ActualWidth + 1,
+                    "The trailing pencil and X actions must fit in order without overlapping.");
+            }
+        }
+        grid.SelectedItem = null; surface.Layout();
+        Require(!Descendants(grid).OfType<Button>().Where(IsResourceAction).Any(button => IsPresentedWithin(button, grid)),
+            "No resource selected must mean no visible row actions.");
+        grid.SelectedIndex = 0; surface.Layout();
+    }
+
+    private static void CheckResourceRemoval(RelationalScopePickerWindow window, Scope scope, OffscreenSurface surface)
+    {
+        var grid = Field<DataGrid>(window, "_resources");
+        var selected = scope.Resources[2]; var other = scope.Resources[3];
+        var baseline = scope.Resources.ToArray();
+        int confirmations = 0;
+        try
+        {
+            grid.SelectedItem = selected; surface.Layout();
+            window.ConfirmResourceRemoval = candidate =>
+            {
+                confirmations++;
+                Require(ReferenceEquals(candidate, selected), "Removal confirmation must receive the selected membership.");
+                return false;
+            };
+            var staleRemoveButton = SelectedRowActions(grid)[1];
+            grid.SelectedItem = other; surface.Layout();
+            staleRemoveButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Require(confirmations == 0 && scope.Resources.SequenceEqual(baseline),
+                "An action from a previously selected row must not prompt for or remove that stale target.");
+            grid.SelectedItem = selected; surface.Layout();
+            SelectedRowActions(grid)[1].RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Require(confirmations == 1 && scope.Resources.SequenceEqual(baseline), "Canceling removal must preserve every resource and its order.");
+            window.ConfirmResourceRemoval = candidate =>
+            {
+                confirmations++;
+                Require(ReferenceEquals(candidate, selected), "Confirmed removal must retain the same selected identity.");
+                return true;
+            };
+            SelectedRowActions(grid)[1].RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            surface.Layout();
+            Require(confirmations == 2 && !scope.Resources.Contains(selected) && scope.Resources.Contains(other) &&
+                scope.Resources.SequenceEqual(baseline.Where(resource => !ReferenceEquals(resource, selected))),
+                "Confirmed removal must remove only its membership, including when another resource shares the same database ID.");
+        }
+        finally
+        {
+            window.ConfirmResourceRemoval = null;
+            if (!scope.Resources.Contains(selected)) scope.Resources.Insert(2, selected);
+            grid.SelectedIndex = 0; surface.Layout();
+        }
+    }
+
+    private static Button[] SelectedRowActions(DataGrid grid)
+    {
+        grid.ScrollIntoView(grid.SelectedItem); grid.UpdateLayout();
+        var row = grid.ItemContainerGenerator.ContainerFromItem(grid.SelectedItem) as DataGridRow
+            ?? throw new InvalidOperationException("The selected resource row is not realized.");
+        var buttons = Descendants(row).OfType<Button>().Where(IsResourceAction).ToArray();
+        Require(buttons.Length == 2, "The selected resource row must contain exactly Edit and Remove.");
+        return buttons;
+    }
+    private static bool IsResourceAction(Button button) => button.ToolTip as string is "Edit resource" or "Remove resource";
+    private static bool IsPresentedWithin(DependencyObject child, DependencyObject ancestor)
+    {
+        for (DependencyObject? current = child; current != null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is UIElement element && element.Visibility != Visibility.Visible) return false;
+            if (ReferenceEquals(current, ancestor)) return true;
+        }
+        return false;
+    }
+    private static bool HasButtonAncestor(DependencyObject child)
+    {
+        for (DependencyObject? current = VisualTreeHelper.GetParent(child); current != null; current = VisualTreeHelper.GetParent(current))
+            if (current is Button) return true;
+        return false;
+    }
+
     private static void CheckScopeEditing(RelationalScopePickerWindow window, Scope scope, OffscreenSurface surface)
     {
         var baseline = StateCopies.Scope(scope, new(new StateLimits()));
@@ -177,15 +322,15 @@ public static class RelationalScopePickerUiChecks
         children.SetCurrentValue(ToggleButton.IsCheckedProperty, false);
         Require(!scope.Resources[0].IncludeChildren && !scope.Resources[1].IncludeChildren, "IncludeChildren edit must affect the selected membership only.");
         grid.SelectedIndex = 2; surface.Layout();
-        Require(children.IsChecked == true && !children.IsEnabled && Field<Button>(window, "_editDatabase").IsEnabled,
+        Require(children.IsChecked == true && !children.IsEnabled && SelectedRowActions(grid)[0].IsEnabled,
             "Database selection must retain child metadata without offering an ineffective checkbox edit.");
         grid.SelectedIndex = 3; surface.Layout();
         Require(children.IsChecked == false && !children.IsEnabled, "Duplicate original IDs must retain each selected membership's own child metadata.");
         grid.SelectedIndex = 1; surface.Layout();
         Require(children.IsChecked == false && !children.IsEnabled, "File selection must retain child metadata without offering an ineffective checkbox edit.");
         grid.SelectedIndex = 4; surface.Layout();
-        Require(!Field<Button>(window, "_editDatabase").IsEnabled && children.IsChecked == true && !children.IsEnabled,
-            "Diagram selection must retain child metadata and disable database/child editing.");
+        Require(SelectedRowActions(grid)[0].IsEnabled && children.IsChecked == true && !children.IsEnabled,
+            "Diagram selection keeps alias editing available while preserving child metadata.");
         grid.SelectedIndex = 0; grid.CurrentCell = new DataGridCellInfo(scope.Resources[0], grid.Columns[0]); surface.Layout();
         grid.ScrollIntoView(scope.Resources[0], grid.Columns[0]); surface.Layout();
         Require(grid.BeginEdit(), "The alias cell could not enter its real edit control.");
@@ -212,7 +357,8 @@ public static class RelationalScopePickerUiChecks
                 "Resource editing changed another membership's alias or preserved child metadata.");
         }
         grid.SelectedItem = null; surface.Layout();
-        Require(!children.IsEnabled && !Field<Button>(window, "_editDatabase").IsEnabled, "Resource edit controls must disable without a selection.");
+        Require(!children.IsEnabled && !Descendants(grid).OfType<Button>().Where(IsResourceAction).Any(button => IsPresentedWithin(button, grid)),
+            "Resource actions must disappear without a selection.");
         grid.SelectedIndex = 0; surface.Layout();
     }
 

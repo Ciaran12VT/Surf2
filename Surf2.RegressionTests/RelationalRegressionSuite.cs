@@ -17,6 +17,19 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--export-folder", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunDatabaseExportFolderImportChecksAsync(Check);
+    await StorageRegressionSuite.RunRelationalExportFolderImportChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} export folder checks.");
+    return;
+}
+if (args.Contains("--resource-management", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunResourceManagementChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} resource management checks.");
+    return;
+}
 if (args.Contains("--v2-catalogue", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunV2CatalogueChecksAsync(Check);

@@ -132,6 +132,11 @@ public partial class MainWindow
     {
         RequireRelationalWrite();
         var selected = await RequireRelationalSnapshotNodeAsync(work, node);
+        await ShowRelationalSnapshotCaptureAsync(work, selected);
+    }
+
+    private async Task ShowRelationalSnapshotCaptureAsync(SnapshotWorkflow work, SnapshotSummary selected)
+    {
         await SaveRelationalScopeAsync(work.Token); RequireRelationalSnapshotContext(work);
         var window = new RelationalDatabaseCaptureWindow(work.Runtime, work.Scope!.Snapshot(), work.Scope.ExpectedToken, selected) { Owner = this };
         OwnRelationalSnapshotWindow(work, window, window.CloseAndDrainAsync);
@@ -147,11 +152,38 @@ public partial class MainWindow
     {
         RequireRelationalWrite();
         var selected = await RequireRelationalSnapshotNodeAsync(work, node);
+        var chooser = new DatabaseResourceWorkflowWindow(selected.DisplayName) { Owner = this };
+        OwnRelationalSnapshotWindow(work, chooser, () => { chooser.Close(); return Task.CompletedTask; });
+        if (chooser.ShowDialog() != true) return;
+        RequireRelationalSnapshotContext(work);
+        if (chooser.SelectedWorkflow == DatabaseResourceWorkflow.DirectConnection)
+        {
+            await ShowRelationalSnapshotCaptureAsync(work, selected);
+            return;
+        }
         await SaveRelationalScopeAsync(work.Token);
         RequireRelationalSnapshotContext(work);
-        StatusText = "Loading " + selected.DisplayName + " for editing…";
         var service = new RelationalSnapshotEditorService(work.Runtime);
-        var model = await Task.Run(() => service.ReadAsync(selected, work.Token), work.Token);
+        DatabaseMetadataSnapshot model;
+        if (chooser.SelectedWorkflow == DatabaseResourceWorkflow.ExportFolder)
+        {
+            StatusText = "Importing the Surf2 export folder…";
+            var imported = await Task.Run(() => new DatabaseExportFolderImportService()
+                .ImportAsync(chooser.ExportFolderPath!, selected.DisplayName, work.Token), work.Token);
+            RequireRelationalSnapshotContext(work);
+            model = imported.Snapshot;
+            model.SnapshotId = selected.SnapshotId;
+            if (string.IsNullOrWhiteSpace(model.DatabaseName)) model.DatabaseName = selected.DatabaseName;
+            if (imported.Warnings.Count != 0 && MessageBox.Show(this,
+                "Review the following export limitations before saving the imported database:" + Environment.NewLine + Environment.NewLine +
+                string.Join(Environment.NewLine, imported.Warnings.Select(warning => "• " + warning)),
+                "Surf2 export folder", MessageBoxButton.OKCancel, MessageBoxImage.Information) != MessageBoxResult.OK) return;
+        }
+        else
+        {
+            StatusText = "Loading " + selected.DisplayName + " for editing…";
+            model = await Task.Run(() => service.ReadAsync(selected, work.Token), work.Token);
+        }
         RequireRelationalSnapshotContext(work);
         var window = new DatabaseResourceWindow(model) { Owner = this };
         OwnRelationalSnapshotWindow(work, window, () => { window.Close(); return Task.CompletedTask; });
