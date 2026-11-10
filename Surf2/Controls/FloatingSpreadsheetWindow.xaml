@@ -7,6 +7,12 @@
              ContextMenuOpening="FloatingSpreadsheetWindow_ContextMenuOpening">
     <UserControl.Resources>
         <Style TargetType="{x:Type DataGridColumnHeader}">
+            <Setter Property="Background"
+                    Value="{DynamicResource Theme.SurfaceAltBrush}" />
+            <Setter Property="Foreground"
+                    Value="{DynamicResource Theme.TextBrush}" />
+            <Setter Property="BorderBrush"
+                    Value="{DynamicResource Theme.BorderBrush}" />
             <Setter Property="HorizontalContentAlignment"
                     Value="Stretch" />
             <Setter Property="VerticalContentAlignment"
@@ -24,20 +30,20 @@
     </UserControl.ContextMenu>
 
     <Border x:Name="OuterBorder"
-            BorderBrush="#687385"
+            BorderBrush="{DynamicResource Theme.StrongBorderBrush}"
             BorderThickness="1"
-            Background="#FFFFFF"
+            Background="{DynamicResource Theme.SurfaceBrush}"
             SnapsToDevicePixels="True">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition x:Name="HeaderRow" Height="32" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="24" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Grid x:Name="HeaderBar"
                   Grid.Row="0"
-                  Background="#253245"
+                  Background="{DynamicResource Theme.PanelBrush}"
                   Cursor="SizeAll"
                   MouseLeftButtonDown="HeaderBar_MouseLeftButtonDown"
                   MouseLeftButtonUp="HeaderBar_MouseLeftButtonUp"
@@ -48,7 +54,7 @@
                            VerticalAlignment="Center"
                            FontSize="13"
                            FontWeight="SemiBold"
-                           Foreground="#FFFFFF"
+                           Foreground="{DynamicResource Theme.TextBrush}"
                            IsHitTestVisible="False"
                            TextTrimming="CharacterEllipsis" />
                 <Button x:Name="CloseButton"
@@ -70,6 +76,9 @@
 
             <Grid Grid.Row="1">
                 <DataGrid x:Name="SpreadsheetGrid"
+                          BorderBrush="{DynamicResource Theme.BorderBrush}"
+                          HorizontalGridLinesBrush="{DynamicResource Theme.BorderBrush}"
+                          VerticalGridLinesBrush="{DynamicResource Theme.BorderBrush}"
                           AutoGenerateColumns="False"
                           CanUserAddRows="False"
                           CanUserDeleteRows="False"
@@ -87,35 +96,43 @@
                           VirtualizingPanel.VirtualizationMode="Recycling" />
 
                 <Border x:Name="LoadingOverlay"
-                        Background="#F8FAFC"
+                        Background="{DynamicResource Theme.SurfaceAltBrush}"
                         Visibility="Visible">
-                    <TextBlock x:Name="LoadingText"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               FontSize="13"
-                               FontWeight="SemiBold"
-                               Foreground="#4B5563"
-                               Text="Loading CSV..." />
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="16">
+                        <TextBlock x:Name="LoadingText"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                                   TextWrapping="Wrap"
+                                   MaxWidth="600"
+                                   Text="Loading CSV..." />
+                        <Button x:Name="RetryGridButton" Content="Retry" Visibility="Collapsed"
+                                HorizontalAlignment="Center" Margin="0,8,0,0" Padding="12,4"
+                                Click="GridRetry_Click" />
+                    </StackPanel>
                 </Border>
             </Grid>
 
-            <Border Grid.Row="2"
-                    Background="#F8FAFC"
-                    BorderBrush="#D1D5DB"
+            <Border x:Name="FooterBorder" Grid.Row="2"
+                    Background="{DynamicResource Theme.SurfaceAltBrush}"
+                    BorderBrush="{DynamicResource Theme.BorderBrush}"
                     BorderThickness="0,1,0,0">
                 <Grid Margin="8,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
                     <TextBlock x:Name="StatusText"
                                VerticalAlignment="Center"
                                FontSize="11"
-                               Foreground="#4B5563"
+                               Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                               MinHeight="20"
                                TextTrimming="CharacterEllipsis" />
-                    <StackPanel Grid.Column="1"
+                    <WrapPanel Grid.Row="1" HorizontalAlignment="Right"
                                 Orientation="Horizontal">
-                        <Button Width="52"
+                        <Button x:Name="CopyGridButton" Width="52"
                             Height="18"
                             MinHeight="0"
                             Padding="4,0"
@@ -124,7 +141,7 @@
                             Click="CopyVisibleContentButton_Click"
                             Content="Copy"
                             FontSize="10" />
-                        <Button Width="58"
+                        <Button x:Name="ExportGridButton" Width="58"
                             Height="18"
                             MinHeight="0"
                             Padding="4,0"
@@ -151,7 +168,10 @@
                             Click="CopyFilterReferenceButton_Click"
                             Content="Copy Filter Reference"
                             FontSize="10" />
-                    </StackPanel>
+                        <Button x:Name="CancelGridOperationButton" Content="Cancel" Visibility="Collapsed"
+                                Height="18" MinHeight="0" Padding="6,0" Margin="6,2,0,2"
+                                FontSize="10" Click="GridCancelOperation_Click" />
+                    </WrapPanel>
                 </Grid>
             </Border>
 
@@ -222,7 +242,7 @@
                               Height="14"
                               HorizontalAlignment="Right"
                               VerticalAlignment="Bottom"
-                              Background="#D5DAE1"
+                              Background="{DynamicResource Theme.StrongBorderBrush}"
                               Cursor="SizeNWSE"
                               DragDelta="ResizeThumb_DragDelta"
                               Panel.ZIndex="4"

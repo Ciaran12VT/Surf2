@@ -13,34 +13,66 @@ public sealed class LocalConnectionSettingsStore
 
     private readonly string _stateFilePath;
 
-    public LocalConnectionSettingsStore()
+    public LocalConnectionSettingsStore() : this(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Surf2", "connection-settings.json"))
     {
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string stateDirectory = Path.Combine(appData, "Surf2");
-        _stateFilePath = Path.Combine(stateDirectory, "connection-settings.json");
+    }
+
+    public LocalConnectionSettingsStore(string stateFilePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stateFilePath);
+        _stateFilePath = Path.GetFullPath(stateFilePath);
     }
 
     public PersistenceConnectionSettings Load()
     {
-        if (!File.Exists(_stateFilePath))
+        FileStream stream;
+        try
+        {
+            stream = new FileStream(_stateFilePath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {
             return new PersistenceConnectionSettings();
         }
 
-        using FileStream stream = File.OpenRead(_stateFilePath);
-        PersistenceConnectionSettings? settings = JsonSerializer.Deserialize<PersistenceConnectionSettings>(stream, SerializerOptions);
-        return settings ?? new PersistenceConnectionSettings();
+        // Readers retain one complete version while an atomic save replaces its directory entry.
+        using (stream)
+        {
+            if (stream.Length > 1024 * 1024) throw new InvalidDataException("Connection settings exceed the bootstrap size limit.");
+            return JsonSerializer.Deserialize<PersistenceConnectionSettings>(stream, SerializerOptions)
+                ?? throw new InvalidDataException("Connection settings are empty.");
+        }
     }
 
     public void Save(PersistenceConnectionSettings settings)
     {
+        ArgumentNullException.ThrowIfNull(settings);
         string? directory = Path.GetDirectoryName(_stateFilePath);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             Directory.CreateDirectory(directory);
         }
 
-        using FileStream stream = File.Create(_stateFilePath);
-        JsonSerializer.Serialize(stream, settings, SerializerOptions);
+        string pendingPath = _stateFilePath + "." + Guid.NewGuid().ToString("N") + ".pending";
+        bool createdPending = false;
+        try
+        {
+            using (var stream = new FileStream(pendingPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                createdPending = true;
+                JsonSerializer.Serialize(stream, settings, SerializerOptions);
+                stream.Flush(flushToDisk: true);
+            }
+            if (File.Exists(_stateFilePath))
+                File.Replace(pendingPath, _stateFilePath, destinationBackupFileName: null);
+            else
+                File.Move(pendingPath, _stateFilePath);
+        }
+        finally
+        {
+            // Never remove an existing bootstrap or a partial file owned by another save.
+            if (createdPending) File.Delete(pendingPath);
+        }
     }
 }

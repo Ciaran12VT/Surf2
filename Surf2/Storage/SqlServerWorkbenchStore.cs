@@ -5,7 +5,12 @@ namespace Surf2.Storage;
 public sealed class SqlServerWorkbenchStore : IWorkbenchStore
 {
     private const string DocumentKey = "workbench-library";
-    private readonly SqlServerDocumentStore _documentStore = new();
+    private readonly SqlServerDocumentStore _documentStore;
+
+    public SqlServerWorkbenchStore(SqlServerConnectionOptions? options = null)
+    {
+        _documentStore = new(options ?? SqlServerConnectionOptions.CreateDefault());
+    }
     private readonly JsonWorkbenchStore _jsonFallback = new();
 
     public async Task<WorkbenchLibrary> LoadAsync(CancellationToken cancellationToken = default)

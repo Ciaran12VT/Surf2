@@ -42,7 +42,12 @@ public partial class FloatingSpreadsheetWindow : UserControl
     private int _totalRowCount;
     private int _columnCount;
 
-    public FloatingSpreadsheetWindow(OpenDocumentState state, string content)
+    public FloatingSpreadsheetWindow(OpenDocumentState state, string content) : this(state)
+    {
+        Loaded += (_, _) => TrackGridWork(LoadCsvOnceAsync(content));
+    }
+
+    private FloatingSpreadsheetWindow(OpenDocumentState state)
     {
         InitializeComponent();
 
@@ -70,7 +75,6 @@ public partial class FloatingSpreadsheetWindow : UserControl
         Loaded += FloatingSpreadsheetWindow_Loaded;
         Unloaded += FloatingSpreadsheetWindow_Unloaded;
         ApplyColumnFilters(State.SpreadsheetFilters, useAnyMatch: false);
-        Loaded += async (_, _) => await LoadCsvOnceAsync(content);
     }
 
     public event EventHandler? CloseRequested;
@@ -81,7 +85,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     public event EventHandler? FilterReferenceCopyRequested;
 
-    public OpenDocumentState State { get; }
+    public OpenDocumentState State { get; private set; }
 
     public void SetDockedMode(bool isDocked)
     {
@@ -89,7 +93,8 @@ public partial class FloatingSpreadsheetWindow : UserControl
         HeaderBar.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
         OuterBorder.BorderThickness = isDocked ? new Thickness(0) : new Thickness(1);
 
-        foreach (Thumb thumb in FindVisualChildren<Thumb>(this))
+        foreach (Thumb thumb in FindVisualChildren<Thumb>(this).Where(thumb =>
+                     thumb.Tag is "Left" or "Right" or "Top" or "Bottom" or "TopLeft" or "TopRight" or "BottomLeft" or "BottomRight"))
         {
             thumb.Visibility = isDocked ? Visibility.Collapsed : Visibility.Visible;
         }
@@ -178,6 +183,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private async Task LoadCsvOnceAsync(string content)
     {
+        if (_gridClosing) return;
         if (_isCsvLoaded)
         {
             RestoreFiltersFromStateIfNeeded();
@@ -198,6 +204,7 @@ public partial class FloatingSpreadsheetWindow : UserControl
         try
         {
             CsvGridDocument document = await Task.Run(() => CsvGridParser.Parse(content));
+            if (_gridClosing) return;
             _rows.Clear();
             foreach (CsvGridRow row in document.Rows)
             {
@@ -411,6 +418,12 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private void ApplyFilters()
     {
+        if (_gridClosing) return;
+        if (_gridSource != null)
+        {
+            RequestGridQuery();
+            return;
+        }
         ICollectionView view = CollectionViewSource.GetDefaultView(_rows);
         view.Filter = RowMatchesFilters;
         view.Refresh();
@@ -496,6 +509,11 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private void CopyVisibleContentButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_gridSource != null)
+        {
+            StartGridOutput(export: false);
+            return;
+        }
         ApplyCurrentFilters();
 
         if (!TryBuildVisibleContent('\t', out string clipboardText, out int rowCount, out int columnCount))
@@ -517,6 +535,11 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private void ExportVisibleContentButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_gridSource != null)
+        {
+            StartGridOutput(export: true);
+            return;
+        }
         ApplyCurrentFilters();
 
         if (!TryBuildVisibleContent(',', out string csv, out int rowCount, out int columnCount))
@@ -705,8 +728,10 @@ public partial class FloatingSpreadsheetWindow : UserControl
 
     private void FloatingSpreadsheetWindow_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
+        if (_gridClosing) return;
         if (e.NewValue is not true)
         {
+            SuspendGridViewport();
             return;
         }
 
@@ -714,19 +739,23 @@ public partial class FloatingSpreadsheetWindow : UserControl
         RestoreFiltersFromStateIfNeeded();
         RefreshFilterTextBoxes();
         ApplyFilters();
+        ResumeGridViewport();
     }
 
     private void FloatingSpreadsheetWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        if (_gridClosing) return;
         _isDetachedFromVisualTree = false;
         RestoreFiltersFromStateIfNeeded();
         RefreshFilterTextBoxes();
         ApplyFilters();
+        ResumeGridViewport();
     }
 
     private void FloatingSpreadsheetWindow_Unloaded(object sender, RoutedEventArgs e)
     {
         _isDetachedFromVisualTree = true;
+        SuspendGridViewport();
     }
 
     private void RestoreFiltersFromStateIfNeeded()
@@ -968,6 +997,12 @@ public partial class FloatingSpreadsheetWindow : UserControl
         double multiplier = e.Delta > 0 ? FontZoomStep : 1 / FontZoomStep;
         SpreadsheetGrid.FontSize = Math.Clamp(SpreadsheetGrid.FontSize * multiplier, MinimumFontSize, MaximumFontSize);
         State.FontSize = SpreadsheetGrid.FontSize;
+        if (_gridSource != null)
+        {
+            SpreadsheetGrid.RowHeight = Math.Max(26, SpreadsheetGrid.FontSize * 1.6 + 8);
+            UpdateGridHeaderHeight();
+            QueueGridViewport();
+        }
         e.Handled = true;
         BoundsChanged?.Invoke(this, EventArgs.Empty);
     }

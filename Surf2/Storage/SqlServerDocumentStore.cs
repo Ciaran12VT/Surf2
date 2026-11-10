@@ -40,6 +40,7 @@ public sealed class SqlServerDocumentStore
 
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
+        await EnsureLegacyProviderAsync(connection, cancellationToken);
 
         await using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -84,6 +85,7 @@ WHERE DocumentKey = @DocumentKey;
         string payload = JsonSerializer.Serialize(value, SerializerOptions);
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
+        await EnsureLegacyProviderAsync(connection, cancellationToken);
 
         await using var command = connection.CreateCommand();
         command.CommandText = $"""
@@ -188,6 +190,8 @@ END;
 
         await using var command = connection.CreateCommand();
         command.CommandText = $"""
+IF OBJECT_ID(N'surf.StorageFormatInfo', N'U') IS NOT NULL
+    THROW 51011, 'The legacy provider cannot initialize a relational or incomplete migration database.', 1;
 IF SCHEMA_ID(N'{SchemaName}') IS NULL
 BEGIN
     EXEC(N'CREATE SCHEMA [{SchemaName}]');
@@ -206,6 +210,16 @@ BEGIN
 END;
 """;
 
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task EnsureLegacyProviderAsync(SqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+IF OBJECT_ID(N'surf.StorageFormatInfo', N'U') IS NOT NULL
+    THROW 51011, 'The legacy provider cannot read or write a relational or incomplete migration database.', 1;
+""";
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }

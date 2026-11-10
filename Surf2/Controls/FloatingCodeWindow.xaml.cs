@@ -75,6 +75,8 @@ public partial class FloatingCodeWindow : UserControl
         AddHandler(Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler(FloatingCodeWindow_PreviewMouseDown), true);
         Editor.PreviewMouseLeftButtonUp += Editor_PreviewMouseLeftButtonUp;
         Editor.PreviewMouseDoubleClick += Editor_PreviewMouseDoubleClick;
+        Editor.MouseHover += Editor_ReferenceMouseHover;
+        Editor.MouseHoverStopped += (_, _) => Editor.ToolTip = null;
         PreviewKeyDown += FloatingCodeWindow_PreviewKeyDown;
         AddHandler(Mouse.PreviewMouseMoveEvent, new MouseEventHandler(FloatingCodeWindow_PreviewMouseMove), true);
         PreviewMouseWheel += FloatingCodeWindow_PreviewMouseWheel;
@@ -253,7 +255,8 @@ public partial class FloatingCodeWindow : UserControl
         Editor.SyntaxHighlighting = highlighting;
     }
 
-    public void ApplyReferenceHighlights(IReadOnlyDictionary<string, ReferenceHighlightStyleSetting> highlightStyles)
+    public void ApplyReferenceHighlights(IReadOnlyDictionary<string, ReferenceHighlightStyleSetting> highlightStyles,
+        bool referencesPending = false, IReadOnlySet<string>? availableNames = null)
     {
         if (_referenceHighlightColorizer != null)
         {
@@ -261,13 +264,14 @@ public partial class FloatingCodeWindow : UserControl
             _referenceHighlightColorizer = null;
         }
 
-        if (highlightStyles.Count == 0)
+        Editor.ToolTip = null;
+        if (highlightStyles.Count == 0 && !referencesPending)
         {
             Editor.TextArea.TextView.Redraw();
             return;
         }
 
-        _referenceHighlightColorizer = new ReferenceHighlightColorizer(highlightStyles);
+        _referenceHighlightColorizer = new ReferenceHighlightColorizer(highlightStyles, referencesPending, availableNames);
         Editor.TextArea.TextView.LineTransformers.Add(_referenceHighlightColorizer);
         Editor.TextArea.TextView.Redraw();
     }
@@ -1073,6 +1077,8 @@ public partial class FloatingCodeWindow : UserControl
             return false;
         }
 
+        if (_referenceHighlightColorizer?.IsPendingAt(Editor.Document, offset) == true) return false;
+
         if (!TryGetReferenceTokenAtOffset(offset, out string token, out int? argumentCount, out int tokenStartOffset, out int tokenEndOffset))
         {
             return false;
@@ -1089,6 +1095,15 @@ public partial class FloatingCodeWindow : UserControl
             startLocation.Column,
             endLocation.Column);
         return true;
+    }
+
+    private void Editor_ReferenceMouseHover(object sender, MouseEventArgs e)
+    {
+        var position = Editor.GetPositionFromPoint(e.GetPosition(Editor));
+        if (position == null || Editor.Document == null) return;
+        int offset = Editor.Document.GetOffset(position.Value.Location);
+        Editor.ToolTip = _referenceHighlightColorizer?.IsPendingAt(Editor.Document, offset) == true
+            ? "Loading definitions…" : null;
     }
 
     private void Caret_PositionChanged(object? sender, EventArgs e)

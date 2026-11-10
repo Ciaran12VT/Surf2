@@ -742,6 +742,10 @@
                         </Grid>
                     </Border>
                     <Grid Grid.Row="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
                         <TreeView x:Name="ObjectExplorer"
                                   AllowDrop="True"
                                   BorderThickness="0"
@@ -763,6 +767,50 @@
                                 </Style>
                             </TreeView.ItemContainerStyle>
                         </TreeView>
+                        <Border x:Name="RelationalIndexFooter"
+                                Grid.Row="1"
+                                Visibility="Collapsed"
+                                Padding="8,5"
+                                BorderThickness="0,1,0,0"
+                                BorderBrush="{DynamicResource Theme.BorderBrush}">
+                            <DockPanel LastChildFill="True">
+                                <Button x:Name="RelationalIndexRetryButton"
+                                        DockPanel.Dock="Right"
+                                        Visibility="Collapsed"
+                                        Padding="5,1"
+                                        Margin="5,0,0,0"
+                                        Content="Retry"
+                                        Click="RelationalIndexRetryButton_Click"
+                                        ToolTip="Retry loading definitions and searchable content" />
+                                <Grid x:Name="RelationalIndexSpinner"
+                                      Width="13" Height="13" Margin="0,0,6,0"
+                                      RenderTransformOrigin="0.5,0.5"
+                                      AutomationProperties.Name="Loading scope index">
+                                    <Grid.RenderTransform>
+                                        <RotateTransform />
+                                    </Grid.RenderTransform>
+                                    <Ellipse Stroke="{DynamicResource Theme.BorderBrush}" StrokeThickness="2" />
+                                    <Path Data="M6.5,1 A5.5,5.5 0 0 1 12,6.5"
+                                          Stroke="{DynamicResource Theme.MutedTextBrush}"
+                                          StrokeThickness="2" StrokeEndLineCap="Round" />
+                                    <Grid.Triggers>
+                                        <EventTrigger RoutedEvent="Loaded">
+                                            <BeginStoryboard>
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                     From="0" To="360" Duration="0:0:1"
+                                                                     RepeatBehavior="Forever" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </EventTrigger>
+                                    </Grid.Triggers>
+                                </Grid>
+                                <TextBlock x:Name="RelationalIndexProgressText"
+                                           VerticalAlignment="Center" FontSize="11"
+                                           Foreground="{DynamicResource Theme.MutedTextBrush}"
+                                           TextTrimming="CharacterEllipsis" Text="Loading…" />
+                            </DockPanel>
+                        </Border>
                         <Grid x:Name="ObjectExplorerLoadingOverlay"
                               Background="{DynamicResource Theme.OverlayBrush}"
                               Visibility="Collapsed">
@@ -2214,6 +2262,8 @@
             <TextBlock Margin="10,0"
                        VerticalAlignment="Center"
                        Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding StatusText}"
                        Text="{Binding StatusText}" />
         </Border>
     </Grid>

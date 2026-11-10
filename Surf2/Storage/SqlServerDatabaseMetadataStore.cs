@@ -5,7 +5,12 @@ namespace Surf2.Storage;
 public sealed class SqlServerDatabaseMetadataStore : IDatabaseMetadataStore
 {
     private const string DocumentKey = "database-snapshots";
-    private readonly SqlServerDocumentStore _documentStore = new();
+    private readonly SqlServerDocumentStore _documentStore;
+
+    public SqlServerDatabaseMetadataStore(SqlServerConnectionOptions? options = null)
+    {
+        _documentStore = new(options ?? SqlServerConnectionOptions.CreateDefault());
+    }
     private readonly JsonDatabaseMetadataStore _jsonFallback = new();
 
     public async Task<DatabaseSnapshotLibrary> LoadAsync(CancellationToken cancellationToken = default)

@@ -171,7 +171,7 @@ public sealed class ResourceComparisonSettings
 
 public sealed class DiagnosticsSettings
 {
-    public bool EnableInternalLogging { get; set; }
+    public bool EnableInternalLogging { get; set; } = true;
 
     public DiagnosticsSettings Clone()
     {

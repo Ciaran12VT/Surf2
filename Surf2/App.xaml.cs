@@ -17,10 +17,11 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // The persisted preference is applied after loading; capture failures before it can be read.
+        InternalLogService.Initialize();
         bool hasExternalOpenArgument = e.Args.Any(IsExternalOpenArgument);
         if (hasExternalOpenArgument)
         {
-            InternalLogService.Initialize();
             InternalLogService.Info(
                 "Surf2 started with external-open arguments.",
                 ("ArgumentCount", e.Args.Length));
@@ -240,7 +241,7 @@ public partial class App : Application
     {
         try
         {
-            string connectionString = SqlServerConnectionOptions.CreateDefault().ConnectionString;
+            string connectionString = mainWindow.EffectivePersistenceConnectionString;
             _databaseExternalOpenPipeServer = StartExternalOpenPipeServer(
                 ExternalOpenPipeNames.CreateDatabase(connectionString),
                 mainWindow);
@@ -249,7 +250,14 @@ public partial class App : Application
                 mainWindow);
 
             mainWindow.ActiveScopeChanged += (_, _) =>
-                RefreshActiveScopeExternalOpenPipeServer(mainWindow, connectionString);
+                RefreshActiveScopeExternalOpenPipeServer(mainWindow, mainWindow.EffectivePersistenceConnectionString);
+            mainWindow.PersistenceConnectionChanged += (_, _) =>
+            {
+                _databaseExternalOpenPipeServer?.Dispose();
+                _databaseExternalOpenPipeServer = StartExternalOpenPipeServer(
+                    ExternalOpenPipeNames.CreateDatabase(mainWindow.EffectivePersistenceConnectionString), mainWindow);
+                RefreshActiveScopeExternalOpenPipeServer(mainWindow, mainWindow.EffectivePersistenceConnectionString);
+            };
             RefreshActiveScopeExternalOpenPipeServer(mainWindow, connectionString);
         }
         catch (Exception ex)
