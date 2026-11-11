@@ -14,10 +14,22 @@ public sealed partial class RelationalComparisonService
         ExplorerScope? scope, ComparisonOptions options, CancellationToken ct = default) => Task.Run(async () =>
     {
         await RequireScopeAsync(scope, ct).ConfigureAwait(false);
+        if (IsSnapshotCollection(left) && IsSnapshotCollection(right))
+        {
+            var selected = await CompareSnapshotCollectionsAsync(left, right, options, ct).ConfigureAwait(false);
+            if (selected != null)
+            {
+                try { await RequireScopeAsync(scope, ct).ConfigureAwait(false); return selected; }
+                catch { await selected.DisposeAsync().ConfigureAwait(false); throw; }
+            }
+        }
         var result = await ComparisonCollectionEngine.BuildAsync(Collection(left, scope, options, ct), Collection(right, scope, options, ct), Limits, ct).ConfigureAwait(false);
         try { await RequireScopeAsync(scope, ct).ConfigureAwait(false); return result; }
         catch { await result.DisposeAsync().ConfigureAwait(false); throw; }
     }, ct);
+
+    private static bool IsSnapshotCollection(RelationalComparisonTarget target) => target.SnapshotKey.HasValue &&
+        target.Resource.Kind is ComparisonResourceKind.DatabaseSnapshot or ComparisonResourceKind.DatabaseObjectFolder;
 
     private async IAsyncEnumerable<ComparisonCollectionEntry> Collection(RelationalComparisonTarget target, ExplorerScope? scope,
         ComparisonOptions options, [EnumeratorCancellation] CancellationToken ct)

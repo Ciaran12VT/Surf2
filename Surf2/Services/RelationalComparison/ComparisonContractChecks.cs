@@ -86,6 +86,28 @@ public static class ComparisonContractChecks
                 Check(choices.Complete && choices.Left.Count == 3 && choices.Right.Count == 3, "Compare With choices retain targets without content");
                 Check(choices.Left.All(x => x.Document.Content.Length == 0), "Compare With choices never retain document text");
             }
+            await using (var memory = await ComparisonCollectionEngine.BuildAsync(Entries(collectionLeft), Entries(collectionRight),
+                limits with { SortBufferBytes = 1024 * 1024 }, ct))
+            {
+                Check(!Directory.EnumerateDirectories(root).Any(), "Small collection comparisons do not allocate scratch directories");
+                var expectedRows = await All(memory);
+                long scanned = memory.PageScanCount;
+                _ = await memory.ReadPageAsync(3, ct: ct);
+                Check(memory.PageScanCount == scanned, "Moving between memory result pages reuses the filtered row index");
+                await using var spilled = await ComparisonCollectionEngine.BuildAsync(Entries(collectionLeft), Entries(collectionRight), limits, ct);
+                var actualRows = await All(spilled);
+                Check(actualRows.Select(row => (row.Key, row.Status, row.Left?.Resource.IdentityKey, row.Right?.Resource.IdentityKey))
+                    .SequenceEqual(expectedRows.Select(row => (row.Key, row.Status, row.Left?.Resource.IdentityKey, row.Right?.Resource.IdentityKey))),
+                    "Memory and spill collection results preserve ordering, duplicate selection, locators and statuses");
+                long diskScanned = spilled.PageScanCount;
+                _ = await spilled.ReadPageAsync(3, ct: ct);
+                Check(spilled.PageScanCount == diskScanned, "Moving between disk result pages seeks without rescanning records");
+                var filtered = await spilled.ReadPageAsync(search: "folder", ct: ct);
+                long filteredScanned = spilled.PageScanCount;
+                _ = await spilled.ReadPageAsync(3, search: "FOLDER", ct: ct);
+                Check(filtered.MatchingCount == 3 && spilled.PageScanCount == filteredScanned,
+                    "Equivalent page filters reuse one index and retain matching totals");
+            }
             var nestedA = new[] { E("a", true, ""), E("a/b", true, ""), E("a/b/c", false, "old") };
             var nestedB = new[] { E("a", true, ""), E("a/b", true, ""), E("a/b/c", false, "new") };
             await using (var result = await ComparisonCollectionEngine.BuildAsync(Entries(nestedA), Entries(nestedB), limits, ct))

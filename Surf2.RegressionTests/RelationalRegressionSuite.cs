@@ -17,6 +17,21 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--snapshot-publication", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunSnapshotPublicationPerformanceChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} snapshot publication checks.");
+    return;
+}
+if (args.Contains("--history-performance", StringComparer.Ordinal))
+{
+    foreach (string name in await Surf2.Services.RelationalComparison.ComparisonContractChecks.RunAsync()) Check(true, name);
+    await StorageRegressionSuite.RunHistoricalProjectionPerformanceChecksAsync(Check);
+    await StorageRegressionSuite.RunHistoryBatchPerformanceChecksAsync(Check);
+    await StorageRegressionSuite.RunSnapshotPublicationPerformanceChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} history performance checks.");
+    return;
+}
 if (args.Contains("--history-file-rows", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunHistoryFileRowsChecksAsync(Check);

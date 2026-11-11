@@ -73,6 +73,7 @@ public static partial class StorageRegressionSuite
             "Fresh capture publishes its resolved membership in the same destination transaction");
         var firstData = (await runtime.Snapshots.ListResourcesAsync(first.Snapshot.SnapshotKey, DatabaseVersionedResourceKind.TableData)).Items.Single();
         var firstProcedure = (await runtime.Snapshots.ListResourcesAsync(first.Snapshot.SnapshotKey, DatabaseVersionedResourceKind.StoredProcedure)).Items.Single();
+        var firstView = (await runtime.Snapshots.ListResourcesAsync(first.Snapshot.SnapshotKey, DatabaseVersionedResourceKind.View)).Items.Single();
         var capturedDefinitionBytes = (byte[])Required(await fixture.DestinationSqlAsync("""
             SELECT CONVERT(varbinary(max),c.Text) FROM surf.DatabaseObjectRevision o
             JOIN surf.TextContent c ON c.ContentKey=o.DefinitionContentKey WHERE o.RevisionKey=@Revision;
@@ -105,6 +106,7 @@ public static partial class StorageRegressionSuite
             "Replacement changes only the selected snapshot head and retains unchanged scope membership/token");
         var secondData = (await runtime.Snapshots.ListResourcesAsync(first.Snapshot.SnapshotKey, DatabaseVersionedResourceKind.TableData)).Items.Single();
         var secondProcedure = (await runtime.Snapshots.ListResourcesAsync(first.Snapshot.SnapshotKey, DatabaseVersionedResourceKind.StoredProcedure)).Items.Single();
+        var secondView = (await runtime.Snapshots.ListResourcesAsync(first.Snapshot.SnapshotKey, DatabaseVersionedResourceKind.View)).Items.Single();
         check(secondData.ResourceKey == firstData.ResourceKey && secondProcedure.ResourceKey == firstProcedure.ResourceKey &&
             secondData.RevisionKey != firstData.RevisionKey && secondProcedure.RevisionKey != firstProcedure.RevisionKey,
             "Replacement retains resource identity while staging new immutable revisions");
@@ -123,8 +125,11 @@ public static partial class StorageRegressionSuite
                 .Contains("first captured definition", StringComparison.Ordinal), "Replacement reverse history restores the first selected definition");
         }
         var rollback = await runtime.Snapshots.ListChangesAsync(second.Snapshot.SnapshotKey, second.VersionKey, 10);
-        check(rollback.Items.Count == 4 && rollback.Items.Last().Kind == DatabaseVersionedResourceKind.TableData &&
+        check(rollback.Items.Count == 3 && rollback.Items.Last().Kind == DatabaseVersionedResourceKind.TableData &&
             rollback.Items.All(c => c.PreviousRevisionKey != null), "Replacement records metadata before data reversals with selected previous revision handles");
+        check(secondView.ResourceKey == firstView.ResourceKey && secondView.RevisionKey == firstView.RevisionKey &&
+            rollback.Items.All(change => change.ResourceKey != firstView.ResourceKey),
+            "Replacement reuses an unchanged view revision and omits it from the history change list");
         await ThrowsAsync<SnapshotConcurrencyException>(() => service.CaptureAsync(new(fixture.SourceConnectionString, "Stale replacement",
             selection, second.UpdatedScope, second.UpdatedScopeToken, firstToken)), check, "Stale expected snapshot token refuses runtime replacement");
         var wrongScope = new Scope { ScopeId = "wrong-runtime-scope", Name = "Wrong runtime scope" };

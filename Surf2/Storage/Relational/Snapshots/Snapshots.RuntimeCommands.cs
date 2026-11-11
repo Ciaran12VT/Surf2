@@ -34,7 +34,11 @@ namespace Surf2.Storage.Relational.Snapshots
         public required byte[] ExpectedVersion { get; init; }
         public required bool IsNew { get; init; }
         public required SnapshotHeader Header { get; init; }
+        public SnapshotSummary? PreviousSnapshot { get; init; }
         public List<RuntimeSnapshotResource> Previous { get; } = [];
+        public List<OrderedColumn> PreviousColumns { get; } = [];
+        public List<OrderedPrimaryKey> PreviousPrimaryKeys { get; } = [];
+        public List<string> PreviousFullDataSelections { get; } = [];
         public List<RuntimeSnapshotResource> Resources { get; } = [];
         public List<long> Columns { get; } = [];
         public List<long> PrimaryKeys { get; } = [];
@@ -77,7 +81,8 @@ namespace Surf2.Storage.Relational.Snapshots
                 var current = await GetSnapshotAsync(expected.SnapshotKey, ct).ConfigureAwait(false) ?? throw new SnapshotConcurrencyException();
                 if (!current.RowVersion.AsSpan().SequenceEqual(expected.Version)) throw new SnapshotConcurrencyException();
                 return new() { Epoch = Epoch, SnapshotKey = current.SnapshotKey, ExpectedVersion = expected.Version,
-                    IsNew = false, Header = new(current.SnapshotId, displayName, databaseName, importedAt, current.SortOrdinal) };
+                    IsNew = false, PreviousSnapshot = current,
+                    Header = new(current.SnapshotId, displayName, databaseName, importedAt, current.SortOrdinal) };
             }
             string id = Guid.NewGuid().ToString("N");
             var header = new SnapshotHeader(id, displayName, databaseName, importedAt, 0);
@@ -168,10 +173,11 @@ namespace Surf2.Storage.Relational.Snapshots
             if (plan.Resources.Select(x => x.ResourceKey).Distinct().Count() != plan.Resources.Count ||
                 plan.Resources.Select(x => (x.Kind, x.SchemaName, x.Name)).Distinct(RuntimeSnapshotNameComparer.Instance).Count() != plan.Resources.Count)
                 throw new InvalidOperationException("Ambiguous staged resource identities cannot be published implicitly.");
+            await NormalizeRuntimeResourcesAsync(plan, ct).ConfigureAwait(false);
             await using var connection = await Open(ct).ConfigureAwait(false);
             await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
             await ScalarAsync(connection, transaction,
-                "UPDATE surf.SnapshotCatalogueHead SET UserKey=UserKey WHERE UserKey=1;", ct).ConfigureAwait(false);
+                "SELECT UserKey FROM surf.SnapshotCatalogueHead WITH(UPDLOCK,HOLDLOCK) WHERE UserKey=1;", ct).ConfigureAwait(false);
             var state = new RelationalStateStore(session);
             if (expectedScope != null) await state.RequireSnapshotScopeAsync(connection, transaction, expectedScope, publication, ct).ConfigureAwait(false);
             object? head = await ScalarAsync(connection, transaction, """
@@ -184,6 +190,27 @@ namespace Surf2.Storage.Relational.Snapshots
                 Key("@Scope", expectedScope.Key), Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false))! == 0)
                 throw new StateConflictException("replacement snapshot membership");
             var writer = new RelationalSnapshotWriter(connection, transaction, content, plan.SnapshotKey);
+            // A no-op still validates the selected snapshot and scope under the same
+            // publication locks. Catalogue-only edits do not manufacture a file revision.
+            if (RuntimeStateUnchanged(plan))
+            {
+                var previous = plan.PreviousSnapshot ?? throw new InvalidOperationException("Missing replacement snapshot baseline.");
+                byte[] currentVersion = bytes;
+                if (previous.DisplayName != plan.Header.DisplayName || previous.DatabaseName != plan.Header.DatabaseName ||
+                    !previous.ImportedAtUtc.EqualsExact(plan.Header.ImportedAtUtc) || previous.SortOrdinal != plan.Header.SortOrdinal)
+                {
+                    await ScalarAsync(connection, transaction,
+                        "UPDATE surf.SnapshotCatalogueHead SET UserKey=UserKey WHERE UserKey=1;", ct).ConfigureAwait(false);
+                    await writer.UpdateSnapshotHeaderAsync(plan.SnapshotKey, plan.Header.DisplayName, plan.Header.DatabaseName,
+                        plan.Header.ImportedAtUtc, plan.Header.SortOrdinal, ct).ConfigureAwait(false);
+                    currentVersion = (byte[])(await ScalarAsync(connection, transaction,
+                        "SELECT RowVersion FROM surf.DatabaseSnapshot WHERE SnapshotKey=@Snapshot;", ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false))!;
+                }
+                var unchanged = previous with { DisplayName = plan.Header.DisplayName, DatabaseName = plan.Header.DatabaseName,
+                    ImportedAtUtc = plan.Header.ImportedAtUtc, SortOrdinal = plan.Header.SortOrdinal, RowVersion = currentVersion };
+                await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false);
+                return new(unchanged, expectedScope, previous.CurrentVersionKey ?? 0);
+            }
             long history; byte[] historyVersion; int next; long versionOrdinal;
             await using (var command = Command(connection, transaction, """
                 SELECT TOP(1) HistoryKey,NextVersionNumber,RowVersion FROM surf.SnapshotHistory WITH(UPDLOCK,HOLDLOCK)
@@ -232,34 +259,57 @@ namespace Surf2.Storage.Relational.Snapshots
                     Key("@Snapshot", plan.SnapshotKey), Key("@Version", version)).ConfigureAwait(false);
                 long order = 0;
                 var previousKeys = plan.Previous.Select(x => x.ResourceKey).ToHashSet();
-                var desiredKeys = plan.Resources.Select(x => x.ResourceKey).ToHashSet();
+                var desired = plan.Resources.ToDictionary(x => x.ResourceKey);
                 foreach (var value in plan.Resources.Where(x => !previousKeys.Contains(x.ResourceKey)))
                     await RuntimeChangeAsync(writer, version, value, DatabaseSnapshotResourceChangeKind.Added, null, order++, ct).ConfigureAwait(false);
-                // Metadata reversals remove companion data. Restore all previous data LAST.
+                // The exact baseline carries ordering, predicates and companion metadata;
+                // history file rows only describe resources whose actual payload changed.
                 foreach (var value in plan.Previous.OrderBy(x => x.Kind == DatabaseVersionedResourceKind.TableData ? 2 :
                     x.Kind == DatabaseVersionedResourceKind.TableMetadata ? 1 : 0).ThenBy(x => x.SortOrdinal))
-                    await RuntimeChangeAsync(writer, version, value,
-                        desiredKeys.Contains(value.ResourceKey) ? DatabaseSnapshotResourceChangeKind.Modified : DatabaseSnapshotResourceChangeKind.Deleted,
+                {
+                    if (desired.TryGetValue(value.ResourceKey, out var replacement))
+                    {
+                        if (replacement.RevisionKey != value.RevisionKey)
+                            await RuntimeChangeAsync(writer, version, value, DatabaseSnapshotResourceChangeKind.Modified,
+                                value.RevisionKey, order++, ct).ConfigureAwait(false);
+                    }
+                    else await RuntimeChangeAsync(writer, version, value, DatabaseSnapshotResourceChangeKind.Deleted,
                         value.RevisionKey, order++, ct).ConfigureAwait(false);
+                }
             }
-            await ScalarAsync(connection, transaction, """
-                UPDATE surf.SnapshotResource SET CurrentRevisionKey=NULL WHERE SnapshotKey=@Snapshot AND CurrentRevisionKey IS NOT NULL;
-                DELETE FROM surf.SnapshotCurrentColumn WHERE SnapshotKey=@Snapshot;
-                DELETE FROM surf.SnapshotCurrentPrimaryKey WHERE SnapshotKey=@Snapshot;
-                DELETE FROM surf.FullDataTableSelection WHERE SnapshotKey=@Snapshot;
-                """, ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false);
+            var previousResources = plan.Previous.ToDictionary(value => value.ResourceKey);
+            var desiredResources = plan.Resources.Select(value => value.ResourceKey).ToHashSet();
+            foreach (var value in plan.Previous.Where(value => !desiredResources.Contains(value.ResourceKey)))
+                await writer.SetCurrentRevisionAsync(value.ResourceKey, null, value.SortOrdinal, ct: ct).ConfigureAwait(false);
             foreach (var value in plan.Resources)
-                await writer.SetCurrentRevisionAsync(value.ResourceKey, value.RevisionKey, value.SortOrdinal, ct: ct).ConfigureAwait(false);
-            for (int i = 0; i < plan.Columns.Count; i++)
-                await ScalarAsync(connection, transaction, """
-                    INSERT surf.SnapshotCurrentColumn(SnapshotKey,ColumnRevisionKey,SortOrdinal) VALUES(@Snapshot,@Child,@Order);
-                    """, ct, Key("@Snapshot", plan.SnapshotKey), Key("@Child", plan.Columns[i]), Key("@Order", i)).ConfigureAwait(false);
-            for (int i = 0; i < plan.PrimaryKeys.Count; i++)
-                await ScalarAsync(connection, transaction, """
-                    INSERT surf.SnapshotCurrentPrimaryKey(SnapshotKey,KeyColumnKey,SortOrdinal) VALUES(@Snapshot,@Child,@Order);
-                    """, ct, Key("@Snapshot", plan.SnapshotKey), Key("@Child", plan.PrimaryKeys[i]), Key("@Order", i)).ConfigureAwait(false);
-            for (int i = 0; i < plan.FullDataSelections.Count; i++)
-                await writer.InsertFullDataSelectionAsync(plan.SnapshotKey, plan.FullDataSelections[i], i, ct).ConfigureAwait(false);
+                if (!previousResources.TryGetValue(value.ResourceKey, out var previous) ||
+                    value.RevisionKey != previous.RevisionKey || value.SortOrdinal != previous.SortOrdinal)
+                    await writer.SetCurrentRevisionAsync(value.ResourceKey, value.RevisionKey, value.SortOrdinal, ct: ct).ConfigureAwait(false);
+            if (!plan.Columns.SequenceEqual(plan.PreviousColumns.Select(value => value.ColumnRevisionKey)))
+            {
+                await ScalarAsync(connection, transaction, "DELETE FROM surf.SnapshotCurrentColumn WHERE SnapshotKey=@Snapshot;",
+                    ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false);
+                for (int i = 0; i < plan.Columns.Count; i++)
+                    await ScalarAsync(connection, transaction, """
+                        INSERT surf.SnapshotCurrentColumn(SnapshotKey,ColumnRevisionKey,SortOrdinal) VALUES(@Snapshot,@Child,@Order);
+                        """, ct, Key("@Snapshot", plan.SnapshotKey), Key("@Child", plan.Columns[i]), Key("@Order", i)).ConfigureAwait(false);
+            }
+            if (!plan.PrimaryKeys.SequenceEqual(plan.PreviousPrimaryKeys.Select(value => value.KeyColumnKey)))
+            {
+                await ScalarAsync(connection, transaction, "DELETE FROM surf.SnapshotCurrentPrimaryKey WHERE SnapshotKey=@Snapshot;",
+                    ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false);
+                for (int i = 0; i < plan.PrimaryKeys.Count; i++)
+                    await ScalarAsync(connection, transaction, """
+                        INSERT surf.SnapshotCurrentPrimaryKey(SnapshotKey,KeyColumnKey,SortOrdinal) VALUES(@Snapshot,@Child,@Order);
+                        """, ct, Key("@Snapshot", plan.SnapshotKey), Key("@Child", plan.PrimaryKeys[i]), Key("@Order", i)).ConfigureAwait(false);
+            }
+            if (!plan.FullDataSelections.SequenceEqual(plan.PreviousFullDataSelections, StringComparer.Ordinal))
+            {
+                await ScalarAsync(connection, transaction, "DELETE FROM surf.FullDataTableSelection WHERE SnapshotKey=@Snapshot;",
+                    ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false);
+                for (int i = 0; i < plan.FullDataSelections.Count; i++)
+                    await writer.InsertFullDataSelectionAsync(plan.SnapshotKey, plan.FullDataSelections[i], i, ct).ConfigureAwait(false);
+            }
             long ordinal = plan.Header.SortOrdinal;
             if (plan.IsNew) ordinal = checked((long)(await ScalarAsync(connection, transaction,
                 "SELECT COALESCE(MAX(SortOrdinal),CONVERT(bigint,-1)) FROM surf.DatabaseSnapshot WHERE IsPublished=1;", ct).ConfigureAwait(false))! + 1);
@@ -284,10 +334,15 @@ namespace Surf2.Storage.Relational.Snapshots
             }
             var summary = new SnapshotSummary(plan.SnapshotKey, publicId, plan.Header.SnapshotId, plan.Header.DisplayName,
                 plan.Header.DatabaseName, plan.Header.ImportedAtUtc, ordinal, version, publishedVersion);
+            await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false);
+            return new(summary, scopeToken, version);
+        }
+
+        private static async Task CommitRuntimePublicationAsync(SqlTransaction transaction, long snapshotKey, Guid publication, CancellationToken ct)
+        {
             try { await transaction.CommitAsync(ct).ConfigureAwait(false); }
             catch (Exception error) when (error is SqlException or OperationCanceledException or System.IO.IOException)
-            { throw new SnapshotPublicationOutcomeUnknownException(plan.SnapshotKey, publication, error); }
-            return new(summary, scopeToken, version);
+            { throw new SnapshotPublicationOutcomeUnknownException(snapshotKey, publication, error); }
         }
 
         private static Task<long> RuntimeChangeAsync(RelationalSnapshotWriter writer, long version, RuntimeSnapshotResource value,

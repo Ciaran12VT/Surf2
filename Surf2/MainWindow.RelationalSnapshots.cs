@@ -217,13 +217,10 @@ public partial class MainWindow
     {
         var collection = target.Resource.IsTableData ? HistoricalCollection.TableDataSets :
             target.Resource.Kind == ComparisonResourceKind.TableMetadata ? HistoricalCollection.Tables : HistoricalCollection.Objects;
-        int units = 0; long bytes = 0;
-        await foreach (var entry in context.StreamAsync(collection, ct))
-        {
-            RequireRelationalHistoricalMetadataBudget(ref units, ref bytes, entry);
-            if (entry.ResourceKey == target.ResourceKey && entry.RevisionKey == target.RevisionKey &&
-                entry.EntryKey == target.HistoricalEntryKey) return entry;
-        }
+        if (target.HistoricalEntryKey is not { } key) throw new SnapshotConcurrencyException();
+        var entry = await context.FindEntryAsync(key, ct);
+        if (entry != null && entry.Collection == collection && entry.ResourceKey == target.ResourceKey && entry.RevisionKey == target.RevisionKey)
+            return entry;
         throw new SnapshotConcurrencyException();
     }
     private static void RequireRelationalHistoricalMetadataBudget(ref int units, ref long bytes, HistoricalSnapshotEntry entry)

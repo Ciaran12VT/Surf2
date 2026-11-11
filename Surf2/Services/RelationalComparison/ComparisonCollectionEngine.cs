@@ -17,7 +17,81 @@ public static class ComparisonCollectionEngine
     public static async Task<ComparisonResultStore> BuildAsync(IAsyncEnumerable<ComparisonCollectionEntry> left,
         IAsyncEnumerable<ComparisonCollectionEntry> right, ComparisonLimits? limits = null, CancellationToken ct = default)
     {
-        limits ??= new(); var scratch = new ComparisonScratch(limits);
+        limits ??= new(); limits.Validate(); ct.ThrowIfCancellationRequested();
+        await using var leftReader = left.GetAsyncEnumerator(ct);
+        await using var rightReader = right.GetAsyncEnumerator(ct);
+        var a = new List<ComparisonCollectionEntry>(); var b = new List<ComparisonCollectionEntry>();
+        long bytes = 0;
+        bool completeA = await BufferAsync(leftReader, a).ConfigureAwait(false);
+        bool completeB = completeA && await BufferAsync(rightReader, b).ConfigureAwait(false);
+        if (completeA && completeB) return BuildMemory(a, b, limits, ct);
+        return await BuildDiskAsync(Continue(a, leftReader, completeA), Continue(b, rightReader, completeB), limits, ct).ConfigureAwait(false);
+
+        async Task<bool> BufferAsync(IAsyncEnumerator<ComparisonCollectionEntry> reader, List<ComparisonCollectionEntry> buffer)
+        {
+            while (await reader.MoveNextAsync().ConfigureAwait(false))
+            {
+                ct.ThrowIfCancellationRequested(); buffer.Add(reader.Current);
+                // Include decoded input, result rows, sorting/maps and the page index.
+                bytes = checked(bytes + 1024 + 6L * SpoolBinary.Encode(reader.Current, EntryCodec, limits.MaximumRecordBytes).Length);
+                if (bytes > limits.SortBufferBytes) return false;
+            }
+            return true;
+        }
+        async IAsyncEnumerable<ComparisonCollectionEntry> Continue(List<ComparisonCollectionEntry> prefix,
+            IAsyncEnumerator<ComparisonCollectionEntry> reader, bool complete, [EnumeratorCancellation] CancellationToken token = default)
+        {
+            foreach (var entry in prefix) { token.ThrowIfCancellationRequested(); yield return entry; }
+            prefix.Clear();
+            if (!complete) while (await reader.MoveNextAsync().ConfigureAwait(false))
+            { token.ThrowIfCancellationRequested(); yield return reader.Current; }
+        }
+    }
+
+    private static ComparisonResultStore BuildMemory(List<ComparisonCollectionEntry> left,
+        List<ComparisonCollectionEntry> right, ComparisonLimits limits, CancellationToken ct)
+    {
+        var a = First(left); var b = First(right);
+        var keys = a.Keys.Union(b.Keys, StringComparer.OrdinalIgnoreCase).OrderBy(key => key, HierarchyComparer.Instance);
+        var rows = new List<ComparisonResultRow>(); var folders = new Stack<ComparisonResultRow>();
+        foreach (string key in keys)
+        {
+            ct.ThrowIfCancellationRequested();
+            while (folders.Count != 0 && !key.StartsWith(folders.Peek().Key + "/", StringComparison.OrdinalIgnoreCase)) FinishFolder();
+            a.TryGetValue(key, out var l); b.TryGetValue(key, out var r);
+            string status = l == null ? "Missing left" : r == null ? "Missing right" :
+                l.IsCollection != r.IsCollection || l.Digest != r.Digest ? "Different" : "Identical";
+            var row = new ComparisonResultRow(l?.RelativePath ?? r!.RelativePath, status, "", l?.Target.Resource.DisplayName ?? "", r?.Target.Resource.DisplayName ?? "",
+                l?.IsCollection == true || r?.IsCollection == true, l?.Target, r?.Target);
+            // Preserve the per-record limit enforced by the disk route.
+            _ = SpoolBinary.Encode(row, ComparisonCodecs.Result, limits.MaximumRecordBytes);
+            if (row.IsCollection)
+            {
+                if (folders.Count == 128) throw new ComparisonLimitException("Collection comparison exceeds its hierarchy depth limit.");
+                folders.Push(row);
+            }
+            else { Propagate(row); rows.Add(row); }
+        }
+        while (folders.Count != 0) FinishFolder();
+        return ComparisonResultStore.FromMemory(rows.OrderBy(row => row.Key, StringComparer.OrdinalIgnoreCase).ToArray(), limits);
+        void FinishFolder() { var row = folders.Pop(); Propagate(row); rows.Add(row); }
+        void Propagate(ComparisonResultRow row)
+        {
+            if (row.Status == "Identical" || folders.Count == 0 || folders.Peek().Status != "Identical") return;
+            var parent = folders.Pop(); folders.Push(parent with { Status = "Different" });
+        }
+        static Dictionary<string, ComparisonCollectionEntry> First(IEnumerable<ComparisonCollectionEntry> entries)
+        {
+            var result = new Dictionary<string, ComparisonCollectionEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries) result.TryAdd(entry.RelativePath, entry);
+            return result;
+        }
+    }
+
+    private static async Task<ComparisonResultStore> BuildDiskAsync(IAsyncEnumerable<ComparisonCollectionEntry> left,
+        IAsyncEnumerable<ComparisonCollectionEntry> right, ComparisonLimits limits, CancellationToken ct)
+    {
+        var scratch = new ComparisonScratch(limits);
         try
         {
             var sorter = new ComparisonExternalSort<ComparisonCollectionEntry>(scratch, EntryCodec, HierarchyComparer.Instance);

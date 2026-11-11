@@ -8,7 +8,7 @@ using static Surf2.Storage.Relational.Snapshots.SnapshotSql;
 namespace Surf2.Storage.Relational.Snapshots;
 
 /// <summary>Disposable, SQL-temp-backed selected-version identity plan. No definitions or data rows are staged.</summary>
-public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSnapshotState
+public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSnapshotState
 {
     private readonly SqlConnection _connection;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -51,6 +51,7 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
             context = new(connection, epoch, header, 0, 0);
             await context.Execute(CreateWorkTablesSql, ct).ConfigureAwait(false);
             await context.Execute(SeedSql, ct, Key("@Snapshot", snapshotKey)).ConfigureAwait(false);
+            await context.TryCacheEntriesAsync(ct).ConfigureAwait(false);
             context._building = false;
             await context.ValidateHead(ct).ConfigureAwait(false);
             return context;
@@ -113,14 +114,18 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
                     FROM surf.SnapshotVersionBaseline WHERE VersionKey=@Version ORDER BY Collection,OrderKey,EntryKey;
                     """, ct, Key("@Version", baseline)).ConfigureAwait(false);
             else await context.Execute(SeedSql, ct, Key("@Snapshot", snapshotKey)).ConfigureAwait(false);
-            HistoricalChangePosition? after = null;
-            while (true)
+            if (!await context.TryReplayBufferedAsync(targetNumber, ct).ConfigureAwait(false))
             {
-                var batch = await context.ReadChanges(targetNumber, after, ct).ConfigureAwait(false);
-                if (batch.Count == 0) break;
-                foreach (var item in batch)
-                    await HistoricalSnapshotReplay.ApplyAsync(context, item.Change, ct).ConfigureAwait(false);
-                after = batch[^1].Position;
+                HistoricalChangePosition? after = null;
+                while (true)
+                {
+                    var batch = await context.ReadChanges(targetNumber, after, ct).ConfigureAwait(false);
+                    if (batch.Count == 0) break;
+                    foreach (var item in batch)
+                        await HistoricalSnapshotReplay.ApplyAsync(context, item.Change, ct).ConfigureAwait(false);
+                    after = batch[^1].Position;
+                }
+                await context.TryCacheEntriesAsync(ct).ConfigureAwait(false);
             }
             context._building = false;
             await context.ValidateHead(ct).ConfigureAwait(false);
@@ -167,6 +172,8 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             await ValidateHead(ct).ConfigureAwait(false);
+            if (_cachedEntries != null)
+                return CachedPage(collection, kind, resources, pageSize, cursor, query, ct);
             await using var command = Command(_connection, null, """
                 WITH entries AS (
                     SELECT e.*, ROW_NUMBER() OVER(ORDER BY e.Collection, e.OrderKey, e.EntryKey)-1 Position
@@ -200,57 +207,12 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
 
     // Resolves original logical keys by name/kind as RemoveAll does, not just by
     // the source revision's resource key. This includes tables resurrected by data.
-    internal async Task<HistoricalSnapshotEntry?> FindResource(long resourceKey, CancellationToken ct)
-    {
-        string schema, name; DatabaseVersionedResourceKind? kind;
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            await ValidateHead(ct).ConfigureAwait(false);
-            await using var command = Command(_connection, null, """
-                SELECT CONVERT(bigint,256)+DATALENGTH(SchemaName)+DATALENGTH(ObjectName),
-                    SchemaName, ObjectName, Kind FROM surf.SnapshotResource WHERE ResourceKey=@Resource AND SnapshotKey=@Snapshot;
-                """, Key("@Resource", resourceKey), Key("@Snapshot", Header.SnapshotKey));
-            using var cancel = RelationalSession.CancelCommand(command, ct);
-            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
-            if (!await reader.ReadAsync(ct).ConfigureAwait(false)) return null;
-            SnapshotReadGuard.RequireBytes(reader.GetInt64(0), RelationalSnapshotStore.MaximumMetadataPageBytes, command);
-            schema = reader.GetString(1); name = reader.GetString(2); kind = reader.IsDBNull(3) ? null : (DatabaseVersionedResourceKind)reader.GetInt32(3);
-        }
-        finally { _gate.Release(); }
-        var collection = kind == DatabaseVersionedResourceKind.TableMetadata ? HistoricalCollection.Tables :
-            kind == DatabaseVersionedResourceKind.TableData ? HistoricalCollection.TableDataSets : HistoricalCollection.Objects;
-        await foreach (var entry in StreamAsync(collection, ct).ConfigureAwait(false))
-            if (string.Equals(entry.SchemaName, schema, StringComparison.OrdinalIgnoreCase) && string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase) &&
-                (collection != HistoricalCollection.Objects || SnapshotIdentity.ResourceKind(entry.ObjectKind ?? SqlDatabaseObjectKind.Unknown) == kind)) return entry;
-        return null;
-    }
+    internal Task<HistoricalSnapshotEntry?> FindResource(long resourceKey, CancellationToken ct) => FindResourceAsync(resourceKey, ct);
 
     internal async Task<SnapshotResourceSummary> ResourceSummary(HistoricalSnapshotEntry entry, CancellationToken ct, SnapshotMetadataBudget? budget = null)
     {
-        // Includes the generated legacy key before its string is allocated.
-        long bytes = 512 + 4L * (entry.SchemaName.Length + (long)entry.Name.Length);
-        SnapshotReadGuard.RequireBytes(bytes, RelationalSnapshotStore.MaximumMetadataPageBytes);
-        budget?.Add(bytes);
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await ValidateHead(ct).ConfigureAwait(false);
-            await using var command = Command(_connection, null, "SELECT PublicId, RowVersion FROM surf.SnapshotResource WHERE ResourceKey=@Resource;",
-                Key("@Resource", entry.ResourceKey));
-            using var cancel = RelationalSession.CancelCommand(command, ct);
-            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            if (!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new KeyNotFoundException("Projection source resource missing.");
-            DatabaseVersionedResourceKind? kind = entry.Collection switch {
-                HistoricalCollection.Tables => DatabaseVersionedResourceKind.TableMetadata,
-                HistoricalCollection.TableDataSets => DatabaseVersionedResourceKind.TableData,
-                _ => SnapshotIdentity.ResourceKind(entry.ObjectKind ?? SqlDatabaseObjectKind.Unknown) };
-            return new(entry.ResourceKey!.Value, reader.GetGuid(0), Header.SnapshotKey, kind, entry.SchemaName, entry.Name,
-                kind.HasValue ? SnapshotIdentity.LegacyResourceKey(kind.Value, entry.SchemaName, entry.Name) : "",
-                entry.RevisionKey!.Value, entry.SortOrdinal, (byte[])reader.GetValue(1), entry.TableSource);
-        }
-        finally { _gate.Release(); }
+        budget?.Add(512 + 4L * (entry.SchemaName.Length + (long)entry.Name.Length));
+        return (await ResourceSummariesAsync([entry], ct).ConfigureAwait(false))[entry.EntryKey];
     }
 
     internal async Task<ObjectSummary> ObjectSummary(HistoricalSnapshotEntry entry, CancellationToken ct, SnapshotMetadataBudget? budget = null)
@@ -273,88 +235,8 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
         finally { _gate.Release(); }
     }
 
-    public async Task<TableMetadataDetails> ReadTableMetadataAsync(HistoricalSnapshotEntry table, CancellationToken ct = default)
-    {
-        if (table.Collection != HistoricalCollection.Tables || table.Table == null || table.RevisionKey == null)
-            throw new ArgumentException("A projected table entry is required.", nameof(table));
-        var budget = new SnapshotMetadataBudget();
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            await ValidateHead(ct).ConfigureAwait(false);
-            await using var command=Command(_connection,null,"""
-                SELECT CONVERT(bigint,256)+DATALENGTH(SchemaName)+DATALENGTH(Name),
-                    EntryKey,Collection,OrderKey,ResourceKey,RevisionKey,ChildKey,SchemaName,Name,ObjectKind,
-                    HasFullData,FullDataRowCount,FullDataImportedAtUtc,TableSource FROM #HistoricalEntry
-                WHERE EntryKey=@Entry AND Collection=1;
-                """,Key("@Entry",table.EntryKey));
-            using var cancel=RelationalSession.CancelCommand(command,ct);
-            await using var reader=await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess,ct).ConfigureAwait(false);
-            if(!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new KeyNotFoundException("Table is not in this projection.");
-            budget.Add(reader.GetInt64(0), command);
-            var stored=ReadEntry(reader);
-            if(stored.RevisionKey!=table.RevisionKey || !string.Equals(stored.SchemaName,table.SchemaName,StringComparison.Ordinal) ||
-                !string.Equals(stored.Name,table.Name,StringComparison.Ordinal)) throw new ArgumentException("Table belongs to another projection.",nameof(table));
-            table=stored;
-        }
-        finally { _gate.Release(); }
-        SqlTable effectiveTable = table.Table ?? throw new InvalidOperationException("Projected table scalars are missing.");
-        long effectiveRevision = table.RevisionKey ?? throw new InvalidOperationException("Projected table source revision is missing.");
-        // Fetch only this table's scalar children. Selection is against the replayed
-        // root collections, including orphan/mis-owned children and duplicate names.
-        var columns = new List<OrderedColumn>(); var keys = new List<OrderedPrimaryKey>();
-        await foreach (var child in StreamAsync(HistoricalCollection.Columns, ct).ConfigureAwait(false))
-            if (HistoricalSnapshotReplay.Matches(child, HistoricalCollection.Columns, table.SchemaName, table.Name))
-                columns.Add(await ReadColumn(child, budget, ct).ConfigureAwait(false));
-        await foreach (var child in StreamAsync(HistoricalCollection.PrimaryKeys, ct).ConfigureAwait(false))
-            if (HistoricalSnapshotReplay.Matches(child, HistoricalCollection.PrimaryKeys, table.SchemaName, table.Name))
-                keys.Add(await ReadKey(child, budget, ct).ConfigureAwait(false));
-        return new(effectiveRevision, CopyTable(effectiveTable), columns, keys);
-    }
-
-    private async Task<OrderedColumn> ReadColumn(HistoricalSnapshotEntry child, SnapshotMetadataBudget budget, CancellationToken ct)
-    {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        await ValidateHead(ct).ConfigureAwait(false);
-        await using var command = Command(_connection, null, """
-            SELECT CONVERT(bigint,256)+DATALENGTH(SchemaName)+DATALENGTH(TableName)+DATALENGTH(ColumnName)+DATALENGTH(DataType),
-                SchemaName, TableName, ColumnName, DataType, MaxLength, NumericPrecision, NumericScale, IsNullable, IsIdentity, SourceOrdinal
-            FROM surf.TableColumnRevision WHERE ColumnRevisionKey=@Child;
-            """, Key("@Child", child.ChildKey));
-        using var cancel = RelationalSession.CancelCommand(command, ct);
-        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
-        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new KeyNotFoundException("Projected column missing.");
-        budget.Add(reader.GetInt64(0), command);
-        return new(child.ChildKey!.Value, child.SortOrdinal, new() { SchemaName=reader.GetString(1), TableName=reader.GetString(2),
-            ColumnName=reader.GetString(3), DataType=reader.GetString(4), MaxLength=reader.GetInt32(5), NumericPrecision=reader.GetByte(6),
-            NumericScale=reader.GetInt32(7), IsNullable=reader.GetBoolean(8), IsIdentity=reader.GetBoolean(9), Ordinal=reader.GetInt32(10) });
-        }
-        finally { _gate.Release(); }
-    }
-    private async Task<OrderedPrimaryKey> ReadKey(HistoricalSnapshotEntry child, SnapshotMetadataBudget budget, CancellationToken ct)
-    {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        await ValidateHead(ct).ConfigureAwait(false);
-        await using var command = Command(_connection, null, """
-            SELECT CONVERT(bigint,256)+DATALENGTH(SchemaName)+DATALENGTH(TableName)+DATALENGTH(ConstraintName)+DATALENGTH(ColumnName),
-                SchemaName, TableName, ConstraintName, ColumnName, KeyOrdinal FROM surf.PrimaryKeyColumn WHERE KeyColumnKey=@Child;
-            """, Key("@Child", child.ChildKey));
-        using var cancel = RelationalSession.CancelCommand(command, ct);
-        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
-        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new KeyNotFoundException("Projected key missing.");
-        budget.Add(reader.GetInt64(0), command);
-        return new(child.ChildKey!.Value, child.SortOrdinal, new() { SchemaName=reader.GetString(1), TableName=reader.GetString(2),
-            ConstraintName=reader.GetString(3), ColumnName=reader.GetString(4), KeyOrdinal=reader.GetInt32(5) });
-        }
-        finally { _gate.Release(); }
-    }
+    public Task<TableMetadataDetails> ReadTableMetadataAsync(HistoricalSnapshotEntry table, CancellationToken ct = default) =>
+        ReadSelectedTableMetadataAsync(table, ct);
 
     private async Task<List<HistoricalSnapshotEntry>> Scan(HistoricalCollection collection, long order, long key, CancellationToken ct)
     {
@@ -522,6 +404,7 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
             if (!_disposed)
             {
                 _disposed=true;
+                _cachedEntries=null; _cachedEntryKeys=null; _cachedNames=null;
                 try
                 {
                     if (_connection.State==ConnectionState.Open)

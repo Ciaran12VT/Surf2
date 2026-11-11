@@ -55,6 +55,8 @@ public sealed partial class RelationalComparisonService
     public async Task<ComparisonCandidates> GetCandidatesAsync(RelationalComparisonTarget source, ExplorerScope scope, CancellationToken ct = default)
     {
         RequireEpoch(source);
+        if (source.ResourceKey.HasValue && scope.DatabaseCatalogue != null)
+            return await GetDatabaseCandidatesAsync(source, scope, ct).ConfigureAwait(false);
         var items = new List<RelationalComparisonTarget>(); long bytes = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         await foreach (var node in WalkScopeAsync(scope, ct).ConfigureAwait(false))
@@ -122,9 +124,50 @@ public sealed partial class RelationalComparisonService
         // Collection comparisons historically used raw definitions (not editor fallback comments).
         return value.Definition;
     }
+    public async Task<(string Left, string Right)> ReadTextPairAsync(RelationalComparisonTarget? left,
+        RelationalComparisonTarget? right, CancellationToken ct = default)
+    {
+        var selected = new[] { left, right }.OfType<RelationalComparisonTarget>().ToArray();
+        foreach (var target in selected) RequireEpoch(target);
+        if (selected.Length != 0 && selected.All(target => target.RevisionKey.HasValue &&
+            !target.Resource.IsCollection && !target.Resource.IsTableData && target.Resource.Kind != ComparisonResourceKind.TableMetadata))
+        {
+            var definitions = await _runtime.Snapshots.ReadObjectDefinitionsAsync(selected.Select(target => target.RevisionKey!.Value).Distinct().ToArray(), ct).ConfigureAwait(false);
+            foreach (string text in definitions.Values)
+                if (text.Length > Limits.MaximumTextCharacters) throw new ComparisonLimitException("Selected code exceeds the comparison text limit.");
+            return (left == null ? "" : definitions[left.RevisionKey!.Value], right == null ? "" : definitions[right.RevisionKey!.Value]);
+        }
+        if (selected.Length == 2 && selected.All(target => target.Resource.Kind == ComparisonResourceKind.TableMetadata) &&
+            left!.VersionKey.HasValue && left.VersionKey == right!.VersionKey && left.SnapshotKey == right.SnapshotKey)
+        {
+            await using var historical = await _runtime.Snapshots.OpenHistoricalSnapshotAsync(left.SnapshotKey!.Value, left.VersionKey.Value, ct).ConfigureAwait(false);
+            string a = await RenderAsync(left).ConfigureAwait(false);
+            string b = SameTarget(left, right) ? a : await RenderAsync(right).ConfigureAwait(false);
+            return (a, b);
+            async Task<string> RenderAsync(RelationalComparisonTarget target)
+            {
+                var entry = await FindHistoricalTableAsync(historical, target, ct).ConfigureAwait(false);
+                return RelationalDocumentService.RenderTable(await historical.ReadTableMetadataAsync(entry, ct).ConfigureAwait(false), Limits.MaximumTextCharacters * 2L);
+            }
+        }
+        var reads = await Task.WhenAll(left == null ? Task.FromResult("") : ReadTextAsync(left, ct),
+            right == null ? Task.FromResult("") : ReadTextAsync(right, ct)).ConfigureAwait(false);
+        return (reads[0], reads[1]);
+    }
     internal async Task<HistoricalSnapshotEntry> FindHistoricalTableAsync(HistoricalSnapshotContext context,
         RelationalComparisonTarget target, CancellationToken ct)
     {
+        if (target.HistoricalEntryKey.HasValue)
+        {
+            var selected = await context.FindEntryAsync(target.HistoricalEntryKey.Value, ct).ConfigureAwait(false);
+            if (selected?.Collection == HistoricalCollection.Tables && selected.ResourceKey == target.ResourceKey && selected.RevisionKey == target.RevisionKey) return selected;
+            throw new SnapshotConcurrencyException();
+        }
+        if (target.ResourceKey.HasValue)
+        {
+            var selected = await context.FindResourceAsync(target.ResourceKey.Value, ct).ConfigureAwait(false);
+            if (selected?.Collection == HistoricalCollection.Tables && selected.RevisionKey == target.RevisionKey) return selected;
+        }
         await foreach (var entry in context.StreamAsync(HistoricalCollection.Tables, ct).ConfigureAwait(false))
             if (entry.ResourceKey == target.ResourceKey && entry.RevisionKey == target.RevisionKey &&
                 (!target.HistoricalEntryKey.HasValue || entry.EntryKey == target.HistoricalEntryKey)) return entry;
@@ -133,6 +176,17 @@ public sealed partial class RelationalComparisonService
     internal async Task<SnapshotResourceSummary?> FindByNameAsync(long snapshotKey, DatabaseVersionedResourceKind kind,
         string schema, string name, long? versionKey, CancellationToken ct)
     {
+        if (versionKey.HasValue)
+        {
+            await using var historical = await _runtime.Snapshots.OpenHistoricalSnapshotAsync(snapshotKey, versionKey.Value, ct).ConfigureAwait(false);
+            var collection = kind == DatabaseVersionedResourceKind.TableMetadata ? HistoricalCollection.Tables :
+                kind == DatabaseVersionedResourceKind.TableData ? HistoricalCollection.TableDataSets : HistoricalCollection.Objects;
+            foreach (var entry in await historical.FindEntriesAsync(collection, schema, name, ct).ConfigureAwait(false))
+                if ((collection != HistoricalCollection.Objects || entry.ObjectKind.HasValue && SnapshotIdentity.ResourceKind(entry.ObjectKind.Value) == kind) &&
+                    entry.SchemaName.Equals(schema, StringComparison.OrdinalIgnoreCase) && entry.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    return (await historical.ResourceSummariesAsync([entry], ct).ConfigureAwait(false))[entry.EntryKey];
+            return null;
+        }
         SnapshotCursor? cursor = null;
         do
         {

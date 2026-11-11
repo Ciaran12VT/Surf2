@@ -235,10 +235,10 @@ public sealed partial class RelationalSnapshotHistoryService
     private static async Task<HistoricalSnapshotEntry> SelectedEntryAsync(HistoricalSnapshotContext context,
         HistoricalSnapshotEntry supplied, CancellationToken ct)
     {
-        await foreach (var entry in context.StreamAsync(supplied.Collection, ct).ConfigureAwait(false))
-            if (entry.EntryKey == supplied.EntryKey && entry.ResourceKey == supplied.ResourceKey && entry.RevisionKey == supplied.RevisionKey &&
-                entry.TableSource == supplied.TableSource && StringComparer.Ordinal.Equals(entry.SchemaName, supplied.SchemaName) &&
-                StringComparer.Ordinal.Equals(entry.Name, supplied.Name)) return entry;
+        var entry = await context.FindEntryAsync(supplied.EntryKey, ct).ConfigureAwait(false);
+        if (entry != null && entry.Collection == supplied.Collection && entry.ResourceKey == supplied.ResourceKey && entry.RevisionKey == supplied.RevisionKey &&
+            entry.TableSource == supplied.TableSource && StringComparer.Ordinal.Equals(entry.SchemaName, supplied.SchemaName) &&
+            StringComparer.Ordinal.Equals(entry.Name, supplied.Name)) return entry;
         throw new ArgumentException("Resource is not in the selected historical projection.");
     }
     private static RuntimeSnapshotResource Handle(HistoricalSnapshotEntry entry, DatabaseVersionedResourceKind kind) =>

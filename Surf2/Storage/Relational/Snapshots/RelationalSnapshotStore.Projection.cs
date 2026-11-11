@@ -31,8 +31,8 @@ public sealed partial class RelationalSnapshotStore
         await using var context = await OpenHistoricalSnapshotAsync(snapshotKey, versionKey, ct).ConfigureAwait(false);
         var page = await context.ReadResources(collection, kind, pageSize, cursor, ct).ConfigureAwait(false);
         var items = new List<SnapshotResourceSummary>(page.Items.Count);
-        var budget = new SnapshotMetadataBudget();
-        foreach (var entry in page.Items) items.Add(await context.ResourceSummary(entry, ct, budget).ConfigureAwait(false));
+        var summaries = await context.ResourceSummariesAsync(page.Items, ct).ConfigureAwait(false);
+        foreach (var entry in page.Items) items.Add(summaries[entry.EntryKey]);
         return new(items,page.Next,Epoch);
     }
 
@@ -42,8 +42,8 @@ public sealed partial class RelationalSnapshotStore
         await using var context = await OpenHistoricalSnapshotAsync(snapshotKey, versionKey, ct).ConfigureAwait(false);
         var page = await context.ReadResources(HistoricalCollection.Objects,kind,pageSize,cursor,ct).ConfigureAwait(false);
         var items = new List<ObjectSummary>(page.Items.Count);
-        var budget = new SnapshotMetadataBudget();
-        foreach(var entry in page.Items) items.Add(await context.ObjectSummary(entry,ct,budget).ConfigureAwait(false));
+        var summaries = await context.ObjectSummariesAsync(page.Items, ct).ConfigureAwait(false);
+        foreach(var entry in page.Items) items.Add(summaries[entry.EntryKey]);
         return new(items,page.Next,Epoch);
     }
 
@@ -53,10 +53,10 @@ public sealed partial class RelationalSnapshotStore
         await using var context = await OpenHistoricalSnapshotAsync(snapshotKey, versionKey, ct).ConfigureAwait(false);
         var page = await context.ReadResources(HistoricalCollection.Tables,DatabaseVersionedResourceKind.TableMetadata,pageSize,cursor,ct).ConfigureAwait(false);
         var items = new List<TableSummary>(page.Items.Count);
-        var budget = new SnapshotMetadataBudget();
+        var summaries = await context.ResourceSummariesAsync(page.Items, ct).ConfigureAwait(false);
         foreach(var entry in page.Items)
         {
-            var resource=await context.ResourceSummary(entry,ct,budget).ConfigureAwait(false);
+            var resource=summaries[entry.EntryKey];
             items.Add(new(resource,entry.Table!.HasFullData,entry.Table.FullDataRowCount,entry.Table.FullDataImportedAtUtc));
         }
         return new(items,page.Next,Epoch);

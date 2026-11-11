@@ -22,6 +22,9 @@ public sealed record RelationalHistoryFileSummary(SnapshotVersionSummary Version
 {
     internal Guid Epoch { get; init; }
     internal byte[] HeadVersion { get; init; } = [];
+    internal SnapshotResourceSummary? IssuedResource { get; init; }
+    internal long? IssuedVersionKey { get; init; }
+    internal long? IssuedEntryKey { get; init; }
 }
 public sealed record RelationalHistoryFileLineCount(RelationalHistoryFileSummary File, int Added, int Removed, string? Error = null);
 
@@ -80,15 +83,20 @@ public sealed partial class RelationalSnapshotHistoryService
                 Add(new(version, change.ResourceKey, change.OriginalResourceKey, change.Kind, change.DisplayName, change.RelativePath,
                     change.ChangeKind, entry, previous, previousKey));
             }
+        var summaries = new Dictionary<long, SnapshotResourceSummary>();
+        foreach (var batch in rows.Where(row => row.Entry != null).Select(row => row.Entry!).DistinctBy(entry => entry.EntryKey).Chunk(128))
+            foreach (var pair in await current.ResourceSummariesAsync(batch, ct).ConfigureAwait(false)) summaries.Add(pair.Key, pair.Value);
         var head = await _runtime.Snapshots.GetSnapshotAsync(version.SnapshotKey, ct).ConfigureAwait(false);
         if (head == null || !head.RowVersion.AsSpan().SequenceEqual(current.Header.RowVersion)) throw new SnapshotConcurrencyException();
-        return rows.OrderBy(row => DatabaseHistoryDisplay.GetResourceTypeSortOrder(row.Kind))
+        return rows.Select(row => row with { IssuedResource = row.Entry == null ? null : summaries.GetValueOrDefault(row.Entry.EntryKey) })
+            .OrderBy(row => DatabaseHistoryDisplay.GetResourceTypeSortOrder(row.Kind))
             .ThenBy(row => DatabaseHistoryDisplay.GetFileNameDisplay(row.DisplayName, row.RelativePath), StringComparer.OrdinalIgnoreCase).ToArray();
 
         void Add(RelationalHistoryFileSummary row)
         {
             budget.Add(row.OriginalResourceKey, row.DisplayName, row.RelativePath);
-            rows.Add(row with { Epoch = _runtime.Session.Epoch, HeadVersion = current.Header.RowVersion.ToArray() });
+            rows.Add(row with { Epoch = _runtime.Session.Epoch, HeadVersion = current.Header.RowVersion.ToArray(),
+                IssuedVersionKey = version.VersionKey, IssuedEntryKey = row.Entry?.EntryKey });
         }
     }
 
@@ -136,28 +144,70 @@ public sealed partial class RelationalSnapshotHistoryService
         var contexts = new Dictionary<long, HistoricalSnapshotContext>();
         try
         {
-            foreach (var file in files)
+            if (files.Count == 0) yield break;
+            var selected = files[0];
+            if (files.Any(file => file.Epoch != selected.Epoch || !file.HeadVersion.AsSpan().SequenceEqual(selected.HeadVersion)))
+                throw new SnapshotConcurrencyException();
+            foreach (var candidates in files.Chunk(64))
             {
-                ct.ThrowIfCancellationRequested();
-                RelationalHistoryFileLineCount result;
-                try
+                await RequireFileHeadAsync(selected, ct).ConfigureAwait(false);
+                var revisions = candidates.SelectMany(ObjectRevisions).Distinct().ToArray();
+                var identities = await _selectedReads.ReadObjectTextIdentitiesAsync(revisions, ct).ConfigureAwait(false);
+                int offset = 0;
+                while (offset < candidates.Length)
                 {
-                    var counts = await CountFileLinesCoreAsync(file, contexts, ct).ConfigureAwait(false);
-                    result = new(file, counts.Added, counts.Removed);
+                    var group = new List<RelationalHistoryFileSummary>(); var reads = new HashSet<long>(); long bytes = 0;
+                    while (offset < candidates.Length)
+                    {
+                        var file = candidates[offset];
+                        var needed = SameObjectText(file, identities) ? [] : ObjectRevisions(file).Distinct().ToArray();
+                        bool oversized = needed.Any(key => identities[key].ByteCount > _limits.MaximumDefinitionBytes);
+                        if (oversized) needed = [];
+                        long additional = needed.Where(key => !reads.Contains(key)).Sum(key => identities[key].ByteCount);
+                        if (group.Count != 0 && additional > RelationalSnapshotStore.MaximumDefinitionBatchBytes - bytes) break;
+                        group.Add(file); offset++; bytes += additional; reads.UnionWith(needed);
+                    }
+                    var definitions = await _selectedReads.ReadObjectDefinitionsAsync(reads.ToArray(), ct).ConfigureAwait(false);
+                    var completed = new List<RelationalHistoryFileLineCount>(group.Count);
+                    foreach (var file in group)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        try
+                        {
+                            if (!SameObjectText(file, identities) && ObjectRevisions(file).Any(key => identities[key].ByteCount > _limits.MaximumDefinitionBytes))
+                                throw new SnapshotReadLimitException(_limits.MaximumDefinitionBytes);
+                            var counts = await CountFileLinesCoreAsync(file, contexts, ct, definitions, identities, validateHead: false).ConfigureAwait(false);
+                            completed.Add(new(file, counts.Added, counts.Removed));
+                        }
+                        catch (Exception error) when (error is not SnapshotConcurrencyException and not RelationalSessionChangedException &&
+                            error is InvalidOperationException or IOException)
+                        { completed.Add(new(file, 0, 0, error.Message)); }
+                    }
+                    await RequireFileHeadAsync(selected, ct).ConfigureAwait(false);
+                    foreach (var result in completed) { ct.ThrowIfCancellationRequested(); yield return result; }
                 }
-                catch (Exception error) when (error is not SnapshotConcurrencyException and not RelationalSessionChangedException &&
-                    error is InvalidOperationException or IOException)
-                { result = new(file, 0, 0, error.Message); }
-                yield return result;
             }
         }
         finally { foreach (var context in contexts.Values) await context.DisposeAsync().ConfigureAwait(false); }
     }
 
-    private async Task<(int Added, int Removed)> CountFileLinesCoreAsync(RelationalHistoryFileSummary file,
-        Dictionary<long, HistoricalSnapshotContext>? contexts, CancellationToken ct)
+    private static IEnumerable<long> ObjectRevisions(RelationalHistoryFileSummary file)
     {
-        await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
+        if (file.Entry is { Collection: HistoricalCollection.Objects, RevisionKey: { } current }) yield return current;
+        if (file.PreviousEntry is { Collection: HistoricalCollection.Objects, RevisionKey: { } previous }) yield return previous;
+    }
+    private static bool SameObjectText(RelationalHistoryFileSummary file, IReadOnlyDictionary<long, SnapshotObjectTextIdentity> identities) =>
+        file.Entry is { Collection: HistoricalCollection.Objects, RevisionKey: { } current } &&
+        file.PreviousEntry is { Collection: HistoricalCollection.Objects, RevisionKey: { } previous } &&
+        identities[current].ContentKey == identities[previous].ContentKey;
+
+    private async Task<(int Added, int Removed)> CountFileLinesCoreAsync(RelationalHistoryFileSummary file,
+        Dictionary<long, HistoricalSnapshotContext>? contexts, CancellationToken ct,
+        IReadOnlyDictionary<long, string>? definitions = null,
+        IReadOnlyDictionary<long, SnapshotObjectTextIdentity>? identities = null, bool validateHead = true)
+    {
+        if (validateHead) await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
+        if (identities != null && SameObjectText(file, identities)) return (0, 0);
         string oldText = file.PreviousEntry == null || file.PreviousVersionKey == null ? string.Empty :
             await ReadForCountsAsync(file.PreviousVersionKey.Value, file.PreviousEntry).ConfigureAwait(false);
         string newText = file.Entry == null ? string.Empty :
@@ -174,11 +224,12 @@ public sealed partial class RelationalSnapshotHistoryService
             var diff = InlineDiffBuilder.Diff(oldText, newText);
             result = (diff.Lines.Count(line => line.Type == ChangeType.Inserted), diff.Lines.Count(line => line.Type == ChangeType.Deleted));
         }
-        await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
+        if (validateHead) await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
         return result;
 
         async Task<string> ReadForCountsAsync(long versionKey, HistoricalSnapshotEntry entry)
         {
+            if (definitions != null && entry.Collection == HistoricalCollection.Objects) return definitions[entry.RevisionKey!.Value];
             if (contexts == null || entry.Collection == HistoricalCollection.Objects)
                 return await ReadHistoryEntryTextAsync(file.Version.SnapshotKey, versionKey, entry, ct).ConfigureAwait(false);
             if (!contexts.TryGetValue(versionKey, out var context))
@@ -205,7 +256,9 @@ public sealed partial class RelationalSnapshotHistoryService
     {
         RequireContext(context);
         entry = await SelectedEntryAsync(context, entry, ct).ConfigureAwait(false);
-        string text = await ReadHistoryEntryTextAsync(context.Header.SnapshotKey, context.VersionKey, entry, ct).ConfigureAwait(false);
+        string text = entry.Collection == HistoricalCollection.Objects
+            ? (await _selectedReads.ReadObjectAsync(entry.RevisionKey!.Value, ct).ConfigureAwait(false)).Definition
+            : await ReadHistoryStructuredTextAsync(context, entry, ct).ConfigureAwait(false);
         var head = await _runtime.Snapshots.GetSnapshotAsync(context.Header.SnapshotKey, ct).ConfigureAwait(false);
         if (head == null || !head.RowVersion.AsSpan().SequenceEqual(context.Header.RowVersion)) throw new SnapshotConcurrencyException();
         return text;
@@ -215,9 +268,13 @@ public sealed partial class RelationalSnapshotHistoryService
     {
         await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
         if (file.Entry == null) throw new InvalidOperationException(file.RelativePath + " does not exist in " + file.Version.VersionName + ".");
-        await using var context = await OpenVersionAsync(file.Version.SnapshotKey, file.Version.VersionKey, ct).ConfigureAwait(false);
-        var result = await ResourceTargetAsync(context, file.Entry, ct).ConfigureAwait(false);
-        await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
+        var resource = file.IssuedResource ?? throw new SnapshotConcurrencyException();
+        if (file.Version.VersionKey != file.IssuedVersionKey || file.Entry.EntryKey != file.IssuedEntryKey ||
+            resource.SnapshotKey != file.Version.SnapshotKey ||
+            resource.ResourceKey != file.Entry.ResourceKey || resource.RevisionKey != file.Entry.RevisionKey ||
+            resource.Kind != file.Kind || !StringComparer.Ordinal.Equals(resource.SchemaName, file.Entry.SchemaName) ||
+            !StringComparer.Ordinal.Equals(resource.ObjectName, file.Entry.Name)) throw new SnapshotConcurrencyException();
+        var result = RelationalComparisonService.FromResource(resource, file.Epoch, file.Version.VersionKey, file.Entry.EntryKey);
         return result with { Resource = result.Resource with {
             DisplayName = DatabaseHistoryDisplay.GetFileNameDisplay(file.DisplayName, file.RelativePath) + " (" + file.Version.VersionName + ")" } };
     }
@@ -283,9 +340,8 @@ public sealed partial class RelationalSnapshotHistoryService
     private async Task<List<string>> HistoryDataHeadersAsync(HistoricalSnapshotContext context, HistoricalSnapshotEntry data, CancellationToken ct)
     {
         var children = new List<long>(); var budget = new SnapshotOperationBudget(_limits);
-        await foreach (var column in context.StreamAsync(HistoricalCollection.Columns, ct).ConfigureAwait(false))
-            if (StringComparer.OrdinalIgnoreCase.Equals(column.SchemaName, data.SchemaName) && StringComparer.OrdinalIgnoreCase.Equals(column.Name, data.Name))
-            { budget.Add(32); children.Add(column.ChildKey!.Value); }
+        foreach (var column in await context.FindEntriesAsync(HistoricalCollection.Columns, data.SchemaName, data.Name, ct).ConfigureAwait(false))
+        { budget.Add(32); children.Add(column.ChildKey!.Value); }
         if (children.Count == 0) return [];
         var values = new Dictionary<long, (string Name, int Ordinal)>();
         await using var connection = await _runtime.Session.OpenAsync(ct).ConfigureAwait(false);

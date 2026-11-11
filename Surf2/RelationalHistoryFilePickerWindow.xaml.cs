@@ -138,10 +138,14 @@ public partial class RelationalHistoryFilePickerWindow : Window
                 if (result.Count == MaximumRows) throw new InvalidOperationException("This version exceeds the file picker resource limit.");
                 string name = SqlName.FormatPlainMultipartName(entry.SchemaName, entry.Name);
                 string path = FilePath(kind.Value, name);
-                AddBudget(ref bytes, 512L + 2L * (entry.SchemaName.Length + entry.Name.Length + name.Length + path.Length));
+                AddBudget(ref bytes, 1024L + 4L * (entry.SchemaName.Length + entry.Name.Length + name.Length + path.Length));
                 result.Add(new(choice, entry, kind.Value, name, path));
             }
-        return result.OrderBy(file => DatabaseHistoryDisplay.GetResourceTypeSortOrder(file.Kind))
+        var summaries = new Dictionary<long, SnapshotResourceSummary>();
+        foreach (var batch in result.Select(file => file.Entry).Chunk(128))
+            foreach (var pair in await context.ResourceSummariesAsync(batch, ct).ConfigureAwait(false)) summaries.Add(pair.Key, pair.Value);
+        return result.Select(file => file with { Resource = summaries[file.Entry.EntryKey] })
+            .OrderBy(file => DatabaseHistoryDisplay.GetResourceTypeSortOrder(file.Kind))
             .ThenBy(file => file.FileNameDisplay, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
@@ -169,12 +173,12 @@ public partial class RelationalHistoryFilePickerWindow : Window
         if (_busy || _closing || FilesListView.SelectedItem is not FileChoice selected) return Task.CompletedTask;
         return StartRequest(async (generation, ct) =>
         {
-            // Only the chosen identity is resolved. Resolving every candidate
-            // would repeatedly scan a version and turn metadata browsing quadratic.
-            await using var context = await _service.OpenVersionAsync(selected.Version.Snapshot.SnapshotKey,
-                selected.Version.Version.VersionKey, ct);
-            if (!context.Header.RowVersion.AsSpan().SequenceEqual(selected.Version.Snapshot.RowVersion)) throw new SnapshotConcurrencyException();
-            var target = await _service.ResourceTargetAsync(context, selected.Entry, ct);
+            // Metadata was resolved in batches while browsing. Only revalidate the
+            // selected snapshot head; do not rebuild the historical version again.
+            var snapshot = await _runtime.Snapshots.GetSnapshotAsync(selected.Version.Snapshot.SnapshotKey, ct);
+            if (snapshot == null || !snapshot.RowVersion.AsSpan().SequenceEqual(selected.Version.Snapshot.RowVersion)) throw new SnapshotConcurrencyException();
+            var target = RelationalComparisonService.FromResource(selected.Resource ?? throw new SnapshotConcurrencyException(),
+                _runtime.Session.Epoch, selected.Version.Version.VersionKey, selected.Entry.EntryKey);
             if (!Accepts(generation, ct)) return;
             SelectedTarget = target with { Resource = target.Resource with
             { DisplayName = selected.Version.Snapshot.DisplayName + " " + selected.Version.DisplayName + ": " + selected.FileNameDisplay } };
@@ -275,6 +279,7 @@ public partial class RelationalHistoryFilePickerWindow : Window
     public sealed record FileChoice(VersionChoice Version, HistoricalSnapshotEntry Entry, DatabaseVersionedResourceKind Kind,
         string DisplayName, string RelativePath)
     {
+        internal SnapshotResourceSummary? Resource { get; init; }
         public string ResourceTypeDisplay => DatabaseHistoryDisplay.GetResourceTypeDisplay(Kind);
         public string FileNameDisplay => DatabaseHistoryDisplay.GetFileNameDisplay(DisplayName, RelativePath);
     }

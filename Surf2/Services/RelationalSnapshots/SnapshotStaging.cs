@@ -20,11 +20,11 @@ internal static class SnapshotStaging
         // V2 publication stores an exact immutable metadata baseline in SQL. No
         // canonicalization is required for source selection predicates or global child order.
         await foreach (var column in Pages(cursor => runtime.Snapshots.ListCurrentColumnsAsync(plan.SnapshotKey, 128, cursor, ct), ct))
-            budget.Add(64);
+        { budget.Add(64); plan.PreviousColumns.Add(column); }
         await foreach (var key in Pages(cursor => runtime.Snapshots.ListCurrentPrimaryKeysAsync(plan.SnapshotKey, 128, cursor, ct), ct))
-            budget.Add(64);
+        { budget.Add(64); plan.PreviousPrimaryKeys.Add(key); }
         await foreach (var selected in Pages(cursor => runtime.Snapshots.ListFullDataSelectionsAsync(plan.SnapshotKey, 128, cursor, ct), ct))
-            budget.Add(selected.TableName);
+        { budget.Add(selected.TableName); plan.PreviousFullDataSelections.Add(selected.TableName); }
 
     }
 

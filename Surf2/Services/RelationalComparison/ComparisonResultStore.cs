@@ -3,44 +3,112 @@ using System.Text;
 
 namespace Surf2.Services.RelationalComparison;
 
-/// <summary>One completed comparison, paged from disk. Export streams all matching rows, not the displayed page.</summary>
+/// <summary>One completed comparison, with bounded memory results or indexed disk paging.</summary>
 public sealed class ComparisonResultStore : IAsyncDisposable
 {
-    private readonly ComparisonScratch _scratch;
-    private readonly string _path;
+    private readonly ComparisonScratch? _scratch;
+    private readonly string? _path;
+    private readonly ComparisonResultRow[]? _memory;
+    private readonly ComparisonLimits _limits;
+    private PageFilter? _pageFilter;
+    private string? _pageIndex;
+    private int[]? _memoryIndex;
+    private long _matchingCount;
+    internal long PageScanCount { get; private set; }
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed, _cleanupCompleted;
     internal ComparisonResultStore(ComparisonScratch scratch, string path, long count,
         IReadOnlyDictionary<string, long> counts)
-    { _scratch = scratch; _path = path; Count = count; StatusCounts = counts; }
+    { _scratch = scratch; _path = path; _limits = scratch.Limits; Count = count; StatusCounts = counts; }
+    private ComparisonResultStore(ComparisonResultRow[] rows, ComparisonLimits limits, IReadOnlyDictionary<string, long> counts)
+    { _memory = rows; _limits = limits; Count = rows.Length; StatusCounts = counts; }
     public long Count { get; }
     public IReadOnlyDictionary<string, long> StatusCounts { get; }
-    public int PageSize => _scratch.Limits.PageSize;
+    public int PageSize => _limits.PageSize;
     public Task<ComparisonResultPage> ReadPageAsync(long offset = 0, string search = "",
         bool differencesOnly = false, IReadOnlySet<string>? excluded = null, CancellationToken ct = default,
         IReadOnlySet<string>? collapsed = null)
     {
         if (offset < 0 || search.Length > 65536) throw new ArgumentOutOfRangeException(nameof(offset));
-        string[] exclusions = excluded?.ToArray() ?? [];
-        string[] closedFolders = collapsed?.ToArray() ?? [];
+        var filter = new PageFilter(search, differencesOnly, Ordered(excluded), Ordered(collapsed));
         return ExecuteAsync(() =>
         {
-            var rows = new List<ComparisonResultRow>(); long matching = 0, pageBytes = 0;
-            foreach (var row in Read(ct))
+            EnsurePageIndex(filter, ct);
+            var rows = new List<ComparisonResultRow>(); long pageBytes = 0;
+            if (_memory != null)
             {
-                if (!Matches(row, search, differencesOnly, exclusions)) continue;
-                if (closedFolders.Any(x => row.Key.StartsWith(x + "/", StringComparison.OrdinalIgnoreCase))) continue;
-                if (matching >= offset && rows.Count < PageSize)
-                {
-                    long size = SpoolBinary.Encode(row, ComparisonCodecs.Result, _scratch.Limits.MaximumRecordBytes).Length * 3L + 256;
-                    if (size > _scratch.Limits.MaximumPageBytes - pageBytes)
-                        throw new ComparisonLimitException("This comparison page exceeds its decoded byte budget. Use Export or narrower search.");
-                    rows.Add(row); pageBytes += size;
-                }
-                matching++;
+                for (long i = offset; i < _matchingCount && rows.Count < PageSize; i++) Add(_memory[_memoryIndex![(int)i]]);
             }
-            return new ComparisonResultPage(rows, offset, matching, matching > offset + rows.Count);
+            else if (offset < _matchingCount)
+            {
+                using var index = File.OpenRead(_pageIndex!);
+                using var reader = new BinaryReader(index);
+                using var data = File.OpenRead(_path!);
+                index.Position = checked(offset * sizeof(long));
+                while (offset + rows.Count < _matchingCount && rows.Count < PageSize)
+                {
+                    data.Position = reader.ReadInt64();
+                    if (!SpoolBinary.TryRead(data, ComparisonCodecs.Result, _limits.MaximumRecordBytes, out var row))
+                        throw new InvalidDataException("Invalid comparison page index.");
+                    Add(row);
+                }
+            }
+            return new ComparisonResultPage(rows, offset, _matchingCount, _matchingCount > offset + rows.Count);
+            void Add(ComparisonResultRow row)
+            {
+                ct.ThrowIfCancellationRequested();
+                long size = SpoolBinary.Encode(row, ComparisonCodecs.Result, _limits.MaximumRecordBytes).Length * 3L + 256;
+                if (size > _limits.MaximumPageBytes - pageBytes)
+                    throw new ComparisonLimitException("This comparison page exceeds its decoded byte budget. Use Export or narrower search.");
+                rows.Add(row); pageBytes += size;
+            }
         }, ct);
+    }
+    private static string[] Ordered(IReadOnlySet<string>? values) => values?.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+    private sealed record PageFilter(string Search, bool DifferencesOnly, string[] Excluded, string[] Collapsed)
+    {
+        public bool SameAs(PageFilter other) => DifferencesOnly == other.DifferencesOnly &&
+            StringComparer.OrdinalIgnoreCase.Equals(Search, other.Search) &&
+            Excluded.SequenceEqual(other.Excluded, StringComparer.OrdinalIgnoreCase) && Collapsed.SequenceEqual(other.Collapsed, StringComparer.OrdinalIgnoreCase);
+        public bool Includes(ComparisonResultRow row) => Matches(row, Search, DifferencesOnly, Excluded) &&
+            !Collapsed.Any(folder => row.Key.StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase));
+    }
+    private void EnsurePageIndex(PageFilter filter, CancellationToken ct)
+    {
+        if (_pageFilter?.SameAs(filter) == true) return;
+        _pageFilter = null; _memoryIndex = null;
+        if (_pageIndex != null) { _scratch!.Delete(_pageIndex); _pageIndex = null; }
+        long matching = 0;
+        if (_memory != null)
+        {
+            var index = new List<int>();
+            for (int i = 0; i < _memory.Length; i++)
+            { ct.ThrowIfCancellationRequested(); PageScanCount++; if (filter.Includes(_memory[i])) index.Add(i); }
+            _memoryIndex = index.ToArray(); matching = index.Count;
+        }
+        else
+        {
+            string path = _scratch!.NewFile();
+            try
+            {
+                using (var input = File.OpenRead(_path!))
+                using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                using (var writer = new BinaryWriter(output))
+                {
+                    while (input.Position < input.Length)
+                    {
+                        ct.ThrowIfCancellationRequested(); long position = input.Position;
+                        if (!SpoolBinary.TryRead(input, ComparisonCodecs.Result, _limits.MaximumRecordBytes, out var row)) break;
+                        PageScanCount++;
+                        if (!filter.Includes(row)) continue;
+                        _scratch.Reserve(path, sizeof(long)); writer.Write(position); matching++;
+                    }
+                }
+                _pageIndex = path;
+            }
+            catch { _scratch.Delete(path); throw; }
+        }
+        _matchingCount = matching; _pageFilter = filter;
     }
     public Task<ComparisonDocumentChoices> ReadDocumentChoicesAsync(string search = "", bool differencesOnly = false,
         IReadOnlySet<string>? excluded = null, CancellationToken ct = default)
@@ -56,8 +124,8 @@ public sealed class ComparisonResultStore : IAsyncDisposable
                 foreach (var side in new[] { (Target: row.Left, Choices: left), (Target: row.Right, Choices: right) })
                 {
                     if (side.Target == null) continue;
-                    long size = SpoolBinary.Encode(side.Target, TargetCodec, _scratch.Limits.MaximumRecordBytes).Length * 3L + 512 + row.Key.Length * 2L;
-                    if (count == _scratch.Limits.MaximumCandidates || size > _scratch.Limits.MaximumCandidateBytes - bytes)
+                    long size = SpoolBinary.Encode(side.Target, TargetCodec, _limits.MaximumRecordBytes).Length * 3L + 512 + row.Key.Length * 2L;
+                    if (count == _limits.MaximumCandidates || size > _limits.MaximumCandidateBytes - bytes)
                     { complete = false; break; }
                     var target = side.Target;
                     side.Choices.Add(new(new(row.Key, target.Resource.DisplayName, target.Resource.Kind, false, "", target.Resource.SyntaxPath, target.Resource), target));
@@ -105,8 +173,10 @@ public sealed class ComparisonResultStore : IAsyncDisposable
     }
     private IEnumerable<ComparisonResultRow> Read(CancellationToken ct)
     {
-        using var stream = File.OpenRead(_path);
-        while (SpoolBinary.TryRead(stream, ComparisonCodecs.Result, _scratch.Limits.MaximumRecordBytes, out var row))
+        if (_memory != null)
+        { foreach (var row in _memory) { ct.ThrowIfCancellationRequested(); yield return row; } yield break; }
+        using var stream = File.OpenRead(_path!);
+        while (SpoolBinary.TryRead(stream, ComparisonCodecs.Result, _limits.MaximumRecordBytes, out var row))
         { ct.ThrowIfCancellationRequested(); yield return row; }
     }
     private static bool Matches(ComparisonResultRow row, string search, bool differencesOnly, string[] excluded) =>
@@ -129,7 +199,8 @@ public sealed class ComparisonResultStore : IAsyncDisposable
             _disposed = true;
             if (!_cleanupCompleted)
             {
-                await Task.Run(_scratch.Dispose).ConfigureAwait(false);
+                if (_scratch != null) await Task.Run(_scratch.Dispose).ConfigureAwait(false);
+                _memoryIndex = null;
                 _cleanupCompleted = true;
             }
         }
@@ -138,4 +209,7 @@ public sealed class ComparisonResultStore : IAsyncDisposable
     internal static ComparisonResultStore Complete(ComparisonScratch scratch, string path,
         long count, Dictionary<string, long> counts) => new(scratch, path, count,
         new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(counts));
+    internal static ComparisonResultStore FromMemory(ComparisonResultRow[] rows, ComparisonLimits limits) => new(rows, limits,
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(rows.GroupBy(row => row.Status, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.LongCount(), StringComparer.Ordinal)));
 }

@@ -21,18 +21,19 @@ public sealed partial class RelationalComparisonService
             throw new InvalidOperationException("An identity-bound captured table is required.");
         var data = await _runtime.CapturedData.GetForRevisionAsync(target.RevisionKey.Value, ct).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("The selected table has no complete captured dataset.");
-        var metadata = await FindByNameAsync(target.SnapshotKey.Value, DatabaseVersionedResourceKind.TableMetadata,
-            target.Resource.TableSchemaName, target.Resource.TableName, target.VersionKey, ct).ConfigureAwait(false);
         TableMetadataDetails? details = null;
-        if (metadata != null)
+        if (target.VersionKey.HasValue)
         {
-            if (target.VersionKey.HasValue)
-            {
-                await using var historical = await _runtime.Snapshots.OpenHistoricalSnapshotAsync(target.SnapshotKey.Value, target.VersionKey.Value, ct).ConfigureAwait(false);
-                var entry = await FindHistoricalTableAsync(historical, FromResource(metadata, target.Epoch, target.VersionKey), ct).ConfigureAwait(false);
-                details = await historical.ReadTableMetadataAsync(entry, ct).ConfigureAwait(false);
-            }
-            else details = await _runtime.Snapshots.ReadTableMetadataAsync(metadata.RevisionKey, ct).ConfigureAwait(false);
+            await using var historical = await _runtime.Snapshots.OpenHistoricalSnapshotAsync(target.SnapshotKey.Value, target.VersionKey.Value, ct).ConfigureAwait(false);
+            var entries = await historical.FindEntriesAsync(HistoricalCollection.Tables,
+                target.Resource.TableSchemaName, target.Resource.TableName, ct).ConfigureAwait(false);
+            if (entries.Count != 0) details = await historical.ReadTableMetadataAsync(entries[0], ct).ConfigureAwait(false);
+        }
+        else
+        {
+            var metadata = await FindByNameAsync(target.SnapshotKey.Value, DatabaseVersionedResourceKind.TableMetadata,
+                target.Resource.TableSchemaName, target.Resource.TableName, null, ct).ConfigureAwait(false);
+            if (metadata != null) details = await _runtime.Snapshots.ReadTableMetadataAsync(metadata.RevisionKey, ct).ConfigureAwait(false);
         }
         var headers = details?.Columns.Count > 0
             ? details.Columns.OrderBy(x => x.Column.Ordinal).Select(x => x.Column.ColumnName).ToArray()

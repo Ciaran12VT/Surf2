@@ -65,6 +65,7 @@ public static partial class StorageRegressionSuite
                 status.Text == oldStatus.Text, check,
                 "History starts with descending, collapsed versions and the master version-count status");
 
+            await VerifyHistoryActionsDuringCountsAsync(window, runtime, versions[0], check);
             for (int i = 0; i < versions.Length; i++)
             {
                 await RuntimeWpfInvokeTaskAsync(window, "ToggleRowAsync", versions[i]);

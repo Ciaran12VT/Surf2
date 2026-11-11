@@ -39,8 +39,8 @@ public static partial class StorageRegressionSuite
             "{\"Id\":\"x #2\",\"Value\":\"literal suffix\"}", "{\"Id\":null,\"Value\":\"blank\"}",
             "{\"Value\":\"blank duplicate\"}", "{\"Id\":1.2300,\"Value\":true}", "42", "{}"];
         string[] historicalRows = ["{\"Id\":\"old\",\"Value\":\"historical only\"}", "null"];
-        var a = await SeedRuntimeComparisonSnapshotAsync(session, content, capture, "compare-a", left, historicalRows, 0, 65);
-        var b = await SeedRuntimeComparisonSnapshotAsync(session, content, capture, "compare-b", right, historicalRows, 1, 0);
+        var a = await SeedRuntimeComparisonSnapshotAsync(session, content, capture, "compare-a", left, historicalRows, 0, 260);
+        var b = await SeedRuntimeComparisonSnapshotAsync(session, content, capture, "compare-b", right, historicalRows, 1, 260);
         var unrelated = await SeedRuntimeComparisonSnapshotAsync(session, content, capture, "unrelated", ["{\"Id\":\"unrelated\",\"Value\":\"unrelated payload\"}"],
             historicalRows, 2, 0);
         await fixture.MarkTestFixtureReadyAsync();
@@ -66,17 +66,16 @@ public static partial class StorageRegressionSuite
         using (var trace = new StateAccessSqlTrace(connection))
         {
             var candidates = await service.GetCandidatesAsync(targetA, scope);
-            check(candidates.Complete && candidates.Items.Count == 66 &&
+            check(candidates.Complete && candidates.Items.Count == 521 &&
                 candidates.Items.All(x => x.SnapshotKey == a.Key || x.SnapshotKey == b.Key),
                 "Comparison candidates use only loaded scope memberships and retain all metadata pages");
             StateAccessNoReads(trace.Commands, check, "Comparison candidate discovery", "TextContent", "Asset", "DataValueException",
                 "DiagramObject", "Workflow", "DocumentWindowState");
             check(trace.Commands.All(x => !x.Text.Contains("FROM CAPTURE.", StringComparison.Ordinal)),
                 "Comparison candidate metadata discovery reads no captured row payloads");
-            var pages = trace.Commands.Where(c => c.Text.Contains("TOP (@TAKE)", StringComparison.Ordinal) &&
-                c.Text.Contains("SURF.SNAPSHOTRESOURCE", StringComparison.Ordinal) && c.Number("@Take") == 65).ToArray();
-            check(pages.Length > 2 && pages.Any(p => p.Number("@AfterKey") > 0 || p.Number("@AfterOrder") > -1),
-                "Actual comparison metadata SQL uses bounded 64-row seek pages with continuation");
+            check(trace.Commands.Count <= 12 && !trace.Commands.Any(c => c.Text.Contains("TOP (@TAKE)", StringComparison.Ordinal) &&
+                c.Text.Contains("SURF.SNAPSHOTRESOURCE", StringComparison.Ordinal)),
+                "Comparison choices reuse the scoped catalogue with a constant SQL request budget");
         }
         using (var trace = new StateAccessSqlTrace(connection))
         {
@@ -145,7 +144,29 @@ public static partial class StorageRegressionSuite
         }
         var collectionA = RuntimeComparisonCollection(runtime.Session.Epoch, a.Key);
         var collectionB = RuntimeComparisonCollection(runtime.Session.Epoch, b.Key);
+        var commandBudgets = new List<(bool Passed, string Name)>();
         using (var trace = new StateAccessSqlTrace(connection))
+        {
+            var pair = await service.ReadTextPairAsync(targetA, targetB);
+            check(pair.Left.StartsWith("current compare-a", StringComparison.Ordinal) && pair.Right.StartsWith("current compare-b", StringComparison.Ordinal) &&
+                RuntimeComparisonBodyCommands(trace.Commands).Count == 1,
+                "Opening a selected code pair fetches both definitions in one bounded payload query");
+        }
+        using (var trace = new StateAccessSqlTrace(connection))
+        await using (var result = await service.CompareCollectionsAsync(collectionA, collectionA, scope, new()))
+        {
+            check(result.StatusCounts.GetValueOrDefault("Identical") == result.Count && result.Count > 260 &&
+                RuntimeComparisonBodyCommands(trace.Commands).Count == 0 &&
+                !trace.Commands.Any(c => c.Text.Contains("FROM CAPTURE.", StringComparison.Ordinal)),
+                "Identical collections skip all immutable definition and captured-row payload reads");
+            RecordRuntimeComparisonCommandBudget("Identical current", trace.Commands, 120, commandBudgets);
+        }
+        var requestedBodies = new List<long[]>();
+        using (var trace = new StateAccessSqlTrace(connection, command =>
+        {
+            if (command.CommandText.Contains("CONVERT(varbinary(max),c.Text)", StringComparison.OrdinalIgnoreCase) && command.Parameters.Contains("@Keys"))
+                requestedBodies.Add(JsonSerializer.Deserialize<long[]>((string)command.Parameters["@Keys"].Value)!);
+        }))
         await using (var result = await service.CompareCollectionsAsync(collectionA, collectionB, scope, new()))
         {
             var rows = await RuntimeComparisonAllRowsAsync(result);
@@ -153,21 +174,48 @@ public static partial class StorageRegressionSuite
                 rows.Single(r => r.Key == "Tables/dbo.Evidence.sql").Status == "Identical" &&
                 rows.Single(r => r.Key == "Full Table Data/dbo.Evidence.csv").Status == "Different",
                 "Relational collection comparison handles selected code, table metadata and streamed captured CSV");
+            check(rows.Single(r => r.Key == "Stored Procedures/dbo.Metadata000.sql").Status == "Different" &&
+                requestedBodies.Count == 1 && requestedBodies[0].Length == 4,
+                "Collection comparison batches just four changed definitions and skips 259 identical procedures per side");
+            RecordRuntimeComparisonCommandBudget("Changed current", trace.Commands, 150, commandBudgets);
             check(StateAccessReads(trace.Commands, "TextContent").All(c => c.Number("@Revision") != unrelated.Procedure.RevisionKey) &&
                 trace.Commands.Where(c => c.Text.Contains("FROM CAPTURE.", StringComparison.Ordinal))
                     .All(c => c.Number("@DataSet") == a.Data.DataSetKey || c.Number("@DataSet") == b.Data.DataSetKey),
                 "Collection comparison never reads payloads from an unrelated snapshot or historical dataset");
             StateAccessNoReads(trace.Commands, check, "Collection comparison", "Asset", "DiagramObject", "DocumentWindowState", "Workflow");
         }
+        using (var trace = new StateAccessSqlTrace(connection))
+        await using (var normalized = await service.CompareCollectionsAsync(collectionA, collectionB, scope, new(true, true)))
+        {
+            var rows = await RuntimeComparisonAllRowsAsync(normalized);
+            check(rows.Single(r => r.Key == "Stored Procedures/dbo.Metadata000.sql").Status == "Identical" &&
+                rows.Single(r => r.Key == "Stored Procedures/dbo.Proc.sql").Status == "Different",
+                "Different raw content still applies master case and whitespace comparison semantics");
+            check(RuntimeComparisonBodyCommands(trace.Commands).Count == 0,
+                "Changing comparison options reuses bounded immutable definition cache instead of rereading SQL bodies");
+        }
+        using (var trace = new StateAccessSqlTrace(connection))
         await using (var historical = await service.CompareCollectionsAsync(collectionA with { VersionKey = a.Version }, collectionA, scope, new()))
         {
             var rows = await RuntimeComparisonAllRowsAsync(historical);
             check(rows.Single(r => r.Key == "Stored Procedures/dbo.Proc.sql").Left!.RevisionKey == a.PreviousProcedure &&
                 rows.Single(r => r.Key == "Tables/dbo.Evidence.sql").Left!.HistoricalEntryKey.HasValue,
                 "Historical collection results retain selected revision and projected table-entry identities for later opening");
+            check(RuntimeComparisonBodyCommands(trace.Commands).Count == 1, "Historical comparison batches only its changed body");
+            RecordRuntimeComparisonCommandBudget("Historical/current", trace.Commands, 220, commandBudgets);
         }
+        using (var trace = new StateAccessSqlTrace(connection))
+        await using (var historical = await service.CompareCollectionsAsync(collectionA with { VersionKey = a.Version },
+            collectionA with { VersionKey = a.Version }, scope, new()))
+        {
+            check(historical.StatusCounts.GetValueOrDefault("Identical") == historical.Count && RuntimeComparisonBodyCommands(trace.Commands).Count == 0,
+                "Identical historical collections read no definition bodies");
+            RecordRuntimeComparisonCommandBudget("Identical historical", trace.Commands, 300, commandBudgets);
+        }
+        await VerifyRuntimeMixedComparisonAsync(runtime, content, capture, service, check);
         check(!Directory.EnumerateDirectories(fixture.OwnedDirectory).Any(), "All actual SQL comparison spools are removed after disposal");
         await fixture.VerifySourceUnchangedAsync(check);
+        foreach (var budget in commandBudgets) check(budget.Passed, budget.Name);
     }
 
     private static async Task<RuntimeComparisonSnapshot> SeedRuntimeComparisonSnapshotAsync(RelationalSession session,
@@ -185,7 +233,8 @@ public static partial class StorageRegressionSuite
             { SchemaName = "dbo", ObjectName = "Proc", Kind = SqlDatabaseObjectKind.StoredProcedure, Definition = "old " + name });
             await writer.SealRevisionAsync(oldProcedure);
             for (int i = 0; i < additional; i++) await writer.InsertCurrentObjectAsync(key, new SqlDatabaseObject
-            { SchemaName = "dbo", ObjectName = "Metadata" + i.ToString("D3"), Kind = SqlDatabaseObjectKind.StoredProcedure, Definition = new string('x', 4096) }, i + 3);
+            { SchemaName = "dbo", ObjectName = "Metadata" + i.ToString("D3"), Kind = SqlDatabaseObjectKind.StoredProcedure,
+                Definition = i == 0 ? name == "compare-a" ? " SELECT \t42;\r\n" : "select42;" : new string('x', 4096) }, i + 3);
             table = await writer.InsertCurrentTableAsync(key, new SqlTable { SchemaName = "dbo", TableName = "Evidence",
                 HasFullData = true, FullDataRowCount = 999, FullDataImportedAtUtc = EvidenceTime }, 1);
             await writer.InsertColumnAsync(key, table.RevisionKey, new SqlColumn { SchemaName = "dbo", TableName = "Evidence",
@@ -221,6 +270,52 @@ public static partial class StorageRegressionSuite
     private static RelationalComparisonTarget RuntimeComparisonCollection(Guid epoch, long snapshot) => new(
         new(snapshot.ToString(), "Database Snapshot", snapshot.ToString(), ComparisonResourceKind.DatabaseSnapshot,
             "DatabaseSnapshot", true, false, false, "snapshot:" + snapshot), epoch, snapshot);
+    private static IReadOnlyList<StateAccessCommand> RuntimeComparisonBodyCommands(IReadOnlyList<StateAccessCommand> commands) =>
+        commands.Where(command => command.Text.Contains("VARBINARY(MAX)", StringComparison.Ordinal) &&
+            command.Text.Contains("C.TEXT", StringComparison.Ordinal) && command.Text.Contains("DEFINITIONCONTENTKEY", StringComparison.Ordinal)).ToArray();
+    private static void RecordRuntimeComparisonCommandBudget(string label, IReadOnlyList<StateAccessCommand> commands,
+        int maximum, List<(bool Passed, string Name)> budgets)
+    {
+        Console.WriteLine($"Comparison SQL budget {label}: {commands.Count} commands (limit < {maximum}).");
+        if (commands.Count >= maximum)
+            foreach (var group in commands.GroupBy(command => command.Text).OrderByDescending(group => group.Count()))
+                Console.WriteLine($"  {group.Count()} x {group.Key[..Math.Min(200, group.Key.Length)]}");
+        budgets.Add((commands.Count < maximum, $"{label} comparison SQL budget: {commands.Count} requests, fewer than {maximum}"));
+    }
+    private static async Task VerifyRuntimeMixedComparisonAsync(RelationalRuntime runtime, RelationalContentStore content,
+        RelationalCaptureStore capture, RelationalComparisonService service, Action<bool, string> check)
+    {
+        var library = MixedHistoryLibrary();
+        var (snapshot, versions) = await SeedMixedHistoryAsync(runtime.Session, content, capture, library);
+        var history = new DatabaseSnapshotHistoryService(new DatabaseDocumentService());
+        foreach (string version in new[] { "mixed-initial", "mixed-middle" })
+        {
+            var old = history.ReconstructSnapshot(library, library.Snapshots[0].SnapshotId, version);
+            var current = library.Snapshots[0].Clone();
+            // Legacy generated document paths use the display name. Distinct names
+            // prevent both sides resolving through the first snapshot's alias.
+            old.SnapshotId = old.DisplayName = "oracle-left"; current.SnapshotId = current.DisplayName = "oracle-right";
+            var pair = new DatabaseSnapshotLibrary(); pair.Snapshots.Add(old); pair.Snapshots.Add(current);
+            var left = RuntimeComparisonCollection(runtime.Session.Epoch, snapshot) with { VersionKey = versions[version] };
+            var right = RuntimeComparisonCollection(runtime.Session.Epoch, snapshot);
+            var expected = new ResourceComparisonService().BuildCollectionDiff(left.Resource with { SnapshotId = old.SnapshotId },
+                right.Resource with { SnapshotId = current.SnapshotId }, pair);
+            await using var result = await service.CompareCollectionsAsync(left, right, null, new());
+            var actual = await RuntimeComparisonAllRowsAsync(result);
+            var actualStatuses = actual.Select(row => (row.Key.ToUpperInvariant(), row.Status)).ToArray();
+            var expectedStatuses = expected.Rows.Select(row =>
+                (row.RelativePath.ToUpperInvariant(), row.Status switch { ResourceComparisonStatus.MissingLeft => "Missing left",
+                    ResourceComparisonStatus.MissingRight => "Missing right", _ => row.Status.ToString() })).ToArray();
+            if (!actualStatuses.SequenceEqual(expectedStatuses))
+            {
+                Console.WriteLine("Mixed comparison mismatch: " + version);
+                foreach (var row in actualStatuses) Console.WriteLine("  Actual: " + row);
+                foreach (var row in expectedStatuses) Console.WriteLine("  Master: " + row);
+            }
+            check(actualStatuses.SequenceEqual(expectedStatuses),
+                "Mixed historical collection statuses match master for duplicate names, root children and data companions: " + version);
+        }
+    }
     private static async Task<List<ComparisonResultRow>> RuntimeComparisonAllRowsAsync(ComparisonResultStore result)
     {
         var rows = new List<ComparisonResultRow>(); long offset = 0;

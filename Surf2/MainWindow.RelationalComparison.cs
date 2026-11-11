@@ -138,8 +138,7 @@ public partial class MainWindow
             }
             finally { if (result != null) await result.DisposeAsync(); }
         }
-        string leftText = left == null ? "" : await service.ReadTextAsync(left, ct);
-        string rightText = right == null ? "" : await service.ReadTextAsync(right, ct);
+        var (leftText, rightText) = await service.ReadTextPairAsync(left, right, ct);
         // DiffPlex's WPF presenter materializes a diff model; bound that independently
         // from selected-document reads instead of allowing an unbounded UI allocation.
         if (leftText.Length + (long)rightText.Length > 256 * 1024 ||
