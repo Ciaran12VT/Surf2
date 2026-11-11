@@ -332,6 +332,7 @@ public static class RelationalExplorerContractChecks
             "physical search follows descendants despite IncludeChildren false and does not apply parser bin/obj exclusions");
         Check(physicalBatches[^1].Coverage.PhysicalDiscoveryNotFrozen && !physicalBatches[^1].Coverage.FullyCurrent,
             "observed directory enumeration is not claimed to be an atomic frozen candidate set");
+        await CheckNameCatalogueAsync(aliasScope, unloaded, Check, ct).ConfigureAwait(false);
         var domainMetadata = new FakeMetadata(scope) { Current = false, DomainCurrent = true };
         var domainExplorer = new RelationalExplorerService(domainMetadata, physical);
         Check((await domainExplorer.GetRootsAsync(scope, ct).ConfigureAwait(false)).Length > 0,
@@ -341,6 +342,55 @@ public static class RelationalExplorerContractChecks
         Check(domainSearch[^1].Coverage.GenerationChanged && !domainSearch[^1].Coverage.Completed,
             "search still fences derived generation when metadata browsing remains current");
         return passed;
+    }
+
+    private static async Task CheckNameCatalogueAsync(ExplorerScope aliasScope, ExplorerResource unloaded,
+        Action<bool, string> check, CancellationToken ct)
+    {
+        var scope = aliasScope with { Resources = aliasScope.Resources.AddRange(new ExplorerResource[]
+        {
+            unloaded,
+            new(30, 2, "folder", ResourceKind.Folder, @"C:\pure", "Source files", false, true, null, null, null, null, false),
+            new(31, 3, "missing", ResourceKind.File, @"C:\missing\Missing.cs", "", false, true, null, null, null, null, false)
+        }) };
+        var metadata = new FakeMetadata(scope) { IncludeDuplicateNames = true };
+        var physical = new CataloguePhysical();
+        var explorer = new RelationalExplorerService(metadata, physical);
+        var catalogue = await explorer.BuildNameCatalogueAsync(scope, ct).ConfigureAwait(false);
+        check(!catalogue.Truncated && physical.Probes == 2 && physical.Reads == 2,
+            "building the name catalogue discovers each loaded physical directory once");
+        metadata.RejectReads = physical.RejectReads = true;
+
+        ExplorerSearchBatch Search(ExplorerNameCatalogue view, string query, bool regex = false) => explorer.SearchNames(view,
+            new(view.Scope, query, regex, IndexSearchTarget.Name, Guid.NewGuid()), ct);
+
+        var search = Search(catalogue, "alpha");
+        var databaseHits = search.Hits.Where(hit => hit.Node.Role == ExplorerNodeRole.DatabaseDocument).ToArray();
+        check(search.Coverage.Completed && search.Coverage.Incomplete == 1 && search.Hits.Length == 5 &&
+            databaseHits.Length == 4 && databaseHits.Select(hit => hit.Node.ScopeResourceKey).Distinct().Count() == 2 &&
+            databaseHits.Select(hit => hit.Node.FullPath).Distinct().Count() == 2 &&
+            search.Hits.All(hit => !hit.ContentMatched && hit.MatchingColumnIndexes.IsEmpty),
+            "cached name matching keeps duplicate database identities and aliases, reports missing resources, and never evaluates text");
+        var results = new ExplorerSearchResultBuilder(catalogue.Scope, search.RequestIdentity);
+        results.Append(search);
+        var roots = results.Snapshot();
+        check(roots.Single(root => root.Node.VirtualFolderId == "first-alias").Children.Single().Node.Name == "Alias" &&
+            roots.Single(root => root.Node.VirtualFolderId == "second-alias").Children.Single().Node.Name == "Alias Two" &&
+            roots.Single(root => root.Node.Name == "Source files").Children.Single().Children.Single().Node.Name == "Alpha%_[.cs",
+            "cached matches retain virtual placements and physical ancestry");
+        check(Search(catalogue, "%_[").Hits.Single().Node.FullPath == @"C:\pure\bin\Alpha%_[.cs" &&
+            Search(catalogue, @"^dbo\.Alpha$", regex: true).Hits.Length == 4 &&
+            Search(catalogue, "Alias Two").Hits.Single().Node.ScopeResourceKey == aliasScope.Resources[1].ScopeResourceKey &&
+            Search(catalogue, "Unloaded").Hits.IsEmpty,
+            "repeated literal and regex searches use memory and respect aliases and unloaded memberships");
+
+        metadata.RejectReads = physical.RejectReads = false;
+        physical.FileName = "Renamed.cs";
+        var rebuilt = await explorer.BuildNameCatalogueAsync(scope, ct).ConfigureAwait(false);
+        metadata.RejectReads = physical.RejectReads = true;
+        check(Search(catalogue, "Renamed.cs").Hits.IsEmpty && Search(rebuilt, "%_[").Hits.IsEmpty &&
+            Search(rebuilt, "Renamed.cs").Hits.Single().Node.FullPath == @"C:\pure\bin\Renamed.cs",
+            "rebuilding discovery publishes a new snapshot without mutating the old name catalogue");
     }
 
     private static async Task<ImmutableArray<ExplorerNodeSummary>> Children(RelationalExplorerService service,
@@ -363,13 +413,22 @@ public static class RelationalExplorerContractChecks
         internal bool Current = true;
         internal bool? DomainCurrent;
         internal bool IncludeDuplicateNames;
-        public Task<ExplorerScope> ReadScopeAsync(long key, IReadOnlySet<string>? unloaded, string? culture, CancellationToken ct) => Task.FromResult(scope);
-        public Task<bool> IsCurrentAsync(IndexRequestContext context, CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(Current); }
-        public Task<bool> IsDomainCurrentAsync(IndexRequestContext context, CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(DomainCurrent ?? Current); }
+        internal bool RejectReads;
+        private void RequireReadsAllowed(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (RejectReads) throw new InvalidOperationException("Cached name searches must not call metadata providers.");
+        }
+        public Task<ExplorerScope> ReadScopeAsync(long key, IReadOnlySet<string>? unloaded, string? culture, CancellationToken ct)
+        { RequireReadsAllowed(ct); return Task.FromResult(scope); }
+        public Task<bool> IsCurrentAsync(IndexRequestContext context, CancellationToken ct)
+        { RequireReadsAllowed(ct); return Task.FromResult(Current); }
+        public Task<bool> IsDomainCurrentAsync(IndexRequestContext context, CancellationToken ct)
+        { RequireReadsAllowed(ct); return Task.FromResult(DomainCurrent ?? Current); }
         public async IAsyncEnumerable<ExplorerDatabaseItem> ReadDatabaseCategoryAsync(ExplorerScope selected, ExplorerResource resource,
             ExplorerCategory category, [EnumeratorCancellation] CancellationToken ct)
         {
-            await Task.CompletedTask; ct.ThrowIfCancellationRequested(); CategoryReads++;
+            await Task.CompletedTask; RequireReadsAllowed(ct); CategoryReads++;
             if (category == ExplorerCategory.Procedures)
             {
                 yield return new(new(1, Guid.Empty, 10, DatabaseVersionedResourceKind.StoredProcedure, "dbo", "Zebra", "SP|dbo.Zebra", 100, 0, []), SqlDatabaseObjectKind.StoredProcedure);
@@ -407,6 +466,37 @@ public static class RelationalExplorerContractChecks
             Task.FromResult<ImmutableArray<PhysicalExplorerEntry>>(path == @"C:\pure" ?
                 [new(@"C:\pure\bin", true, ExplorerAvailability.Present), new(@"C:\pure\visible.cs", false, ExplorerAvailability.Present)] :
                 [new(@"C:\pure\bin\generated.cs", false, ExplorerAvailability.Present)]);
+    }
+    private sealed class CataloguePhysical : IPhysicalExplorerQueries
+    {
+        internal bool RejectReads;
+        internal int Probes, Reads;
+        internal string FileName = "Alpha%_[.cs";
+
+        public Task<ExplorerAvailability> ProbeAsync(string path, bool directory, CancellationToken ct)
+        {
+            RequireReadsAllowed(ct);
+            Probes++;
+            return Task.FromResult(path == @"C:\missing\Missing.cs" ? ExplorerAvailability.Missing : ExplorerAvailability.Present);
+        }
+
+        public Task<ImmutableArray<PhysicalExplorerEntry>> ReadDirectoryAsync(string path, string culture, ExplorerLimits limits, CancellationToken ct)
+        {
+            RequireReadsAllowed(ct);
+            Reads++;
+            return Task.FromResult<ImmutableArray<PhysicalExplorerEntry>>(path switch
+            {
+                @"C:\pure" => [new(@"C:\pure\bin", true, ExplorerAvailability.Present)],
+                @"C:\pure\bin" => [new($@"C:\pure\bin\{FileName}", false, ExplorerAvailability.Present)],
+                _ => throw new InvalidOperationException("The fixture searched an unexpected directory.")
+            });
+        }
+
+        private void RequireReadsAllowed(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (RejectReads) throw new InvalidOperationException("Cached name searches must not call physical providers.");
+        }
     }
     private sealed class FakeSources : IExplorerSearchSources
     {

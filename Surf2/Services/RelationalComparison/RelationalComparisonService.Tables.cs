@@ -63,10 +63,16 @@ public static class ComparisonTableEngine
         if (keys.Length == 0 || keys.Length > CaptureLimits.MaximumColumns ||
             keys.Any(k => !left.Headers.Contains(k, StringComparer.OrdinalIgnoreCase) || !right.Headers.Contains(k, StringComparer.OrdinalIgnoreCase)))
             throw new ArgumentException("Select common columns to identify table rows.", nameof(keyColumns));
-        string[] headers = left.Headers.Concat(right.Headers).Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
-        if (headers.Length > CaptureLimits.MaximumColumns * 2 || headers.Sum(x => 2L * x.Length + 64) > limits.SortBufferBytes)
+        var leftHeaders = left.Headers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var rightHeaders = right.Headers.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var columns = left.Headers.Concat(right.Headers).Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(name => new ComparisonTableColumn(name, leftHeaders.Contains(name), rightHeaders.Contains(name))).ToArray();
+        if (columns.Length > CaptureLimits.MaximumColumns * 2 || columns.Sum(x => 2L * x.Name.Length + 64) > limits.SortBufferBytes)
             throw new ComparisonLimitException("Comparison column metadata exceeds its memory budget.");
+        var layout = new ComparisonTableLayout(Array.AsReadOnly(columns), Array.AsReadOnly(keys));
+        // Keep the established CSV previews and changed-column ordering.
+        int[] previewOrder = Enumerable.Range(0, columns.Length)
+            .OrderBy(i => columns[i].Name, StringComparer.OrdinalIgnoreCase).ToArray();
         var scratch = new ComparisonScratch(limits);
         try
         {
@@ -86,10 +92,26 @@ public static class ComparisonTableEngine
                     int order = !hasA ? 1 : !hasB ? -1 : StringComparer.OrdinalIgnoreCase.Compare(a.Current.Key, b.Current.Key);
                     using var jsonA = hasA && order <= 0 ? JsonDocument.Parse(a.Current.Value.Json) : null;
                     using var jsonB = hasB && order >= 0 ? JsonDocument.Parse(b.Current.Value.Json) : null;
-                    string[] changed = order == 0 ? headers.Where(h => Value(jsonA!.RootElement, h) != Value(jsonB!.RootElement, h)).ToArray() : [];
+                    var leftValues = ReadValues(jsonA, leftHeaders);
+                    var rightValues = ReadValues(jsonB, rightHeaders);
+                    var cells = new ComparisonTableCell[columns.Length];
+                    for (int i = 0; i < columns.Length; i++)
+                    {
+                        var column = columns[i];
+                        string leftValue = leftValues.GetValueOrDefault(column.Name, string.Empty);
+                        string rightValue = rightValues.GetValueOrDefault(column.Name, string.Empty);
+                        var cellStatus = order < 0 ? ComparisonCellStatus.Removed : order > 0 ? ComparisonCellStatus.Added
+                            : !column.ExistsOnRight ? ComparisonCellStatus.Removed : !column.ExistsOnLeft ? ComparisonCellStatus.Added
+                            : leftValue != rightValue ? ComparisonCellStatus.Altered : ComparisonCellStatus.Identical;
+                        cells[i] = new(leftValue, rightValue, cellStatus);
+                    }
+                    string[] changed = order == 0
+                        ? previewOrder.Where(i => cells[i].Status != ComparisonCellStatus.Identical).Select(i => columns[i].Name).ToArray()
+                        : [];
                     string status = order < 0 ? "Removed" : order > 0 ? "Added" : changed.Length == 0 ? "Identical" : "Altered";
                     var row = new ComparisonResultRow(order <= 0 ? a.Current.Key : b.Current.Key, status, string.Join(", ", changed),
-                        jsonA == null ? "" : Preview(jsonA.RootElement, headers), jsonB == null ? "" : Preview(jsonB.RootElement, headers));
+                        jsonA == null ? "" : Preview(cells, columns, previewOrder, left: true),
+                        jsonB == null ? "" : Preview(cells, columns, previewOrder, left: false), TableCells: cells);
                     SpoolBinary.Append(output, resultPath, row, ComparisonCodecs.Result, scratch);
                     counts[status] = counts.GetValueOrDefault(status) + 1; count++;
                     if (order <= 0) hasA = a.MoveNext();
@@ -97,7 +119,7 @@ public static class ComparisonTableEngine
                 }
             }
             scratch.Delete(leftPath); scratch.Delete(rightPath);
-            return ComparisonResultStore.Complete(scratch, resultPath, count, counts);
+            return ComparisonResultStore.Complete(scratch, resultPath, count, counts, layout);
         }
         catch (Exception failure)
         {
@@ -128,13 +150,26 @@ public static class ComparisonTableEngine
             if (p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return CaptureDisplay.Value(p.Value);
         return "";
     }
-    private static string Preview(JsonElement row, IReadOnlyList<string> headers)
+    private static Dictionary<string, string> ReadValues(JsonDocument? row, HashSet<string> headers)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (row == null) return values;
+        foreach (var property in row.RootElement.EnumerateObject())
+        {
+            if (headers.Contains(property.Name) && !values.ContainsKey(property.Name))
+                values.Add(property.Name, CaptureDisplay.Value(property.Value));
+        }
+        return values;
+    }
+
+    private static string Preview(ComparisonTableCell[] cells, ComparisonTableColumn[] columns, int[] order, bool left)
     {
         var result = new StringBuilder(803);
-        for (int i = 0; i < headers.Count; i++)
+        for (int i = 0; i < order.Length; i++)
         {
             if (i != 0) Add("; ");
-            Add(headers[i]); Add("="); Add(Value(row, headers[i]));
+            int column = order[i];
+            Add(columns[column].Name); Add("="); Add(left ? cells[column].Left : cells[column].Right);
             if (result.Length > 800) return result.ToString(0, 800) + "...";
         }
         return result.ToString();

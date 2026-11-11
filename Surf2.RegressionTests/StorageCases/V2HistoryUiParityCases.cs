@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Surf2;
 using Surf2.Models;
 using Surf2.Services;
@@ -43,7 +44,7 @@ public static partial class StorageRegressionSuite
             var oldFind = RuntimeWpfNamed<TextBox>(original, "HistoryFilterTextBox");
             var status = RuntimeWpfNamed<TextBlock>(window, "StatusTextBlock");
             var oldStatus = RuntimeWpfNamed<TextBlock>(original, "StatusTextBlock");
-            var versions = rows.Items.Cast<object>().ToArray();
+            var versions = HistoryDataRows(rows).ToArray();
             var oldVersions = oldRows.Items.Cast<DatabaseSnapshotHistoryWindow.DatabaseHistoryVersionRow>().ToArray();
 
             RuntimeWpfAssert(window.Title == original.Title &&
@@ -52,12 +53,10 @@ public static partial class StorageRegressionSuite
                 check, "History restores master's title, database heading and window dimensions");
             var columns = ((GridView)rows.View).Columns;
             var expectedColumns = ((GridView)oldRows.View).Columns;
-            RuntimeWpfAssert(columns.Select(column => column.Header?.ToString()).SequenceEqual(
-                    new[] { "Version", "Resource Type", "Name", "Timestamp / Added", "Files / Removed" }) &&
-                columns.Select(column => column.Width).SequenceEqual(expectedColumns.Select(column => column.Width)) &&
+            RuntimeWpfAssert(columns.Select(column => column.Width).SequenceEqual(expectedColumns.Select(column => column.Width)) &&
                 !RuntimeWpfVisuals<DataGrid>(root).Any() && !RuntimeWpfVisuals<TabControl>(root).Any() &&
                 !RuntimeWpfVisuals<ComboBox>(root).Any(), check,
-                "History uses master's single five-column hierarchy with Find, rather than split grids or tabs");
+                "History uses a single five-column hierarchy with Find");
             RuntimeWpfAssert(versions.Length == history.Versions.Count && versions.All(row => HistoryValue<bool>(row, "IsVersion")) &&
                 versions.All(row => !HistoryValue<bool>(row, "IsExpanded")) &&
                 versions.Select(row => HistoryValue<SnapshotVersionSummary>(row, "Version").VersionNumber)
@@ -74,6 +73,8 @@ public static partial class StorageRegressionSuite
             await RuntimeWpfWaitAsync(() => HistoryRowsReady(rows, oldRows.Items.Count), "expanded history line counts");
             RuntimeWpfAssert(HistorySignatures(rows).SequenceEqual(HistorySignatures(oldRows)), check,
                 "Expanded migrated history matches master's resource types, names, order, timestamps and added/removed line counts");
+            RuntimeWpfArrange(root, 1120, 620); await RuntimeWpfIdleAsync();
+            VerifyHistoryColumnHeadings(rows, check);
             RuntimeWpfAssert(versions.All(row => HistoryValue<string>(row, "ToggleGlyph") == "▲" &&
                     HistoryValue<string>(row, "ToggleToolTip") == "Collapse"), check,
                 "History expand buttons expose master's glyph and Collapse tooltip");
@@ -110,8 +111,8 @@ public static partial class StorageRegressionSuite
             RuntimeWpfArrange(root, 1120, 620); await RuntimeWpfIdleAsync();
             RuntimeWpfSaveRender(root, outputDir, "v2-history-find", 1120, 620, check);
             find.Clear(); oldFind.Clear();
-            await RuntimeWpfWaitAsync(() => rows.Items.Count == versions.Length && status.Text == oldStatus.Text, "cleared history Find");
-            RuntimeWpfAssert(rows.Items.Count == versions.Length && status.Text == oldStatus.Text, check,
+            await RuntimeWpfWaitAsync(() => HistoryDataRows(rows).Count() == versions.Length && status.Text == oldStatus.Text, "cleared history Find");
+            RuntimeWpfAssert(HistoryDataRows(rows).Count() == versions.Length && status.Text == oldStatus.Text, check,
                 "Clearing History Find returns to collapsed versions and normal status");
         }
         finally
@@ -120,6 +121,42 @@ public static partial class StorageRegressionSuite
             original.Close();
             await window.CloseAndDrainAsync().WaitAsync(TimeSpan.FromSeconds(60));
         }
+    }
+
+    private static void VerifyHistoryColumnHeadings(ListView rows, Action<bool, string> check)
+    {
+        var displayed = rows.Items.OfType<RelationalSnapshotHistoryWindow.HistoryRow>().ToArray();
+        var versionHeading = displayed[0];
+        var version = (RelationalSnapshotHistoryWindow.HistoryVersionRow)displayed[1];
+        var fileHeading = displayed[2];
+        var file = (RelationalSnapshotHistoryWindow.HistoryFileRow)displayed[3];
+        RuntimeWpfAssert(versionHeading.IsHeading && versionHeading.VersionColumn == "Version" &&
+            versionHeading.AddedColumn == "Timestamp" && versionHeading.RemovedColumn == "Files" &&
+            fileHeading.IsHeading && fileHeading.ResourceTypeColumn == "Resource Type" && fileHeading.NameColumn == "Name" &&
+            fileHeading.AddedColumn == "Lines Added" && fileHeading.RemovedColumn == "Lines Removed" &&
+            displayed.Count(row => row.IsHeading) == displayed.Count(row => row.IsVersion) + 1 &&
+            displayed.Select((row, index) => (row, index)).Where(pair => pair.row.IsVersion)
+                .All(pair => displayed[pair.index + 1].IsHeading), check,
+            "History displays a version heading and one file heading inside each expanded version");
+
+        RuntimeWpfAssert(Aligned(versionHeading, "Version", version, version.VersionColumn) &&
+            Aligned(versionHeading, "Timestamp", version, version.AddedColumn) &&
+            Aligned(versionHeading, "Files", version, version.RemovedColumn) &&
+            Aligned(fileHeading, "Resource Type", file, file.ResourceTypeColumn) &&
+            Aligned(fileHeading, "Name", file, file.NameColumn) &&
+            Aligned(fileHeading, "Lines Added", file, file.AddedColumn) &&
+            Aligned(fileHeading, "Lines Removed", file, file.RemovedColumn), check,
+            "History headings align with the rendered text in their data columns");
+        RuntimeWpfAssert(file.HasAddedLines && file.HasRemovedLines &&
+            Cell(file, file.AddedColumn).Foreground is SolidColorBrush added && added.Color.G > added.Color.R &&
+            Cell(file, file.RemovedColumn).Foreground is SolidColorBrush removed && removed.Color.R > removed.Color.G, check,
+            "History renders positive added counts in green and removed counts in red");
+
+        TextBlock Cell(object data, string text) => RuntimeWpfVisuals<TextBlock>(
+            rows.ItemContainerGenerator.ContainerFromItem(data) ?? throw new InvalidOperationException("Missing history row visual."))
+            .Single(block => block.Text == text);
+        double Left(object data, string text) => Cell(data, text).TransformToAncestor(rows).Transform(new Point()).X;
+        bool Aligned(object heading, string label, object data, string value) => Math.Abs(Left(heading, label) - Left(data, value)) < 1;
     }
 
     private static async Task<RelationalComparisonTarget> VerifyHistoryActionTargetsAsync(RelationalSnapshotHistoryWindow window, SnapshotSummary snapshot,
@@ -169,11 +206,14 @@ public static partial class StorageRegressionSuite
         (T)(row.GetType().GetProperty(property, BindingFlags.Public | BindingFlags.Instance)?.GetValue(row)
             ?? throw new InvalidOperationException("Missing history row property: " + property));
 
-    private static string[] HistorySignatures(ListView rows) => rows.Items.Cast<object>().Select(row => string.Join("\u001F",
+    private static IEnumerable<object> HistoryDataRows(ListView rows) => rows.Items.Cast<object>()
+        .Where(row => row is not RelationalSnapshotHistoryWindow.HistoryRow { IsHeading: true });
+
+    private static string[] HistorySignatures(ListView rows) => HistoryDataRows(rows).Select(row => string.Join("\u001F",
         new[] { "VersionColumn", "ResourceTypeColumn", "NameColumn", "AddedColumn", "RemovedColumn" }
             .Select(property => HistoryValue<string>(row, property)))).ToArray();
 
-    private static bool HistoryRowsReady(ListView rows, int expectedCount) => rows.Items.Count == expectedCount &&
-        rows.Items.Cast<object>().Where(row => !HistoryValue<bool>(row, "IsVersion"))
+    private static bool HistoryRowsReady(ListView rows, int expectedCount) => HistoryDataRows(rows).Count() == expectedCount &&
+        HistoryDataRows(rows).Where(row => !HistoryValue<bool>(row, "IsVersion"))
             .All(row => HistoryValue<string>(row, "AddedColumn").StartsWith('+') && HistoryValue<string>(row, "RemovedColumn").StartsWith('-'));
 }

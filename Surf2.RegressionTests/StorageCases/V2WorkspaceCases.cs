@@ -123,11 +123,21 @@ public static partial class StorageRegressionSuite
             RuntimeWpfAssert(RuntimeWpfNamed<FrameworkElement>(main, "ObjectExplorerLoadingOverlay").Visibility == Visibility.Collapsed &&
                 RuntimeWpfNamed<FrameworkElement>(main, "MainCanvasLoadingOverlay").Visibility == Visibility.Collapsed,
                 check, "Background definition loading leaves the workspace unobstructed");
-            RuntimeWpfNamed<TextBox>(main, "ObjectExplorerSearchTextBox").Text = "p";
+            var searchBox = RuntimeWpfNamed<TextBox>(main, "ObjectExplorerSearchTextBox");
+            var unfilteredRootKeys = main.RootNodes.Select(node => node.NodeKey).ToArray();
+            int sqlBeforeNameSearch = trace.Commands.Count;
+            searchBox.Text = "p";
             await RuntimeWpfInvokeTaskAsync(main, "SearchRelationalExplorerAsync");
             RuntimeWpfAssert(main.RootNodes.Count > 0 && !selector.IsEnabled, check, "Name search returns resources before the definition job starts");
             RuntimeWpfAssert(main.StatusText.Contains("Search complete.", StringComparison.Ordinal), check,
                 "Name search reports completion independently of the pending definition index");
+            RuntimeWpfAssert(trace.Commands.Count == sqlBeforeNameSearch, check,
+                "Name search uses the prepared scope inventory without SQL reads");
+            VerifyExpandedSearchBranches(main.RootNodes, "Name");
+            searchBox.Clear();
+            await RuntimeWpfInvokeTaskAsync(main, "SearchRelationalExplorerAsync");
+            RuntimeWpfAssert(trace.Commands.Count == sqlBeforeNameSearch && main.RootNodes.Select(node => node.NodeKey).SequenceEqual(unfilteredRootKeys),
+                check, "Clearing Name search restores the cached scope roots without SQL reads");
             await RuntimeWpfInvokeTaskAsync(main, "NavigateRelationalReferenceAsync", new ReferenceNavigationRequestedEventArgs("p", 1, 1, null), callerPath, null);
             RuntimeWpfAssert(RuntimeWpfWindows<FloatingCodeWindow>(main, "_openWindows").Any(window => window.Text == "current-first"),
                 check, "A metadata reference lazily opens the selected SQL body before physical definitions load");
@@ -150,6 +160,7 @@ public static partial class StorageRegressionSuite
             var hits = RuntimeWpfField<System.Collections.IDictionary>(main, "_relationalExplorerNodes").Values.Cast<ExplorerNodeSummary>().ToArray();
             RuntimeWpfAssert(hits.Any(hit => hit.IsVirtualDocument) && hits.Any(hit => hit.FullPath == callerPath),
                 check, "Content search returns both the scoped SQL body and physical file containing the literal substring");
+            VerifyExpandedSearchBranches(main.RootNodes, "Content");
             RuntimeWpfAssert(main.StatusText.Contains("Search complete.", StringComparison.Ordinal) &&
                 !main.StatusText.Contains("index", StringComparison.OrdinalIgnoreCase) &&
                 !main.StatusText.Contains("discovery", StringComparison.OrdinalIgnoreCase), check,
@@ -177,6 +188,22 @@ public static partial class StorageRegressionSuite
             {
                 RuntimeWpfSetField(main, "_shutdownSaveCompleted", true);
                 host.RootVisual = null; root.Children.Clear(); root.Resources.MergedDictionaries.Clear(); main.Close();
+            }
+        }
+
+        void VerifyExpandedSearchBranches(IEnumerable<FileSystemNode> nodes, string target)
+        {
+            var branches = SearchBranches(nodes).ToArray();
+            RuntimeWpfAssert(branches.Length > 0 && branches.All(node => node.IsExpanded && node.IsLoaded), check,
+                $"{target} search automatically expands populated result branches without loading unfiltered children");
+        }
+
+        static IEnumerable<FileSystemNode> SearchBranches(IEnumerable<FileSystemNode> nodes)
+        {
+            foreach (var node in nodes.Where(node => node.Children.Count > 0))
+            {
+                yield return node;
+                foreach (var child in SearchBranches(node.Children)) yield return child;
             }
         }
     }

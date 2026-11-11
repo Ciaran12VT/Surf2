@@ -55,6 +55,44 @@ public static class ComparisonContractChecks
                 Check(File.ReadAllText(existing) == "original", "Canceled export preserves existing output"); File.Delete(existing);
             }
             Check(!Directory.EnumerateDirectories(root).Any(), "Table spools cleaned on disposal");
+            string longValue = new string('a', 1000) + "tail marker";
+            string[] beforeColumns = ["Id", "Same", "Edit", "Old"];
+            string[] afterColumns = ["Id", "Same", "Edit", "New"];
+            var beforeRows = new[] { JsonSerializer.Serialize(new { Id = 1, Same = longValue, Edit = "old", Old = "removed cell" }), "{\"Id\":2}" };
+            var afterRows = new[] { JsonSerializer.Serialize(new { Id = 1, Same = longValue, Edit = "new", New = "added cell" }), "{\"Id\":3}" };
+            await using (var diff = await ComparisonTableEngine.BuildAsync(Input(beforeRows) with { Headers = beforeColumns },
+                Input(afterRows) with { Headers = afterColumns }, ["Id"], limits, ct))
+            {
+                var rows = await All(diff);
+                var changed = rows.Single(row => row.Key == "1");
+                Check(diff.TableLayout?.Columns.Select(column => column.Name).SequenceEqual(new[] { "Id", "Same", "Edit", "Old", "New" }) == true &&
+                    diff.TableLayout.KeyColumns.SequenceEqual(new[] { "Id" }), "Paired table grids retain column order and selected keys");
+                Check(changed.TableCells is { Count: 5 } cells && cells[1] == new ComparisonTableCell(longValue, longValue, ComparisonCellStatus.Identical) &&
+                    cells[2] == new ComparisonTableCell("old", "new", ComparisonCellStatus.Altered) &&
+                    cells[3] == new ComparisonTableCell("removed cell", "", ComparisonCellStatus.Removed) &&
+                    cells[4] == new ComparisonTableCell("", "added cell", ComparisonCellStatus.Added),
+                    "Paged table rows retain full cell values and altered, removed and added column colors");
+                Check(rows.Single(row => row.Key == "2").TableCells!.All(cell => cell.Status == ComparisonCellStatus.Removed) &&
+                    rows.Single(row => row.Key == "3").TableCells!.All(cell => cell.Status == ComparisonCellStatus.Added),
+                    "Removed and added table rows color every cell");
+                var found = await diff.ReadPageAsync(search: "tail marker", ct: ct);
+                Check(found.Rows.Single().Key == "1", "Find searches the full cell values beyond the CSV preview");
+            }
+            var pageRows = Enumerable.Range(0, 1001).Select(i => new ComparisonResultRow(i.ToString(), "Identical", "", "", "")).ToArray();
+            await using (var result = ComparisonResultStore.FromMemory(pageRows, new ComparisonLimits()))
+            {
+                var first = await result.ReadPageAsync(ct: ct);
+                var last = await result.ReadPageAsync(first.Rows.Count, ct: ct);
+                Check(first.Rows.Count == 1000 && first.HasNext && last.Rows.Single().Key == "1000" && !last.HasNext,
+                    "Comparison displays 1,000 rows per ordinary page");
+            }
+            await using (var result = ComparisonResultStore.FromMemory(pageRows[..4], new ComparisonLimits { MaximumPageBytes = 1024 }))
+            {
+                var first = await result.ReadPageAsync(ct: ct);
+                var all = await All(result);
+                Check(first.Rows.Count is > 0 and < 4 && first.HasNext && all.SequenceEqual(pageRows[..4]),
+                    "Memory-bounded pages retain all rows with a smaller page size");
+            }
             var random = new Random(711);
             for (int test = 0; test < 12; test++)
             {

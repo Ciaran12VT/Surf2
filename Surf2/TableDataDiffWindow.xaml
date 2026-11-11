@@ -7,6 +7,30 @@
         MinWidth="860"
         MinHeight="520"
         WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="PairedComparisonGridStyle" TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="CanUserSortColumns" Value="False" />
+            <Setter Property="CanUserReorderColumns" Value="False" />
+            <Setter Property="CanUserResizeColumns" Value="False" />
+            <Setter Property="CanUserResizeRows" Value="False" />
+            <Setter Property="EnableRowVirtualization" Value="True" />
+            <Setter Property="EnableColumnVirtualization" Value="True" />
+            <Setter Property="FrozenColumnCount" Value="2" />
+            <Setter Property="GridLinesVisibility" Value="All" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="IsSynchronizedWithCurrentItem" Value="False" />
+            <Setter Property="RowHeight" Value="24" />
+            <Setter Property="SelectionMode" Value="Single" />
+            <Setter Property="SelectionUnit" Value="Cell" />
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+            <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel" />
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+        </Style>
+    </Window.Resources>
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -36,13 +60,38 @@
                        TextTrimming="CharacterEllipsis" />
         </DockPanel>
 
-        <DataGrid x:Name="RowsDataGrid"
+        <Grid x:Name="PairedRowsPanel" Grid.Row="1" Margin="0,10,0,10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="LeftGridHeading" FontWeight="SemiBold" Margin="0,0,0,4"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="RightGridHeading" Grid.Column="2" FontWeight="SemiBold" Margin="0,0,0,4"
+                       TextTrimming="CharacterEllipsis" />
+            <DataGrid x:Name="RowsDataGrid" Grid.Row="1"
+                      Style="{StaticResource PairedComparisonGridStyle}"
+                      ScrollViewer.ScrollChanged="RowsGrid_ScrollChanged"
+                      SelectedCellsChanged="RowsGrid_SelectedCellsChanged" />
+            <DataGrid x:Name="RightRowsDataGrid" Grid.Row="1" Grid.Column="2"
+                      Style="{StaticResource PairedComparisonGridStyle}"
+                      ScrollViewer.ScrollChanged="RowsGrid_ScrollChanged"
+                      SelectedCellsChanged="RowsGrid_SelectedCellsChanged" />
+        </Grid>
+
+        <DataGrid x:Name="LegacyRowsDataGrid"
                   Grid.Row="1"
                   Margin="0,10,0,10"
                   AutoGenerateColumns="False"
                   CanUserAddRows="False"
                   IsReadOnly="True"
-                  GridLinesVisibility="Horizontal">
+                  GridLinesVisibility="Horizontal"
+                  Visibility="Collapsed">
             <DataGrid.Columns>
                 <DataGridTextColumn Width="190"
                                     Binding="{Binding Key}"

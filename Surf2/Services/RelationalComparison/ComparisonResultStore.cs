@@ -18,12 +18,13 @@ public sealed class ComparisonResultStore : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed, _cleanupCompleted;
     internal ComparisonResultStore(ComparisonScratch scratch, string path, long count,
-        IReadOnlyDictionary<string, long> counts)
-    { _scratch = scratch; _path = path; _limits = scratch.Limits; Count = count; StatusCounts = counts; }
+        IReadOnlyDictionary<string, long> counts, ComparisonTableLayout? tableLayout)
+    { _scratch = scratch; _path = path; _limits = scratch.Limits; Count = count; StatusCounts = counts; TableLayout = tableLayout; }
     private ComparisonResultStore(ComparisonResultRow[] rows, ComparisonLimits limits, IReadOnlyDictionary<string, long> counts)
     { _memory = rows; _limits = limits; Count = rows.Length; StatusCounts = counts; }
     public long Count { get; }
     public IReadOnlyDictionary<string, long> StatusCounts { get; }
+    public ComparisonTableLayout? TableLayout { get; }
     public int PageSize => _limits.PageSize;
     public Task<ComparisonResultPage> ReadPageAsync(long offset = 0, string search = "",
         bool differencesOnly = false, IReadOnlySet<string>? excluded = null, CancellationToken ct = default,
@@ -37,7 +38,11 @@ public sealed class ComparisonResultStore : IAsyncDisposable
             var rows = new List<ComparisonResultRow>(); long pageBytes = 0;
             if (_memory != null)
             {
-                for (long i = offset; i < _matchingCount && rows.Count < PageSize; i++) Add(_memory[_memoryIndex![(int)i]]);
+                for (long i = offset; i < _matchingCount && rows.Count < PageSize; i++)
+                {
+                    var row = _memory[_memoryIndex![(int)i]];
+                    if (!TryAdd(row, SpoolBinary.Encode(row, ComparisonCodecs.Result, _limits.MaximumRecordBytes).Length)) break;
+                }
             }
             else if (offset < _matchingCount)
             {
@@ -47,20 +52,26 @@ public sealed class ComparisonResultStore : IAsyncDisposable
                 index.Position = checked(offset * sizeof(long));
                 while (offset + rows.Count < _matchingCount && rows.Count < PageSize)
                 {
-                    data.Position = reader.ReadInt64();
+                    long position = reader.ReadInt64();
+                    data.Position = position;
                     if (!SpoolBinary.TryRead(data, ComparisonCodecs.Result, _limits.MaximumRecordBytes, out var row))
                         throw new InvalidDataException("Invalid comparison page index.");
-                    Add(row);
+                    if (!TryAdd(row, data.Position - position)) break;
                 }
             }
             return new ComparisonResultPage(rows, offset, _matchingCount, _matchingCount > offset + rows.Count);
-            void Add(ComparisonResultRow row)
+            bool TryAdd(ComparisonResultRow row, long encodedBytes)
             {
                 ct.ThrowIfCancellationRequested();
-                long size = SpoolBinary.Encode(row, ComparisonCodecs.Result, _limits.MaximumRecordBytes).Length * 3L + 256;
+                long size = encodedBytes * 3L + 256 + (row.TableCells?.Count ?? 0) * 24L;
                 if (size > _limits.MaximumPageBytes - pageBytes)
-                    throw new ComparisonLimitException("This comparison page exceeds its decoded byte budget. Use Export or narrower search.");
-                rows.Add(row); pageBytes += size;
+                {
+                    if (rows.Count != 0) return false;
+                    throw new ComparisonLimitException("A comparison row exceeds the display memory budget. Use Export or narrower search.");
+                }
+                rows.Add(row);
+                pageBytes += size;
+                return true;
             }
         }, ct);
     }
@@ -182,7 +193,9 @@ public sealed class ComparisonResultStore : IAsyncDisposable
     private static bool Matches(ComparisonResultRow row, string search, bool differencesOnly, string[] excluded) =>
         (!differencesOnly || row.Status != "Identical") &&
         (search.Length == 0 || row.Key.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-            row.LeftPreview.Contains(search, StringComparison.OrdinalIgnoreCase) || row.RightPreview.Contains(search, StringComparison.OrdinalIgnoreCase)) &&
+            row.LeftPreview.Contains(search, StringComparison.OrdinalIgnoreCase) || row.RightPreview.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+            row.TableCells?.Any(cell => cell.Left.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                cell.Right.Contains(search, StringComparison.OrdinalIgnoreCase)) == true) &&
         !excluded.Any(x => row.Key.Equals(x, StringComparison.OrdinalIgnoreCase) || row.Key.StartsWith(x + "/", StringComparison.OrdinalIgnoreCase));
     private static string Csv(string x) => x.IndexOfAny([',', '"', '\r', '\n']) < 0 ? x : "\"" + x.Replace("\"", "\"\"") + "\"";
     private async Task<T> ExecuteAsync<T>(Func<T> action, CancellationToken ct)
@@ -207,8 +220,8 @@ public sealed class ComparisonResultStore : IAsyncDisposable
         finally { _gate.Release(); }
     }
     internal static ComparisonResultStore Complete(ComparisonScratch scratch, string path,
-        long count, Dictionary<string, long> counts) => new(scratch, path, count,
-        new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(counts));
+        long count, Dictionary<string, long> counts, ComparisonTableLayout? tableLayout = null) => new(scratch, path, count,
+        new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(counts), tableLayout);
     internal static ComparisonResultStore FromMemory(ComparisonResultRow[] rows, ComparisonLimits limits) => new(rows, limits,
         new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(rows.GroupBy(row => row.Status, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.LongCount(), StringComparer.Ordinal)));

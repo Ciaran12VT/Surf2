@@ -68,8 +68,7 @@ public partial class MainWindow
         public WeakReference<FrameworkElement> Control { get; } = new(control);
         public int? SourceOrdinal { get; set; }
     }
-    private sealed record PreparedRelationalScope(StateEditSession<Scope> Edit, Scope Model, ExplorerScope Explorer,
-        IReadOnlyList<ExplorerNodeSummary> Roots);
+    private sealed record PreparedRelationalScope(StateEditSession<Scope> Edit, Scope Model, ExplorerNameCatalogue Names);
     private sealed record PreparedRelationalDiagram(DiagramState State, IReadOnlyList<RelationalImagePayload?> Images);
 
     private RelationalRuntime RelationalStateRuntime => _relational ?? throw new InvalidOperationException("No relational runtime is selected.");
@@ -148,6 +147,7 @@ public partial class MainWindow
         catch (Exception e)
         {
             _isPersistenceHydrated = false;
+            RetireRelationalNameCatalogue();
             RetireRelationalExplorerContext();
             _persistenceLoadFailureMessage = "Relational startup did not complete.";
             if (!_relationalStateClosing) StatusText = "Could not restore relational state. Saving is disabled; no replacement defaults were published.";
@@ -280,9 +280,9 @@ public partial class MainWindow
             SetStartupStage(StartupStage.ScopeMetadata);
             var explorer = await RelationalStateRuntime.Explorer.OpenScopeAsync(edit.SubjectKey, unloaded ?? GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, ct);
             SetStartupStage(StartupStage.ScopeRoots);
-            var roots = await RelationalStateRuntime.Explorer.GetRootsAsync(explorer, ct);
+            var names = await BuildRelationalNameCatalogueAsync(RelationalStateRuntime, explorer, ct);
             // Derived references are owned by the cancellable background job, not workspace hydration.
-            return new(edit, edit.Snapshot(), explorer, roots);
+            return new(edit, edit.Snapshot(), names);
         }
         catch { await edit.DisposeAsync(); throw; }
     }
@@ -290,10 +290,11 @@ public partial class MainWindow
     private void ApplyRelationalScope(PreparedRelationalScope scope)
     {
         SetActiveScope(scope.Model); _relationalScopeEdit = scope.Edit;
-        _relationalExplorerScope = scope.Explorer; _relationalReferenceCatalogue = null;
+        SetRelationalNameCatalogue(RelationalStateRuntime, scope.Names);
+        _relationalReferenceCatalogue = null;
         _referenceIndex = ScopeReferenceIndex.Empty; // The reference owner consumes the shared relational paint lookup.
         RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
-        foreach (var root in scope.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
+        foreach (var root in scope.Names.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
         CurrentFolderDisplay = "Scope: " + scope.Model.Name;
         BeginRelationalExplorerContext();
         InitializeRelationalScopeResourceCommands();

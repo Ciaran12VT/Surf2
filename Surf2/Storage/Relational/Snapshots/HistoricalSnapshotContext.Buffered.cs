@@ -49,6 +49,11 @@ public sealed partial class HistoricalSnapshotContext
     private static HistoricalSnapshotEntry CopyEntry(HistoricalSnapshotEntry value) => value with
     { Table = value.Table == null ? null : CopyTable(value.Table) };
 
+    // Line-count identities need the same children and order as the table/CSV renderers.
+    // A null result means the large projection was not buffered.
+    internal IReadOnlyList<HistoricalSnapshotEntry>? BufferedHistoryChildren(HistoricalSnapshotEntry entry, HistoricalCollection collection) =>
+        _cachedNames == null ? null : _cachedNames.GetValueOrDefault(BufferedIdentity.From(collection, entry.SchemaName, entry.Name)) ?? [];
+
     private async Task<HistoricalSnapshotEntry[]?> ReadBufferedSeedAsync(ReplayBudget budget, CancellationToken ct)
     {
         await using var command = Command(_connection, null, """

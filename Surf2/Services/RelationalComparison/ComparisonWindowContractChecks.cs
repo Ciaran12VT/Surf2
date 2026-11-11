@@ -111,14 +111,16 @@ public static class ComparisonWindowContractChecks
             Check(table.Title == "Compare Current rows and Saved rows" &&
                 table.HeaderText.Text == "Table data: Current rows  <->  Saved rows" &&
                 table.RowsDataGrid.Columns.Select(column => column.Header as string)
-                    .SequenceEqual(new[] { "Key", "Status", "Changed Columns", "Left Row", "Right Row" }) &&
-                table.RowsDataGrid.GridLinesVisibility == DataGridGridLinesVisibility.Horizontal,
-                "Relational table results use the master title, heading and five table columns");
+                    .SequenceEqual(new[] { "Key (Id)", "Status" }) &&
+                table.RightRowsDataGrid.Columns.Select(column => column.Header as string)
+                    .SequenceEqual(new[] { "Key (Id)", "Status" }),
+                "Paired table results display the selected key heading and status on both sides");
             await RefreshAsync(fresh);
             Check(table.StatusTextBlock.Text == "Key: Id. 1 identical, 0 altered, 0 added, 0 removed." &&
+                ReferenceEquals(table.RowsDataGrid.ItemsSource, table.RightRowsDataGrid.ItemsSource) &&
                 Field<StackPanel>(fresh, "_paging").Visibility == Visibility.Collapsed && table.FindPanel.Visibility == Visibility.Collapsed &&
                 Field<MenuItem>(fresh, "_export").IsEnabled,
-                "One-page table results retain the master summary with optional paging, Find and CSV export");
+                "Both grids share the same page and retain the table summary, Find and CSV export");
             // Two competing refreshes exercise cancellation/generation of actual result pages.
             Start(fresh, Method(fresh, "RefreshAsync").CreateDelegate<Func<CancellationToken, Task>>(fresh));
             Field<TextBox>(fresh, "_search").Text = "no-match";
@@ -128,6 +130,7 @@ public static class ComparisonWindowContractChecks
             await fresh.CloseAndDisposeAsync();
 
             await CheckCollectionAsync();
+            PairedTableDataUiChecks.Run(Check);
 
             var callbacks = new RelationalComparisonResultSession(await ResultAsync("callbacks"), leftTable, rightTable, ["Id"]);
             sessions.Add(callbacks);
@@ -184,15 +187,16 @@ public static class ComparisonWindowContractChecks
         async Task CheckCollectionAsync()
         {
             Guid epoch = Guid.NewGuid();
-            var folder = new RelationalComparisonTarget(Resource("Procedures", "Folder", ComparisonResourceKind.DatabaseObjectFolder, collection: true), epoch);
+            const string folderName = "Stored Procedures";
+            var folder = new RelationalComparisonTarget(Resource(folderName, "Folder", ComparisonResourceKind.DatabaseObjectFolder, collection: true), epoch);
             var before = new RelationalComparisonTarget(Resource("inspect.sql", "Stored Procedure", ComparisonResourceKind.StoredProcedure),
                 epoch, SnapshotKey: 1, ResourceKey: 2, RevisionKey: 3, VersionKey: 4, HistoricalEntryKey: 5);
             var after = before with { SnapshotKey = 6, ResourceKey = 7, RevisionKey = 8, VersionKey = null, HistoricalEntryKey = null };
             var result = ComparisonResultStore.FromMemory(
             [
-                new("Procedures", "Different", "", "Procedures", "Procedures", IsCollection: true, Left: folder, Right: folder),
-                new("Procedures/inspect.sql", "Different", "", "inspect.sql", "inspect.sql", Left: before, Right: after),
-                new("Procedures/verify.sql", "Missing right", "", "verify.sql", "", Left: before)
+                new(folderName, "Different", "", folderName, folderName, IsCollection: true, Left: folder, Right: folder),
+                new(folderName + "/inspect.sql", "Different", "", "inspect.sql", "inspect.sql", Left: before, Right: after),
+                new(folderName + "/verify.sql", "Missing right", "", "verify.sql", "", Left: before)
             ], new() { PageSize = 2 });
             stores.Add(result);
             ComparisonResultRow? opened = null;
@@ -207,8 +211,19 @@ public static class ComparisonWindowContractChecks
                 ((GridView)list.View).Columns.Select(column => column.Header as string).SequenceEqual(new[] { "Left", "Status", "Right" }) &&
                 list.ContextMenu.Items.OfType<MenuItem>().Select(item => item.Header as string).SequenceEqual(new[] { "Compare with...", "Exclude" }),
                 "Relational collection results use the master headings, side-by-side columns and row actions");
+            Check(collection.IgnoreCaseCheckBox.Parent is WrapPanel toolbar &&
+                toolbar.Children.IndexOf(collection.DifferencesOnlyCheckBox) == toolbar.Children.IndexOf(collection.IgnoreCaseCheckBox) + 1 &&
+                toolbar.Children.IndexOf(collection.ClearExclusionsButton) == toolbar.Children.IndexOf(collection.DifferencesOnlyCheckBox) + 1 &&
+                toolbar.Children.IndexOf(collection.ExportCsvButton) == toolbar.Children.IndexOf(collection.ClearExclusionsButton) + 1 &&
+                collection.DifferencesOnlyCheckBox.Visibility == Visibility.Visible && collection.ClearExclusionsButton.Visibility == Visibility.Visible &&
+                collection.ExportCsvButton.Visibility == Visibility.Visible,
+                "Comparison filters and CSV actions are inline after Ignore case");
             await RefreshAsync(session);
             var rows = (ResourceCollectionDiffRow[])list.ItemsSource;
+            Check(rows.Single() is { IsFolder: true, IsExpanded: false }, "Database entity groups start collapsed");
+            session.Toggle(rows[0]);
+            await WaitForTasksAsync(session);
+            rows = (ResourceCollectionDiffRow[])list.ItemsSource;
             var previous = Field<Button>(session, "_previous");
             var next = Field<Button>(session, "_next");
             var paging = Field<StackPanel>(session, "_paging");
@@ -239,8 +254,11 @@ public static class ComparisonWindowContractChecks
                 paging.Visibility == Visibility.Collapsed, "The inline folder toggle collapses descendants and removes unnecessary paging");
             collection.SearchTextBox.Text = " inspect ";
             await WaitForTasksAsync(session);
-            Check(((ResourceCollectionDiffRow[])list.ItemsSource).Single() is { RelativePath: "Procedures/inspect.sql", IsExcluded: true },
+            Check(((ResourceCollectionDiffRow[])list.ItemsSource).Single() is { RelativePath: folderName + "/inspect.sql", IsExcluded: true },
                 "Find reaches descendants of collapsed folders and retains exclusion styling");
+            collection.ClearExclusionsButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            Check(!((ResourceCollectionDiffRow[])list.ItemsSource).Single().IsExcluded && !collection.ClearExclusionsButton.IsEnabled,
+                "Clear Exclusions restores the selected comparison result colors");
             await session.CloseAndDisposeAsync();
         }
     }

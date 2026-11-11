@@ -212,37 +212,46 @@ public sealed class ResourceCollectionDiffRow : INotifyPropertyChanged
     {
         if (Status == ResourceComparisonStatus.Excluded)
         {
-            return CreateBrush(0xF1, 0xF5, 0xF9);
+            return ComparisonColors.Excluded;
         }
 
         if (Status == ResourceComparisonStatus.MissingLeft)
         {
-            return isLeft ? Brushes.White : CreateBrush(0xFE, 0xE2, 0xE2);
+            return isLeft ? ComparisonColors.Unchanged : ComparisonColors.Removed;
         }
 
         if (Status == ResourceComparisonStatus.MissingRight)
         {
-            return isLeft ? CreateBrush(0xFE, 0xE2, 0xE2) : Brushes.White;
+            return isLeft ? ComparisonColors.Removed : ComparisonColors.Unchanged;
         }
 
         return Status switch
         {
-            ResourceComparisonStatus.Identical => CreateBrush(0xDC, 0xFC, 0xE7),
-            ResourceComparisonStatus.Different => CreateBrush(0xFF, 0xED, 0xCC),
-            _ => Brushes.White
+            ResourceComparisonStatus.Identical => ComparisonColors.Added,
+            ResourceComparisonStatus.Different => ComparisonColors.Altered,
+            _ => ComparisonColors.Unchanged
         };
     }
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+}
+
+internal static class ComparisonColors
+{
+    internal static Brush Unchanged { get; } = Brushes.White;
+    internal static Brush Removed { get; } = CreateBrush(0xFE, 0xE2, 0xE2);
+    internal static Brush Altered { get; } = CreateBrush(0xFF, 0xED, 0xCC);
+    internal static Brush Added { get; } = CreateBrush(0xDC, 0xFC, 0xE7);
+    internal static Brush Excluded { get; } = CreateBrush(0xF1, 0xF5, 0xF9);
 
     private static Brush CreateBrush(byte r, byte g, byte b)
     {
         var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
         brush.Freeze();
         return brush;
-    }
-
-    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
-    {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 }
 

@@ -20,6 +20,7 @@ public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHisto
     public long VersionKey { get; }
     public long HistoryKey { get; }
     public Guid Epoch { get; }
+    internal long? ReplayBaselineVersionKey { get; private set; }
 
     private HistoricalSnapshotContext(SqlConnection connection, Guid epoch, SnapshotSummary header, long versionKey, long historyKey)
     { _connection = connection; Epoch = epoch; Header = header; VersionKey = versionKey; HistoryKey = historyKey; _headToken=header.RowVersion.ToArray(); }
@@ -103,7 +104,11 @@ public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHisto
                 using var cancel = RelationalSession.CancelCommand(command, ct);
                 await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
                 if (await reader.ReadAsync(ct).ConfigureAwait(false))
-                { baseline = reader.GetInt64(0); context._baselineVersionNumber = reader.GetInt32(1); }
+                {
+                    baseline = reader.GetInt64(0);
+                    context.ReplayBaselineVersionKey = baseline;
+                    context._baselineVersionNumber = reader.GetInt32(1);
+                }
             }
             if (baseline.HasValue)
                 await context.Execute("""

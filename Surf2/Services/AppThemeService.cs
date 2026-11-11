@@ -23,6 +23,7 @@ public static class AppThemeService
     public const string SelectionTextBrushKey = "Theme.SelectionTextBrush";
     public const string AccentBrushKey = "Theme.AccentBrush";
     public const string ErrorTextBrushKey = "Theme.ErrorTextBrush";
+    public const string SuccessTextBrushKey = "Theme.SuccessTextBrush";
     public const string OverlayBrushKey = "Theme.OverlayBrush";
     public const string ActiveCodeCanvasBrushKey = "Theme.ActiveCodeCanvasBrush";
     public const string ActiveDiagramCanvasBrushKey = "Theme.ActiveDiagramCanvasBrush";
@@ -58,6 +59,7 @@ public static class AppThemeService
         [SelectionTextBrushKey] = "#111827",
         [AccentBrushKey] = "#2563EB",
         [ErrorTextBrushKey] = "#B91C1C",
+        [SuccessTextBrushKey] = "#15803D",
         [OverlayBrushKey] = "#BFFFFFFF",
         [ActiveCodeCanvasBrushKey] = "#EEF1F5",
         [ActiveDiagramCanvasBrushKey] = "#F4F6F8",
@@ -89,6 +91,7 @@ public static class AppThemeService
         [SelectionTextBrushKey] = "#FFFFFF",
         [AccentBrushKey] = "#3B82F6",
         [ErrorTextBrushKey] = "#FCA5A5",
+        [SuccessTextBrushKey] = "#86EFAC",
         [OverlayBrushKey] = "#C0111827",
         [ActiveCodeCanvasBrushKey] = "#172033",
         [ActiveDiagramCanvasBrushKey] = "#1B2537",

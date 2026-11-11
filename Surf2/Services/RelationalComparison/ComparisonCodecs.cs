@@ -1,6 +1,7 @@
 using System.IO;
 using Surf2.Models;
 using Surf2.Services.RelationalExplorer;
+using Surf2.Storage.Relational.Capture;
 
 namespace Surf2.Services.RelationalComparison;
 
@@ -10,7 +11,32 @@ internal static class ComparisonCodecs
     {
         S(w, x.Key); S(w, x.Status); S(w, x.ChangedColumns); S(w, x.LeftPreview); S(w, x.RightPreview);
         w.Write(x.IsCollection); WriteTarget(w, x.Left); WriteTarget(w, x.Right);
-    }, r => new(S(r), S(r), S(r), S(r), S(r), r.ReadBoolean(), ReadTarget(r), ReadTarget(r)));
+        w.Write(x.TableCells?.Count ?? -1);
+        if (x.TableCells != null)
+            foreach (var cell in x.TableCells)
+            {
+                S(w, cell.Left);
+                S(w, cell.Right);
+                w.Write((byte)cell.Status);
+            }
+    }, r => new(S(r), S(r), S(r), S(r), S(r), r.ReadBoolean(), ReadTarget(r), ReadTarget(r), ReadCells(r)));
+
+    private static IReadOnlyList<ComparisonTableCell>? ReadCells(BinaryReader reader)
+    {
+        int count = reader.ReadInt32();
+        if (count == -1) return null;
+        if (count < 0 || count > CaptureLimits.MaximumColumns * 2)
+            throw new InvalidDataException("Invalid comparison cell count.");
+        var cells = new ComparisonTableCell[count];
+        for (int i = 0; i < count; i++)
+        {
+            string left = S(reader), right = S(reader);
+            var status = (ComparisonCellStatus)reader.ReadByte();
+            if (status > ComparisonCellStatus.Added) throw new InvalidDataException("Invalid comparison cell status.");
+            cells[i] = new(left, right, status);
+        }
+        return cells;
+    }
 
     internal static void WriteTarget(BinaryWriter w, RelationalComparisonTarget? t)
     {

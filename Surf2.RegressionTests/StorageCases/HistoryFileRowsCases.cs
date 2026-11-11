@@ -89,6 +89,35 @@ public static partial class StorageRegressionSuite
                         "History file target pins its selected version and current file identity");
                 }
             }
+
+            // Reopen both the runtime and the issued rows. Count loads should use SQL's
+            // stored values, with no text/CSV reads or count-time version reconstruction.
+            var reopened = new RelationalSnapshotHistoryService(new RelationalRuntime(SqlServerConnectionOptions.FromConnectionString(connection)));
+            var reopenedRows = await reopened.ListFileRowsAsync(version);
+            if (version.IsInitial)
+                check(await service.CountVersionFilesAsync(snapshot, version) == rows.Count,
+                    "The initial version heading counts all files and stores its result");
+            using (var trace = new StateAccessSqlTrace(connection))
+            {
+                var saved = new List<RelationalHistoryFileLineCount>();
+                await foreach (var result in reopened.CountFileLinesAsync(reopenedRows)) saved.Add(result);
+                check(saved.Select(result => (result.File.OriginalResourceKey, result.Added, result.Removed, result.Error)).SequenceEqual(
+                    batched.Select(result => (result.File.OriginalResourceKey, result.Added, result.Removed, result.Error))),
+                    "A new runtime reuses the persisted exact line counts in file order");
+                if (version.IsInitial)
+                    check(await reopened.CountVersionFilesAsync(snapshot, version) == rows.Count &&
+                        trace.Commands.Any(command => command.Text.Contains("SELECT FILECOUNT FROM SURF.HISTORYINITIALFILECOUNT", StringComparison.Ordinal)),
+                        "A new runtime loads the saved initial version heading count");
+                check(trace.Commands.Any(command => command.Text.Contains("JOIN SURF.HISTORYFILELINECOUNT", StringComparison.Ordinal)) &&
+                    !trace.Commands.Any(command => command.Text.Contains("CREATE TABLE #HISTORICALENTRY", StringComparison.Ordinal)),
+                    "A warm count load reads the saved counts without recreating history projections");
+                StateAccessNoReads(trace.Commands, check, "Saved history counts skip definitions and captured rows", "TextContent", "capture.Data_");
+            }
+
+            // The existing limit/cancellation tests below require cold reads.
+            await fixture.DestinationSqlAsync("DELETE FROM surf.HistoryFileLineCount WHERE SnapshotKey=@Snapshot AND VersionKey=@Version;",
+                RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, snapshot.SnapshotKey),
+                RelationalSession.Parameter("@Version", SqlDbType.BigInt, version.VersionKey));
             if (!version.IsInitial)
             {
                 var tiny = new RelationalSnapshotHistoryService(runtime, new() { MaximumDefinitionBytes = 40 });
@@ -119,6 +148,25 @@ public static partial class StorageRegressionSuite
             }
         }
 
+        var latestRows = await service.ListFileRowsAsync(versions[0]);
+        var latest = new List<RelationalHistoryFileLineCount>();
+        await foreach (var result in service.CountFileLinesAsync(latestRows)) latest.Add(result);
+        await fixture.DestinationSqlAsync("UPDATE surf.DatabaseSnapshot SET DisplayName=DisplayName WHERE SnapshotKey=@Snapshot;",
+            RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, snapshot.SnapshotKey));
+        await ThrowsAsync<SnapshotConcurrencyException>(() => service.CountFileLinesAsync(latestRows[0]), check,
+            "A saved count cannot authorize a previously issued row after its snapshot head changes");
+        var afterHeadChange = new RelationalSnapshotHistoryService(new RelationalRuntime(SqlServerConnectionOptions.FromConnectionString(connection)));
+        var reissuedRows = await afterHeadChange.ListFileRowsAsync(versions[0]);
+        using (var trace = new StateAccessSqlTrace(connection))
+        {
+            var counts = new List<RelationalHistoryFileLineCount>();
+            await foreach (var result in afterHeadChange.CountFileLinesAsync(reissuedRows)) counts.Add(result);
+            check(counts.Select(result => (result.Added, result.Removed, result.Error)).SequenceEqual(latest.Select(result => (result.Added, result.Removed, result.Error))) &&
+                !trace.Commands.Any(command => command.Text.Contains("CREATE TABLE #HISTORICALENTRY", StringComparison.Ordinal)),
+                "A snapshot header change preserves persisted counts for identical immutable diff inputs");
+            StateAccessNoReads(trace.Commands, check, "Reissued history files reuse their existing immutable diff counts", "TextContent", "capture.Data_");
+        }
+
         var noHistory = snapshots.Single(value => value.SnapshotId == unversioned.SnapshotId);
         var synthetic = (await service.GetDisplayedVersionsAsync(noHistory)).Single();
         var initialRows = await service.ListFileRowsAsync(synthetic);
@@ -129,6 +177,12 @@ public static partial class StorageRegressionSuite
         check(await service.ReadFileTextAsync(context, selected.Entry!) == first.Objects[0].Definition &&
             (await service.FileTargetAsync(selected)).VersionKey == 0,
             "Synthetic initial file open/compare uses the same bounded current projection");
+        check(await service.CountVersionFilesAsync(noHistory, synthetic) == initialRows.Count && (await service.CountFileLinesAsync(selected)).Added > 0 &&
+            Convert.ToInt64(await fixture.DestinationSqlAsync("""
+                SELECT (SELECT COUNT_BIG(*) FROM surf.HistoryInitialFileCount WHERE SnapshotKey=@Snapshot)
+                     + (SELECT COUNT_BIG(*) FROM surf.HistoryFileLineCount WHERE SnapshotKey=@Snapshot);
+                """, RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, noHistory.SnapshotKey))) == 0,
+            "The synthetic live row calculates its counts without storing any history counts");
         check(Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.SnapshotVersion WHERE SnapshotKey=@Snapshot;",
             RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, noHistory.SnapshotKey))) == 0,
             "Browsing a synthetic initial version writes no persistent history");

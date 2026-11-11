@@ -33,6 +33,7 @@ public partial class MainWindow
     private long _relationalExplorerFocusGeneration;
     private long _relationalHighlightGeneration;
     private Guid _relationalExplorerSearchIdentity;
+    private Guid _relationalSearchOverlayIdentity;
     private Guid _relationalExplorerOwner;
     private ExplorerIndexRefreshProgress? _relationalIndexProgress;
     private ExplorerScope? _relationalReferenceScope;
@@ -84,7 +85,7 @@ public partial class MainWindow
         _relationalContentSearchReady = false;
         _relationalFileReferencesReady = false;
         _relationalIndexWorkerFinished = false;
-        if (_relational == null || _relationalExplorerScope == null) return;
+        if (_relational == null || _relationalExplorerScope == null) { RetireRelationalNameCatalogue(); return; }
         ObjectExplorerSearchTargetComboBox.SelectedIndex = 0;
         ObjectExplorerSearchTargetComboBox.IsEnabled = false;
         var runtime = _relational; var scope = _relationalExplorerScope;
@@ -201,6 +202,7 @@ public partial class MainWindow
         var searchCancellation = _relationalSearchCancellation; _relationalSearchCancellation = null;
         Task searchCallbacks = searchCancellation?.Cancel() ?? Task.CompletedTask;
         _relationalExplorerSearchIdentity = Guid.Empty;
+        HideRelationalSearchOverlay();
         var children = _relationalChildrenLoader; _relationalChildrenLoader = null;
         var searchOwner = _relationalSearchOwner; searchOwner?.Dispose(); _relationalSearchOwner = null;
         var previousRetirement = _relationalExplorerRetirement;
@@ -542,9 +544,9 @@ public partial class MainWindow
             {
                 await previous; token.ThrowIfCancellationRequested();
                 if (_relationalReferencePreparationIdentity != identity || !AcceptsRelationalExplorer(owner, runtime)) return;
-                var scope = await runtime.Explorer.OpenScopeAsync(key, unloaded, culture, token);
+                var names = await ReadRelationalNameCatalogueAsync(runtime, key, unloaded, culture, token);
                 if (_relationalReferencePreparationIdentity != identity || !AcceptsRelationalExplorer(owner, runtime)) return;
-                _relationalExplorerScope = scope;
+                SetRelationalNameCatalogue(runtime, names);
                 BeginRelationalExplorerContext();
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
@@ -557,7 +559,7 @@ public partial class MainWindow
         }
     }
 
-    private Task LoadRelationalScopeAsync(Scope? scope)
+    private Task LoadRelationalScopeAsync(Scope? scope, bool preserveSearchText = false)
     {
         Dispatcher.VerifyAccess();
         var previous = _relationalRootLoadTask;
@@ -566,13 +568,17 @@ public partial class MainWindow
         var cancellation = new ExplorerCancellationLifetime(); _relationalRootCancellation = cancellation;
         var ct = cancellation.Token;
         int loadVersion = ++_scopeLoadVersion;
+        RetireRelationalNameCatalogue();
         RetireRelationalExplorerContext();
         RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
         _relationalTextFileNameSeeds.Clear(); _relationalTextSeedCharacters = 0; _relationalExplorerScope = null; _relationalReferenceCatalogue = null;
-        _referenceIndex = ScopeReferenceIndex.Empty; ObjectExplorerSearchTextBox.Clear(); SetActiveScope(scope);
+        _referenceIndex = ScopeReferenceIndex.Empty;
+        if (!preserveSearchText) ObjectExplorerSearchTextBox.Clear();
+        SetActiveScope(scope);
         var task = LoadAsync(); _relationalRootLoadTask = task; return task;
         async Task LoadAsync()
         {
+            bool showingLoading = false;
             try
             {
                 await callbacks;
@@ -592,20 +598,21 @@ public partial class MainWindow
                 var edit = _relationalScopeEdit ?? throw new InvalidOperationException("The relational scope owner must be loaded first.");
                 if (!string.Equals(edit.Snapshot().ScopeId, scope.ScopeId, StringComparison.Ordinal))
                     throw new InvalidOperationException("This scope does not match the selected relational owner.");
+                showingLoading = true;
                 await ShowObjectExplorerLoadingAsync("Loading scope...", scope.Name);
-                var explorer = await runtime.Explorer.OpenScopeAsync(edit.ExpectedToken.Key, GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, ct);
-                var roots = await runtime.Explorer.GetRootsAsync(explorer, ct);
+                var names = await ReadRelationalNameCatalogueAsync(runtime, edit.ExpectedToken.Key,
+                    GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, ct);
                 ct.ThrowIfCancellationRequested();
                 if (loadVersion != _scopeLoadVersion || !ReferenceEquals(runtime, _relational) || !ReferenceEquals(scope, _activeScope)) return;
-                _relationalExplorerScope = explorer;
-                foreach (var root in roots) RootNodes.Add(CreateRelationalExplorerNode(root));
+                SetRelationalNameCatalogue(runtime, names);
+                foreach (var root in names.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
                 CurrentFolderDisplay = "Scope: " + scope.Name;
                 BeginRelationalExplorerContext();
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             finally
             {
-                if (loadVersion == _scopeLoadVersion) HideObjectExplorerLoading();
+                if (showingLoading) HideObjectExplorerLoading();
                 if (ReferenceEquals(_relationalRootCancellation, cancellation)) _relationalRootCancellation = null;
                 await cancellation.RetireAsync();
             }
@@ -682,57 +689,92 @@ public partial class MainWindow
         Dispatcher.VerifyAccess();
         if (_relationalExplorerScope == null) { StatusText = "Load a scope before searching resources."; return; }
         string query = ObjectExplorerSearchTextBox.Text.Trim();
-        if (query.Length == 0) { await LoadRelationalRootsAsync(); return; }
         bool regex = ObjectExplorerRegexToggle.IsChecked == true;
         var target = GetObjectExplorerSearchTarget() == ObjectExplorerSearchTarget.Content ? IndexSearchTarget.Content : IndexSearchTarget.Name;
-        if (target == IndexSearchTarget.Content && !_relationalContentSearchReady)
+        if (query.Length != 0 && target == IndexSearchTarget.Content && !_relationalContentSearchReady)
         {
             ObjectExplorerSearchTargetComboBox.SelectedIndex = 0;
             StatusText = "Content search is loading. Name search is available.";
             return;
         }
+        var catalogue = _relationalNameCatalogue?.Catalogue;
+        if ((query.Length == 0 || target == IndexSearchTarget.Name) && catalogue == null)
+        {
+            StatusText = "Loading resource names for this scope.";
+            return;
+        }
         var runtime = RelationalStateRuntime; var owner = _relationalExplorerOwner;
         var searchOwner = _relationalSearchOwner ?? throw new InvalidOperationException("Explorer scope lifetime has not begun.");
-        var resourceIds = GetUnloadedResourceIds(); var sortCulture = CultureInfo.CurrentCulture.Name;
-        long scopeKey = _relationalScopeEdit!.ExpectedToken.Key;
         var identity = Guid.NewGuid();
         var previousSearch = _relationalExplorerSearchTask; var previousCancellation = _relationalSearchCancellation;
         Task previousCallbacks = previousCancellation?.Cancel() ?? Task.CompletedTask; searchOwner.Cancel();
         _relationalExplorerSearchIdentity = identity;
+        _relationalSearchCancellation = null;
+        HideRelationalSearchOverlay();
+        Task previousDrain = DrainPreviousSearchAsync();
+        if (query.Length == 0)
+        {
+            _relationalExplorerSearchTask = previousDrain;
+            ClearResultTree();
+            foreach (var root in catalogue!.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
+            StatusText = "Scope loaded. Names and individual resources are available.";
+            return;
+        }
         // Validate regex synchronously before starting the request; core matching runs on the bounded worker.
         try { _ = new IndexTextMatcher(query, regex); }
         catch (ArgumentException)
         {
-            _relationalSearchCancellation = null;
-            var rejected = RejectAsync(); _relationalExplorerSearchTask = rejected;
-            await rejected; return;
-            async Task RejectAsync()
-            {
-                try { await Task.WhenAll(previousCallbacks, previousSearch); }
-                finally
-                {
-                    if (previousCancellation != null) await previousCancellation.RetireAsync();
-                    if (AcceptsRelationalExplorer(owner, runtime) && _relationalExplorerSearchIdentity == identity)
-                    { HideObjectExplorerLoading(); StatusText = "The regular expression is invalid."; }
-                }
-            }
+            _relationalExplorerSearchTask = previousDrain;
+            StatusText = "The regular expression is invalid.";
+            return;
         }
         var cancellation = new ExplorerCancellationLifetime(_relationalExplorerCancellation!.Token);
         _relationalSearchCancellation = cancellation;
         var ct = cancellation.Token;
-        var task = RunSearchAsync(); _relationalExplorerSearchTask = task;
-        try { await task; }
-        finally { if (AcceptsRelationalExplorer(owner, runtime) && _relationalExplorerSearchIdentity == identity) HideObjectExplorerLoading(); }
+        var task = RunSearchAsync();
+        // A cached Name search can publish while an abandoned content reader finishes closing.
+        _relationalExplorerSearchTask = Task.WhenAll(previousDrain, task);
+        await task;
+
+        async Task DrainPreviousSearchAsync()
+        {
+            try { await Task.WhenAll(previousCallbacks, previousSearch); }
+            finally { if (previousCancellation != null) await previousCancellation.RetireAsync(); }
+        }
+
+        bool IsCurrent() => AcceptsRelationalExplorer(owner, runtime) && _relationalExplorerSearchIdentity == identity;
 
         async Task RunSearchAsync()
         {
             try
             {
-                // Serialize superseding jobs after actual SQL/text-reader disposal, not merely cancellation signals.
-                try { await Task.WhenAll(previousCallbacks, previousSearch); }
-                finally { if (previousCancellation != null) await previousCancellation.RetireAsync(); }
+                if (target == IndexSearchTarget.Name)
+                {
+                    var names = catalogue!;
+                    await Task.Run(async () =>
+                    {
+                        var request = new ExplorerSearchRequest(names.Scope, query, regex, target, identity);
+                        var batch = runtime.Explorer.SearchNames(names, request, ct);
+                        var results = new ExplorerSearchResultBuilder(names.Scope, identity, new(MaximumMetadataRows: RelationalExplorerResultLimit));
+                        bool resultLimit = false;
+                        try { results.Append(batch); }
+                        catch (ExplorerLimitException) { resultLimit = true; }
+                        var tree = results.Snapshot();
+                        string status = resultLimit ? "Search reached the result-tree limit. Refine the search to see more matches."
+                            : RelationalMemorySearchStatus(batch.Coverage, names.Scope.Resources.Any(resource => !resource.IsLoaded));
+                        if (names.Truncated) status += " The scope name catalogue reached its size limit.";
+                        await Dispatcher.InvokeAsync(() => { if (IsCurrent()) PublishResults(tree, status); });
+                    }, ct);
+                    return;
+                }
+
+                // A new content scan still waits for actual SQL/text-reader disposal.
+                await previousDrain;
                 ct.ThrowIfCancellationRequested();
-                if (!AcceptsRelationalExplorer(owner, runtime) || _relationalExplorerSearchIdentity != identity) return;
+                if (!IsCurrent()) return;
+                var resourceIds = GetUnloadedResourceIds(); var sortCulture = CultureInfo.CurrentCulture.Name;
+                long scopeKey = _relationalScopeEdit!.ExpectedToken.Key;
+                _relationalSearchOverlayIdentity = identity;
                 await ShowObjectExplorerLoadingAsync("Searching resources...", query);
                 // The job includes .NET text scanning and result assembly; SQL providers remain genuinely async.
                 await Task.Run(async () =>
@@ -748,8 +790,8 @@ public partial class MainWindow
                         {
                             await Dispatcher.InvokeAsync(() =>
                             {
-                                if (!AcceptsRelationalExplorer(owner, runtime) || _relationalExplorerSearchIdentity != identity) return;
-                                RootNodes.Clear(); _relationalExplorerNodes.Clear(); _relationalExplorerNodeViews.Clear();
+                                if (!IsCurrent()) return;
+                                ClearResultTree();
                                 StatusText = scope.DatabaseCatalogue != null
                                     ? "Resources changed while searching. Run the search again."
                                     : "Search changed during indexing or source updates. Results were discarded; run the search again.";
@@ -760,16 +802,15 @@ public partial class MainWindow
                         lastPaint = DateTime.UtcNow; var tree = results.Snapshot();
                         await Dispatcher.InvokeAsync(() =>
                         {
-                            if (!AcceptsRelationalExplorer(owner, runtime) || _relationalExplorerSearchIdentity != identity || !searchOwner.Accepts(identity)) return;
-                            RootNodes.Clear(); _relationalExplorerNodes.Clear(); _relationalExplorerNodeViews.Clear();
-                            foreach (var root in tree) RootNodes.Add(MapResult(root));
+                            if (!IsCurrent() || !searchOwner.Accepts(identity)) return;
                             var coverage = batch.Coverage;
-                            StatusText = scope.DatabaseCatalogue != null
+                            string status = scope.DatabaseCatalogue != null
                                 ? RelationalMemorySearchStatus(coverage, scope.Resources.Any(resource => !resource.IsLoaded))
                                 : $"{coverage.Matched} matches across {coverage.Considered} resources. " +
                                 (coverage.FullyCurrent ? "Search complete." : $"{(coverage.Completed ? "Scan ended" : "Scanning")}; {coverage.Incomplete} incomplete, {coverage.IndexStaleOrUnindexed} stale/unindexed. " +
                                 (coverage.PhysicalDiscoveryNotFrozen ? "Physical discovery is not frozen. " : "") +
                                 (!coverage.DiscoveryReconciled ? "Derived discovery is not reconciled." : coverage.IsSubset ? "Unloaded resources are excluded." : ""));
+                            PublishResults(tree, status);
                         });
                     }
                 }, ct);
@@ -780,21 +821,38 @@ public partial class MainWindow
                 InternalLogService.Error(ex, "Relational explorer search did not complete.");
                 await Dispatcher.InvokeAsync(() =>
                 {
-                    if (!AcceptsRelationalExplorer(owner, runtime) || _relationalExplorerSearchIdentity != identity) return;
+                    if (!IsCurrent()) return;
                     StatusText = ex is ExplorerLimitException ? "Search reached the bounded result-tree limit; results are partial, not complete."
                         : "Search did not complete. Refresh the scope and retry.";
                 });
             }
             finally
             {
+                if (_relationalSearchOverlayIdentity == identity) HideRelationalSearchOverlay();
                 await cancellation.RetireAsync();
                 if (ReferenceEquals(_relationalSearchCancellation, cancellation)) _relationalSearchCancellation = null;
             }
         }
+
+        void ClearResultTree()
+        {
+            RootNodes.Clear();
+            _relationalExplorerNodes.Clear();
+            _relationalExplorerNodeViews.Clear();
+        }
+
+        void PublishResults(ImmutableArray<ExplorerResultNode> tree, string status)
+        {
+            ClearResultTree();
+            foreach (var root in tree) RootNodes.Add(MapResult(root));
+            StatusText = status;
+        }
+
         FileSystemNode MapResult(ExplorerResultNode result)
         {
             var node = CreateRelationalExplorerNode(result.Node with { ChildrenState = ExplorerChildrenState.Loaded });
             foreach (var child in result.Children) node.Children.Add(MapResult(child));
+            node.IsExpanded = node.Children.Count > 0;
             if (result.Match is { } match)
             {
                 if (match.ContentMatched) { node.ContentSearchPattern = match.Query; node.ContentSearchUseRegex = match.UseRegex; }
@@ -802,6 +860,13 @@ public partial class MainWindow
             }
             return node;
         }
+    }
+
+    private void HideRelationalSearchOverlay()
+    {
+        if (_relationalSearchOverlayIdentity == Guid.Empty) return;
+        _relationalSearchOverlayIdentity = Guid.Empty;
+        HideObjectExplorerLoading();
     }
 
     internal static string RelationalMemorySearchStatus(ExplorerSearchCoverage coverage, bool hasUnloadedResources)
@@ -1151,8 +1216,9 @@ public partial class MainWindow
         Dispatcher.VerifyAccess();
         var rootCancellation = _relationalRootCancellation;
         var rootCallbacks = rootCancellation?.Cancel() ?? Task.CompletedTask;
+        RetireRelationalNameCatalogue();
         RetireRelationalExplorerContext();
-        try { await Task.WhenAll(rootCallbacks, _relationalRootLoadTask, _relationalExplorerRetirement); }
+        try { await Task.WhenAll(rootCallbacks, _relationalRootLoadTask, _relationalExplorerRetirement, _relationalNameCatalogueRetirement); }
         finally { if (rootCancellation != null) await rootCancellation.RetireAsync(); }
     }
 }

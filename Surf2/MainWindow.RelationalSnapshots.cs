@@ -288,12 +288,13 @@ public partial class MainWindow
     private async Task RefreshRelationalSnapshotRootsAsync(SnapshotWorkflow work)
     {
         if (work.Scope == null) return;
-        var explorer = await work.Runtime.Explorer.OpenScopeAsync(work.Scope.SubjectKey, GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, work.Token);
-        var roots = await work.Runtime.Explorer.GetRootsAsync(explorer, work.Token);
+        var names = await ReadRelationalNameCatalogueAsync(work.Runtime, work.Scope.SubjectKey,
+            GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, work.Token);
         RequireRelationalSnapshotContext(work);
-        _relationalExplorerScope = explorer; _relationalReferenceCatalogue = null; _referenceIndex = ScopeReferenceIndex.Empty;
+        SetRelationalNameCatalogue(work.Runtime, names);
+        _relationalReferenceCatalogue = null; _referenceIndex = ScopeReferenceIndex.Empty;
         RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
-        foreach (var root in roots) RootNodes.Add(CreateRelationalExplorerNode(root));
+        foreach (var root in names.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
         BeginRelationalExplorerContext(); InvalidateRelationalDocumentContext();
     }
 

@@ -25,14 +25,16 @@ public sealed partial class RelationalExplorerService
     public async Task<ImmutableArray<ExplorerNodeSummary>> GetRootsAsync(ExplorerScope scope, CancellationToken ct = default)
     {
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
-        var roots = ImmutableArray.CreateBuilder<ExplorerNodeSummary>();
-        foreach (var resource in scope.Resources.Where(r => r.Kind != ResourceKind.Diagram))
-            roots.Add(await ResourceNodeAsync(resource, ExplorerCompatibility.RootKey, ct).ConfigureAwait(false));
-        roots.Add(DiagramRoot()); // The existing explorer displays the empty Diagrams container too.
-        var nodes = ExplorerCompatibility.ApplyVirtualFolders(scope, ExplorerCompatibility.RootKey, roots);
+        var roots = await ReadRootLevelAsync(scope, ct).ConfigureAwait(false);
+        var nodes = PlaceRootLevel(scope, roots);
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
-        return nodes.Where(n => n.EffectiveParentOccurrenceKey == null && n.ParentNodeKey.Equals(ExplorerCompatibility.RootKey, StringComparison.OrdinalIgnoreCase)).ToImmutableArray();
+        return nodes;
     }
+
+    private static ImmutableArray<ExplorerNodeSummary> PlaceRootLevel(ExplorerScope scope, ImmutableArray<ExplorerNodeSummary> roots) =>
+        ExplorerCompatibility.ApplyVirtualFolders(scope, ExplorerCompatibility.RootKey, roots)
+            .Where(node => node.EffectiveParentOccurrenceKey == null && node.ParentNodeKey.Equals(ExplorerCompatibility.RootKey, StringComparison.OrdinalIgnoreCase))
+            .ToImmutableArray();
 
     public async Task<ExplorerNodeSummary> GetResourceRootAsync(ExplorerScope scope, long scopeResourceKey, CancellationToken ct = default)
     {
@@ -94,7 +96,7 @@ public sealed partial class RelationalExplorerService
     }
 
     private async Task<ImmutableArray<ExplorerNodeSummary>> ReadNaturalChildrenAsync(ExplorerScope scope,
-        ExplorerNodeSummary parent, CancellationToken ct)
+        ExplorerNodeSummary parent, CancellationToken ct, ExplorerLimits? traversalLimits = null)
     {
         if (!parent.IsScopeResourceLoaded || parent.Availability != ExplorerAvailability.Present) return [];
         if (parent.Role == ExplorerNodeRole.DiagramRoot)
@@ -108,7 +110,7 @@ public sealed partial class RelationalExplorerService
             return Enum.GetValues<ExplorerCategory>().Select(c => CategoryNode(resource!, c)).ToImmutableArray();
         if (parent.Role == ExplorerNodeRole.Category)
         {
-            var budget = new ExplorerMetadataBudget(_limits);
+            var budget = new ExplorerMetadataBudget(traversalLimits ?? _limits);
             var rows = new List<ExplorerDatabaseItem>();
             await foreach (var item in _metadata.ReadDatabaseCategoryAsync(scope, resource!, parent.Category!.Value, ct).ConfigureAwait(false))
             {
@@ -119,7 +121,7 @@ public sealed partial class RelationalExplorerService
             return rows.OrderBy(r => r.Resource.SchemaName, comparer).ThenBy(r => r.Resource.ObjectName, comparer)
                 .Select(r => DatabaseNode(scope, resource!, parent, r)).ToImmutableArray();
         }
-        var entries = await _physical.ReadDirectoryAsync(parent.FullPath, scope.SortCultureName, _limits, ct).ConfigureAwait(false);
+        var entries = await _physical.ReadDirectoryAsync(parent.FullPath, scope.SortCultureName, traversalLimits ?? _limits, ct).ConfigureAwait(false);
         return entries.Select(e => PhysicalNode(resource, parent.NodeKey, e)).ToImmutableArray();
     }
 

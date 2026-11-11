@@ -2716,11 +2716,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         NormalizeUnloadedResourceIds();
-        RebuildReferenceIndexForActiveScope();
+        if (_relational == null) RebuildReferenceIndexForActiveScope();
         ApplyReferenceHighlightsToOpenWindows();
         ApplyReferenceHighlightsToPreview();
         await SaveWorkspaceStateAsync();
-        await RefreshObjectExplorerForVirtualFolderChangeAsync();
+        await RefreshObjectExplorerForVirtualFolderChangeAsync(reloadScope: true);
 
         string action = isLoaded ? "Loaded" : "Unloaded";
         string resourceName = _relational != null && _relationalExplorerScope?.Resources.FirstOrDefault(r =>
@@ -3218,7 +3218,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task RefreshObjectExplorerForVirtualFolderChangeAsync(IEnumerable<string>? additionalExpandedNodeKeys = null)
+    private async Task RefreshObjectExplorerForVirtualFolderChangeAsync(IEnumerable<string>? additionalExpandedNodeKeys = null,
+        bool reloadScope = false)
     {
         if (_activeScope == null)
         {
@@ -3240,6 +3241,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _isRestoringObjectExplorerExpansion = true;
         try
         {
+            if (_relational != null && reloadScope)
+            {
+                var scope = _activeScope;
+                bool rerunNames = GetObjectExplorerSearchTarget() == ObjectExplorerSearchTarget.Name &&
+                    !string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text);
+                await LoadRelationalScopeAsync(scope, preserveSearchText: true);
+                if (!ReferenceEquals(_activeScope, scope)) return;
+                if (rerunNames && !string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text))
+                    await ApplyObjectExplorerSearchAsync();
+                await RestoreObjectExplorerViewStateAsync(viewState);
+                return;
+            }
             if (string.IsNullOrWhiteSpace(ObjectExplorerSearchTextBox.Text))
             {
                 await LoadObjectExplorerRoots(_activeScope);
@@ -3247,6 +3260,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
+            if (_relational != null && !await RefreshActiveRelationalNameCatalogueAsync()) return;
             await ApplyObjectExplorerSearchAsync();
             await RestoreObjectExplorerViewStateAsync(viewState);
         }
@@ -4264,6 +4278,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        if (_relational != null && !await RefreshActiveRelationalNameCatalogueAsync()) return;
         await ApplyObjectExplorerSearchAsync();
     }
 

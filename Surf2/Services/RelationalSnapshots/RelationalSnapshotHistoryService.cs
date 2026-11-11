@@ -16,11 +16,13 @@ public sealed partial class RelationalSnapshotHistoryService
     private readonly RelationalSnapshotOperationLimits _limits;
     private readonly RelationalCaptureStore _capture;
     private readonly RelationalSnapshotStore _selectedReads;
+    private readonly HistoryCountStore _historyCounts;
     public RelationalSnapshotHistoryService(RelationalRuntime runtime, RelationalSnapshotOperationLimits? limits = null)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime)); _limits = limits ?? new(); _limits.Validate();
         _capture = new(runtime.Session, _limits.Capture);
         _selectedReads = new(runtime.Session, new RelationalContentStore(), new() { SelectedDefinitionBytes = _limits.MaximumDefinitionBytes });
+        _historyCounts = new(runtime.Session);
     }
     public Task<SnapshotPage<SnapshotHistorySummary>> ListHistoriesAsync(long snapshotKey, int size = 50,
         SnapshotCursor? cursor = null, CancellationToken ct = default) => _runtime.Snapshots.ListHistoriesAsync(snapshotKey, size, cursor, ct);

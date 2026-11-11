@@ -15,11 +15,11 @@ public sealed record ComparisonLimits
 {
     public long MaximumDiskBytes { get; init; } = 1024L * 1024 * 1024;
     public long SortBufferBytes { get; init; } = 8 * 1024 * 1024;
-    public long MaximumPageBytes { get; init; } = 8 * 1024 * 1024;
+    public long MaximumPageBytes { get; init; } = 32 * 1024 * 1024;
     public int MaximumRecordBytes { get; init; } = 8 * 1024 * 1024;
     public int MaximumRuns { get; init; } = 4096;
     public int MergeFanIn { get; init; } = 8;
-    public int PageSize { get; init; } = 128;
+    public int PageSize { get; init; } = 1000;
     public int MaximumCandidates { get; init; } = 5000;
     public long MaximumCandidateBytes { get; init; } = 8 * 1024 * 1024;
     public int MaximumTextCharacters { get; init; } = 4 * 1024 * 1024;
@@ -30,7 +30,7 @@ public sealed record ComparisonLimits
             SortBufferBytes is < 1024 or > 64 * 1024 * 1024 ||
             MaximumPageBytes is < 1024 or > 32 * 1024 * 1024 ||
             MaximumRecordBytes is < 1024 or > 16 * 1024 * 1024 || MaximumRuns is < 2 or > 4096 ||
-            MergeFanIn is < 2 or > 8 || PageSize is < 1 or > 256 ||
+            MergeFanIn is < 2 or > 8 || PageSize is < 1 or > 1000 ||
             MaximumCandidates is < 1 or > 5000 || MaximumCandidateBytes is < 1024 or > 16 * 1024 * 1024 ||
             MaximumTextCharacters is < 1 or > 8 * 1024 * 1024)
             throw new ArgumentOutOfRangeException(nameof(ComparisonLimits));
@@ -38,9 +38,15 @@ public sealed record ComparisonLimits
 }
 public sealed class ComparisonLimitException(string message) : InvalidOperationException(message);
 
+public enum ComparisonCellStatus : byte { Identical, Removed, Altered, Added }
+public sealed record ComparisonTableColumn(string Name, bool ExistsOnLeft, bool ExistsOnRight);
+public sealed record ComparisonTableCell(string Left, string Right, ComparisonCellStatus Status);
+public sealed record ComparisonTableLayout(IReadOnlyList<ComparisonTableColumn> Columns, IReadOnlyList<string> KeyColumns);
+
 public sealed record ComparisonResultRow(string Key, string Status, string ChangedColumns,
     string LeftPreview, string RightPreview, bool IsCollection = false,
-    RelationalComparisonTarget? Left = null, RelationalComparisonTarget? Right = null);
+    RelationalComparisonTarget? Left = null, RelationalComparisonTarget? Right = null,
+    IReadOnlyList<ComparisonTableCell>? TableCells = null);
 public sealed record ComparisonResultPage(IReadOnlyList<ComparisonResultRow> Rows, long Offset,
     long MatchingCount, bool HasNext);
 public sealed record ComparisonCandidates(IReadOnlyList<RelationalComparisonTarget> Items,

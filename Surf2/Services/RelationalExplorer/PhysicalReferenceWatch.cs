@@ -32,6 +32,7 @@ public sealed class PhysicalReferenceWatch : IDisposable
     private readonly object _gate = new();
     private readonly object _callbackGate = new();
     private readonly Action<PhysicalReferenceInvalidation> _callback;
+    private readonly bool _namesOnly;
     private readonly ImmutableArray<ExplorerResource> _roots;
     private readonly ImmutableArray<PhysicalReferenceWatchFailure> _invalidRoots;
     private readonly Timer _timer;
@@ -46,11 +47,12 @@ public sealed class PhysicalReferenceWatch : IDisposable
     private ImmutableArray<PhysicalReferenceWatchFailure> _unwatchedRoots = [];
 
     // Startup state is exposed through properties, not callbacks. Worker callbacks must enqueue UI work.
-    public PhysicalReferenceWatch(ExplorerScope scope, Action<PhysicalReferenceInvalidation> callback)
+    public PhysicalReferenceWatch(ExplorerScope scope, Action<PhysicalReferenceInvalidation> callback, bool namesOnly = false)
     {
         ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(callback);
         _callback = callback;
+        _namesOnly = namesOnly;
         _timer = new Timer(Flush, null, Timeout.Infinite, Timeout.Infinite);
         var roots = ImmutableArray.CreateBuilder<ExplorerResource>();
         var invalidRoots = ImmutableArray.CreateBuilder<PhysicalReferenceWatchFailure>();
@@ -142,11 +144,12 @@ public sealed class PhysicalReferenceWatch : IDisposable
                 watcher = new FileSystemWatcher(item.Key)
                 {
                     IncludeSubdirectories = item.Value,
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite |
+                    NotifyFilter = _namesOnly ? NotifyFilters.FileName | NotifyFilters.DirectoryName :
+                        NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite |
                         NotifyFilters.Size | NotifyFilters.CreationTime | NotifyFilters.Attributes | NotifyFilters.Security,
                     InternalBufferSize = 16 * 1024
                 };
-                watcher.Changed += OnChanged;
+                if (!_namesOnly) watcher.Changed += OnChanged;
                 watcher.Created += OnChanged;
                 watcher.Deleted += OnChanged;
                 watcher.Renamed += OnRenamed;
@@ -192,6 +195,8 @@ public sealed class PhysicalReferenceWatch : IDisposable
 
     internal void RecordChange(WatcherChangeTypes change, string path, string? oldPath = null)
     {
+        bool topology = change != WatcherChangeTypes.Changed;
+        if (_namesOnly && !topology) return;
         string[] paths;
         try { paths = oldPath == null ? [Normalize(path)] : [Normalize(path), Normalize(oldPath)]; }
         catch (Exception ex) when (IsWatchFailure(ex))
@@ -199,7 +204,6 @@ public sealed class PhysicalReferenceWatch : IDisposable
             Queue(_roots, [], PhysicalReferenceInvalidationReason.WatcherError, true, "InvalidEventPath", ex.GetType().Name);
             return;
         }
-        bool topology = change != WatcherChangeTypes.Changed;
         var affected = _roots.Where(root => paths.Any(candidate => Affects(root, candidate, topology))).ToArray();
         if (affected.Length == 0) return;
         bool changedBoundary = topology && affected.Any(root => paths.Any(candidate =>
@@ -228,11 +232,13 @@ public sealed class PhysicalReferenceWatch : IDisposable
         }
     }
 
-    private static bool Affects(ExplorerResource root, string path, bool topology)
+    private bool Affects(ExplorerResource root, string path, bool topology)
     {
         if (SamePath(root.Path, path)) return topology || root.Kind == ResourceKind.File;
         if (topology && IsWithin(root.Path, path)) return true;
         if (root.Kind == ResourceKind.File || !IsWithin(path, root.Path)) return false;
+        // Name search includes generated files and folders, and topology events need no probe.
+        if (_namesOnly) return true;
         if (!RelationalScopeIndexRefresher.ReferenceFileEligible(root, path)) return false;
         bool directory = Directory.Exists(path);
         if (directory && !topology) return false;

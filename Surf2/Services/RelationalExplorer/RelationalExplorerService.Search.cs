@@ -240,11 +240,12 @@ public sealed partial class RelationalExplorerService
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
         var roots = await ReadRootLevelAsync(scope, ct).ConfigureAwait(false);
         foreach (var root in roots.Where(root => (root.ResourceKind is ResourceKind.File or ResourceKind.Folder) == physicalPart))
-            await foreach (var candidate in WalkNodeAsync(scope, root, [], 0, ct).ConfigureAwait(false)) yield return candidate;
+            await foreach (var candidate in WalkNodeAsync(scope, root, [], 0, _limits, ct).ConfigureAwait(false)) yield return candidate;
     }
 
     private async IAsyncEnumerable<Candidate> WalkNodeAsync(ExplorerScope scope, ExplorerNodeSummary node,
-        ImmutableArray<ExplorerNodeSummary> ancestors, long retainedCharacters, [EnumeratorCancellation] CancellationToken ct)
+        ImmutableArray<ExplorerNodeSummary> ancestors, long retainedCharacters, ExplorerLimits limits,
+        [EnumeratorCancellation] CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!node.IsScopeResourceLoaded || node.ScopeResourceKey.HasValue && scope.Context.UnloadedScopeResourceKeys.Contains(node.ScopeResourceKey.Value)) yield break;
@@ -262,14 +263,14 @@ public sealed partial class RelationalExplorerService
         if (!node.IsDirectory) yield break;
         ImmutableArray<ExplorerNodeSummary> children = [];
         IndexScanStatus? failure = null;
-        if (ancestors.Length >= _limits.MaximumDepth || node.IsReparsePoint) failure = IndexScanStatus.TooLarge;
+        if (ancestors.Length >= limits.MaximumDepth || node.IsReparsePoint) failure = IndexScanStatus.TooLarge;
         else
         {
             try
             {
-                children = await ReadNaturalChildrenAsync(scope, node, ct).ConfigureAwait(false);
+                children = await ReadNaturalChildrenAsync(scope, node, ct, limits).ConfigureAwait(false);
                 retainedCharacters = checked(retainedCharacters + children.Sum(n => (long)n.Name.Length + n.FullPath.Length + n.NodeKey.Length));
-                if (retainedCharacters > _limits.MaximumMetadataCharacters) throw new ExplorerLimitException("Active search ancestry exceeds its metadata budget.");
+                if (retainedCharacters > limits.MaximumMetadataCharacters) throw new ExplorerLimitException("Active search ancestry exceeds its metadata budget.");
             }
             catch (Exception ex) when (RelationalExplorerSearchSources.SearchFailure(ex) != null)
             { failure = RelationalExplorerSearchSources.SearchFailure(ex); }
@@ -277,7 +278,7 @@ public sealed partial class RelationalExplorerService
         if (failure.HasValue) { yield return new(node, ancestors, failure); yield break; }
         var path = ancestors.Add(node);
         foreach (var child in children)
-            await foreach (var candidate in WalkNodeAsync(scope, child, path, retainedCharacters, ct).ConfigureAwait(false)) yield return candidate;
+            await foreach (var candidate in WalkNodeAsync(scope, child, path, retainedCharacters, limits, ct).ConfigureAwait(false)) yield return candidate;
     }
     private static bool IsDocument(ExplorerNodeSummary node) => node.Role is ExplorerNodeRole.DatabaseDocument or ExplorerNodeRole.Diagram ||
         RelationalExplorerSearchSources.IsPhysicalFile(node);

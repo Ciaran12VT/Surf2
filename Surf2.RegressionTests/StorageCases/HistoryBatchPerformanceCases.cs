@@ -54,10 +54,21 @@ public static partial class StorageRegressionSuite
             check(actual.Count == 100 && actual.All(result => result.Error == null && expected.Any(value =>
                     value.ResourceKey == result.File.OriginalResourceKey && value.AddedLines == result.Added && value.RemovedLines == result.Removed)),
                 "Batched modified-file line counts match master for all 100 procedures");
-            check(trace.Commands.Count <= 40,
-                "100 modified procedures need at most 40 count requests instead of 1,600 individual requests");
+            check(trace.Commands.Count <= 56,
+                "100 cold modified procedures use bounded count requests including first-time cache installation and writes");
             check(!trace.Commands.Any(command => command.Text.Contains("CREATE TABLE #HISTORICALENTRY", StringComparison.Ordinal)),
                 "Procedure line counting reads immutable revisions without reconstructing historical versions");
+        }
+        var reopened = new RelationalSnapshotHistoryService(new RelationalRuntime(SqlServerConnectionOptions.FromConnectionString(connection)));
+        var reissued = await reopened.ListFileRowsAsync(version);
+        using (var trace = new StateAccessSqlTrace(connection))
+        {
+            int counted = 0;
+            await foreach (var result in reopened.CountFileLinesAsync(reissued))
+                if (result.Error == null) counted++;
+            check(counted == 100 && trace.Commands.Count <= 28,
+                "100 warm procedure counts load in bounded cache batches through a fresh runtime");
+            StateAccessNoReads(trace.Commands, check, "Warm procedure counts skip every definition read", "TextContent");
         }
         using (var trace = new StateAccessSqlTrace(connection))
         {

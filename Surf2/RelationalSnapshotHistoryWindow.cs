@@ -27,6 +27,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     private SnapshotSummary _snapshot;
     private readonly List<HistoryVersionRow> _versionRows = [];
     private readonly ObservableCollection<HistoryRow> _visibleRows = [];
+    private readonly HistoryHeadingRow _versionHeading = new(isVersionHeading: true);
     private readonly DispatcherTimer _filterTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private readonly TaskCompletionSource _closeCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private CancellationTokenSource? _operation;
@@ -134,8 +135,10 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
         {
             var children = filtered ? version.Children.Where(c => c.Matches(filter)).ToList() : version.Children;
             if (filtered && !version.Matches(filter) && children.Count == 0) continue;
+            if (versions == 0) _visibleRows.Add(_versionHeading);
             _visibleRows.Add(version); versions++;
-            if (!version.IsExpanded && !filtered) continue;
+            if (children.Count == 0 || (!version.IsExpanded && !filtered)) continue;
+            _visibleRows.Add(version.FileHeading);
             foreach (var child in children) { _visibleRows.Add(child); files++; }
         }
         if (selected != null && _visibleRows.Contains(selected)) RowsListView.SelectedItem = selected;
@@ -172,12 +175,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
                 foreach (var row in _versionRows.Where(row => row.Version.IsInitial && !row.ChildrenLoaded && row.KnownFileCount == null).ToArray())
                 {
                     var expected = _snapshot;
-                    long count = await Task.Run(async () =>
-                    {
-                        await using var context = await _service.OpenVersionAsync(expected.SnapshotKey, row.Version.VersionKey, owner.Token);
-                        if (!context.Header.RowVersion.AsSpan().SequenceEqual(expected.RowVersion)) throw new SnapshotConcurrencyException();
-                        return await context.CountResourcesAsync(owner.Token);
-                    }, owner.Token);
+                    long count = await Task.Run(() => _service.CountVersionFilesAsync(expected, row.Version, owner.Token), owner.Token);
                     if (_closing || ownerId != _countsGeneration) return;
                     row.KnownFileCount = count;
                 }
@@ -252,7 +250,8 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     private async void RowsListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (FindAncestor<Button>(e.OriginalSource as DependencyObject) != null) return;
-        if (RowsListView.SelectedItem is HistoryVersionRow row) await ToggleRowAsync(row);
+        if (FindAncestor<ListViewItem>(e.OriginalSource as DependencyObject)?.DataContext is HistoryVersionRow row)
+            await ToggleRowAsync(row);
     }
     private async void ToggleRowButton_Click(object sender, RoutedEventArgs e)
     {
@@ -262,6 +261,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     private void RowsListView_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (FindAncestor<ListViewItem>(e.OriginalSource as DependencyObject) is { } item) { item.IsSelected = true; item.Focus(); }
+        else RowsListView.SelectedItem = null;
     }
     private void RowsListView_ContextMenuOpening(object sender, ContextMenuEventArgs e)
     {
@@ -392,11 +392,14 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     {
         public event PropertyChangedEventHandler? PropertyChanged;
         public abstract bool IsVersion { get; }
+        public virtual bool IsHeading => false;
         public abstract string VersionColumn { get; }
         public abstract string ResourceTypeColumn { get; }
         public abstract string NameColumn { get; }
         public abstract string AddedColumn { get; }
         public abstract string RemovedColumn { get; }
+        public virtual bool HasAddedLines => false;
+        public virtual bool HasRemovedLines => false;
         public virtual Thickness IndentMargin => new(0);
         public virtual Visibility ToggleVisibility => Visibility.Hidden;
         public virtual string ToggleGlyph => "";
@@ -405,6 +408,16 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
             .Any(value => DatabaseHistoryDisplay.ContainsText(value, filter));
         protected void Notify([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
     }
+    private sealed class HistoryHeadingRow(bool isVersionHeading) : HistoryRow
+    {
+        public override bool IsVersion => false;
+        public override bool IsHeading => true;
+        public override string VersionColumn => isVersionHeading ? "Version" : "";
+        public override string ResourceTypeColumn => isVersionHeading ? "" : "Resource Type";
+        public override string NameColumn => isVersionHeading ? "" : "Name";
+        public override string AddedColumn => isVersionHeading ? "Timestamp" : "Lines Added";
+        public override string RemovedColumn => isVersionHeading ? "Files" : "Lines Removed";
+    }
     public sealed class HistoryVersionRow(SnapshotVersionSummary version) : HistoryRow
     {
         private bool _expanded, _childrenLoaded;
@@ -412,6 +425,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
         public long? KnownFileCount { get => _knownFileCount; set { _knownFileCount = value; Notify(nameof(RemovedColumn)); Notify(nameof(ToggleVisibility)); } }
         public SnapshotVersionSummary Version { get; } = version;
         public List<HistoryFileRow> Children { get; } = [];
+        internal HistoryRow FileHeading { get; } = new HistoryHeadingRow(isVersionHeading: false);
         public bool ChildrenLoaded { get => _childrenLoaded; set { _childrenLoaded = value; Notify(); Notify(nameof(RemovedColumn)); Notify(nameof(ToggleVisibility)); } }
         public bool IsExpanded { get => _expanded; set { _expanded = value; Notify(); Notify(nameof(ToggleGlyph)); Notify(nameof(ToggleToolTip)); } }
         public override bool IsVersion => true;
@@ -437,9 +451,16 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
         public override string NameColumn => DatabaseHistoryDisplay.GetFileNameDisplay(File.DisplayName, File.RelativePath);
         public override string AddedColumn => _added.HasValue ? "+" + _added.Value.ToString(CultureInfo.CurrentCulture) : CountError == null ? "…" : "—";
         public override string RemovedColumn => _removed.HasValue ? "-" + _removed.Value.ToString(CultureInfo.CurrentCulture) : CountError == null ? "…" : "—";
+        public override bool HasAddedLines => _added > 0;
+        public override bool HasRemovedLines => _removed > 0;
         public override Thickness IndentMargin => new(28, 0, 0, 0);
         public override bool Matches(string filter) => base.Matches(filter) || DatabaseHistoryDisplay.ContainsText(File.DisplayName, filter) || DatabaseHistoryDisplay.ContainsText(File.RelativePath, filter);
-        public void SetCounts(int added, int removed) { _added = added; _removed = removed; CountsLoaded = true; Notify(nameof(AddedColumn)); Notify(nameof(RemovedColumn)); }
+        public void SetCounts(int added, int removed)
+        {
+            _added = added; _removed = removed; CountsLoaded = true;
+            Notify(nameof(AddedColumn)); Notify(nameof(RemovedColumn));
+            Notify(nameof(HasAddedLines)); Notify(nameof(HasRemovedLines));
+        }
         public void SetCountError(string message) { CountError = message; CountsLoaded = true; Notify(nameof(AddedColumn)); Notify(nameof(RemovedColumn)); }
     }
 }

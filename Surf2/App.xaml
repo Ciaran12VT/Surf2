@@ -19,6 +19,7 @@
         <SolidColorBrush x:Key="Theme.SelectionTextBrush" Color="#111827" />
         <SolidColorBrush x:Key="Theme.AccentBrush" Color="#2563EB" />
         <SolidColorBrush x:Key="Theme.ErrorTextBrush" Color="#B91C1C" />
+        <SolidColorBrush x:Key="Theme.SuccessTextBrush" Color="#15803D" />
         <SolidColorBrush x:Key="Theme.OverlayBrush" Color="#BFFFFFFF" />
         <SolidColorBrush x:Key="Theme.ActiveCodeCanvasBrush" Color="#EEF1F5" />
         <SolidColorBrush x:Key="Theme.ActiveDiagramCanvasBrush" Color="#F4F6F8" />

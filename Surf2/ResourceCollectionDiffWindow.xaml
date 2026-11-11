@@ -80,13 +80,11 @@
             </Grid>
             <Grid Grid.Row="1" Margin="0,8,0,0">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="260" />
+                    <ColumnDefinition Width="220" />
                 </Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center"
-                            Orientation="Horizontal">
+                <WrapPanel VerticalAlignment="Center">
                     <CheckBox x:Name="IgnoreWhitespaceCheckBox"
                               VerticalAlignment="Center"
                               Checked="DiffOptionCheckBox_CheckedChanged"
@@ -100,13 +98,32 @@
                               Content="Ignore case"
                               Foreground="#1F2937"
                               Unchecked="DiffOptionCheckBox_CheckedChanged" />
-                </StackPanel>
-                <TextBlock Grid.Column="2"
+                    <CheckBox x:Name="DifferencesOnlyCheckBox"
+                              Margin="12,0,0,0"
+                              VerticalAlignment="Center"
+                              Content="Differences Only"
+                              Foreground="#1F2937"
+                              Visibility="Collapsed" />
+                    <Button x:Name="ClearExclusionsButton"
+                            Margin="12,2,0,2"
+                            Padding="8,4"
+                            Content="Clear Exclusions"
+                            IsEnabled="False"
+                            Style="{DynamicResource SurfPrimaryButtonStyle}"
+                            Visibility="Collapsed" />
+                    <Button x:Name="ExportCsvButton"
+                            Margin="8,2,0,2"
+                            Padding="8,4"
+                            Content="Export CSV"
+                            Style="{DynamicResource SurfPrimaryButtonStyle}"
+                            Visibility="Collapsed" />
+                </WrapPanel>
+                <TextBlock Grid.Column="1"
                            Margin="12,0,6,0"
                            VerticalAlignment="Center"
                            Text="Find:" />
                 <TextBox x:Name="SearchTextBox"
-                         Grid.Column="3"
+                         Grid.Column="2"
                          Height="26"
                          VerticalContentAlignment="Center"
                          TextChanged="SearchTextBox_TextChanged" />

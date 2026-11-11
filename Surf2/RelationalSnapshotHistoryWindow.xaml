@@ -57,6 +57,23 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style x:Key="HistoryCountTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource Theme.TextBrush}" />
+        </Style>
+        <Style x:Key="HistoryAddedTextStyle" TargetType="TextBlock" BasedOn="{StaticResource HistoryCountTextStyle}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding HasAddedLines}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource Theme.SuccessTextBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="HistoryRemovedTextStyle" TargetType="TextBlock" BasedOn="{StaticResource HistoryCountTextStyle}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding HasRemovedLines}" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource Theme.ErrorTextBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -121,17 +138,22 @@
                         <DataTrigger Binding="{Binding IsVersion}"
                                      Value="True">
                             <Setter Property="Background"
-                                    Value="#EEF2F7" />
+                                    Value="{DynamicResource Theme.PanelBrush}" />
                             <Setter Property="FontWeight"
                                     Value="SemiBold" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsHeading}" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource Theme.SurfaceAltBrush}" />
+                            <Setter Property="FontWeight" Value="SemiBold" />
+                            <Setter Property="Focusable" Value="False" />
+                            <Setter Property="IsHitTestVisible" Value="False" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </ListView.ItemContainerStyle>
             <ListView.View>
                 <GridView>
-                    <GridViewColumn Header="Version"
-                                    Width="210">
+                    <GridViewColumn Width="210">
                         <GridViewColumn.CellTemplate>
                             <DataTemplate>
                                 <StackPanel Margin="{Binding IndentMargin}"
@@ -153,18 +175,24 @@
                             </DataTemplate>
                         </GridViewColumn.CellTemplate>
                     </GridViewColumn>
-                    <GridViewColumn Header="Resource Type"
-                                    Width="150"
+                    <GridViewColumn Width="150"
                                     DisplayMemberBinding="{Binding ResourceTypeColumn}" />
-                    <GridViewColumn Header="Name"
-                                    Width="380"
+                    <GridViewColumn Width="380"
                                     DisplayMemberBinding="{Binding NameColumn}" />
-                    <GridViewColumn Header="Timestamp / Added"
-                                    Width="170"
-                                    DisplayMemberBinding="{Binding AddedColumn}" />
-                    <GridViewColumn Header="Files / Removed"
-                                    Width="140"
-                                    DisplayMemberBinding="{Binding RemovedColumn}" />
+                    <GridViewColumn Width="170">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding AddedColumn}" Style="{StaticResource HistoryAddedTextStyle}" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Width="140">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding RemovedColumn}" Style="{StaticResource HistoryRemovedTextStyle}" />
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
                 </GridView>
             </ListView.View>
         </ListView>
