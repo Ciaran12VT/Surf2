@@ -19,8 +19,8 @@ namespace Surf2;
 /// <summary>Resource-only STA checks: no Window.Show, SQL, connection settings or application startup.</summary>
 public static class RelationalScopePickerUiChecks
 {
-    private static readonly string[] ResourceCommands = ["Add"];
-    private static readonly string[] ScopeCommands = ["New", "Save", "Delete", "Add Scope Resources", .. ResourceCommands, "Open", "Close"];
+    private static readonly string[] NewResourceCommands = ["Folder", "File", "Database"];
+    private static readonly string[] ScopeCommands = ["New", "Save", "Delete", "Add Scope Resources", "Open", "Close"];
 
     // Hook: call on an STA with App.InitializeComponent(), without Application.Run/OnStartup.
     public static async Task<IReadOnlyList<string>> RunOffscreenAsync(string outputDirectory, CancellationToken ct = default)
@@ -49,7 +49,7 @@ public static class RelationalScopePickerUiChecks
                         using var surface = new OffscreenSurface(scopes, width - 16, height - 40);
                         surface.Layout();
                         CheckScopeLayout(surface, width >= 1000);
-                        CheckAddResourceMenu(scopes);
+                        CheckAddResourceControls(surface, width >= 1000);
                         CheckRowActions(scopes, surface);
                         if (large) CheckResourceVirtualization(surface, fixture.Resources.Count);
                         CheckScopeEditing(scopes, fixture, surface);
@@ -68,7 +68,7 @@ public static class RelationalScopePickerUiChecks
                         if (!large) hashes.Add((theme, width), hash);
                         Require(!scopes.IsVisible && new WindowInteropHelper(scopes).Handle == IntPtr.Zero,
                             "Scope fixture must remain offscreen without an HWND.");
-                        passed.Add($"Scopes {theme} {width}x{height} {fixture.Resources.Count} resources: Add menu, selected-row actions, columns, edits, identity, finite viewport and pixels: {path}");
+                        passed.Add($"Scopes {theme} {width}x{height} {fixture.Resources.Count} resources: Add controls, selected-row actions, columns, edits, identity, finite viewport and pixels: {path}");
                     }
                     finally { await scopes.DrainQueriesAsync(); scopes.Close(); }
                 }
@@ -109,17 +109,6 @@ public static class RelationalScopePickerUiChecks
         var list = Descendants(root).OfType<ListBox>().Single();
         Require(Math.Abs(list.ActualWidth - 220) < 1, "The scope list must remain narrow.");
         var toolbar = Descendants(root).OfType<WrapPanel>().Single();
-        var buttons = toolbar.Children.OfType<Button>().ToArray();
-        Require(buttons.Select(b => b.Content as string).SequenceEqual(ResourceCommands), "Resource toolbar commands/order changed.");
-        var bounds = buttons.Select(b => Bounds(b, toolbar)).ToArray();
-        for (int i = 0; i < bounds.Length; i++)
-        {
-            Require(bounds[i].Left >= -1 && bounds[i].Right <= toolbar.ActualWidth + 1 && bounds[i].Top >= -1 && bounds[i].Bottom <= toolbar.ActualHeight + 1,
-                "Resource toolbar button is outside its layout: " + buttons[i].Content);
-            for (int j = i + 1; j < bounds.Length; j++)
-                Require(!bounds[i].IntersectsWith(bounds[j]), "Resource toolbar buttons overlap.");
-        }
-        if (singleRow) Require(bounds.All(b => Math.Abs(b.Top - bounds[0].Top) < 1), "Resource toolbar must fit one row at a useful desktop width.");
         Require(toolbar.ActualWidth > list.ActualWidth, "Details must get the remaining width, not a fixed 520px.");
         foreach (var button in Descendants(root).OfType<Button>().Where(b => ScopeCommands.Contains(b.Content as string)))
         {
@@ -181,27 +170,46 @@ public static class RelationalScopePickerUiChecks
             $"Large resource grid realized {realized}/{total} rows instead of virtualizing.");
     }
 
-    private static void CheckAddResourceMenu(RelationalScopePickerWindow window)
+    private static void CheckAddResourceControls(OffscreenSurface surface, bool singleRow)
     {
-        var add = Field<Button>(window, "_addResource");
-        var menu = Field<ContextMenu>(window, "_addResourceMenu");
-        Require(add.Content as string == "Add" && AutomationProperties.GetName(add) == "Add resource",
-            "The single Add button needs an accessible resource label.");
-        Require(ReferenceEquals(add.ContextMenu, menu), "Add must own the tested resource menu.");
-        var groups = menu.Items.OfType<MenuItem>().ToArray();
-        Require(menu.Items.Count == 2 && groups.Select(item => Header(item.Header)).SequenceEqual(new[] { "New", "Existing" }),
-            "Add must offer exactly New and Existing, in that order.");
-        foreach (var group in groups)
+        var toolbar = Descendants(surface.Root).OfType<WrapPanel>().Single();
+        var mode = toolbar.Children.OfType<ComboBox>().Single();
+        Require(toolbar.Children[0] is TextBlock { Text: "Add:" } label && ReferenceEquals(toolbar.Children[1], mode) &&
+            ReferenceEquals(AutomationProperties.GetLabeledBy(mode), label), "The Add label must precede and label the mode dropdown.");
+        Require(mode.Items.Cast<string>().SequenceEqual(new[] { "New", "Existing" }) && mode.SelectedItem is "New",
+            "The dropdown must offer New and Existing and default to New.");
+        var diagram = toolbar.Children.OfType<Button>().Single(button => button.Content as string == "Diagram");
+        Require(diagram.Visibility == Visibility.Collapsed, "New must hide Diagram without reserving toolbar space.");
+        CheckMode(NewResourceCommands);
+
+        mode.SelectedItem = "Existing";
+        surface.Layout();
+        CheckMode([.. NewResourceCommands, "Diagram"]);
+
+        mode.SelectedItem = "New";
+        surface.Layout();
+        Require(diagram.Visibility == Visibility.Collapsed, "Returning to New must hide Diagram again.");
+
+        void CheckMode(string[] expected)
         {
-            var types = group.Items.OfType<MenuItem>().ToArray();
-            Require(group.Items.Count == 4 && types.Select(item => Header(item.Header)).SequenceEqual(new[] { "Folder", "File", "Database", "Diagram" }),
-                "Each Add branch must offer Folder, File, Database and Diagram.");
-            Require(types.All(item => item.Items.Count == 0 && item.IsEnabled),
-                "Every resource type must be an available action rather than another unexpected menu level.");
+            var controls = toolbar.Children.OfType<FrameworkElement>().Where(control => control.Visibility == Visibility.Visible).ToArray();
+            var buttons = controls.OfType<Button>().ToArray();
+            Require(buttons.Select(button => button.Content as string).SequenceEqual(expected), "Resource buttons do not match the selected mode.");
+            Require(buttons.All(button => button.IsEnabled && button.ContextMenu == null), "Resource buttons must offer direct actions.");
+            CheckButtons(toolbar, "resource toolbar", expected);
+            CheckTextFits(mode, (string)mode.SelectedItem, mode.Padding.Left + mode.Padding.Right);
+            var bounds = controls.Select(control => Bounds(control, toolbar)).ToArray();
+            for (int i = 0; i < bounds.Length; i++)
+            {
+                Require(bounds[i].Left >= -1 && bounds[i].Right <= toolbar.ActualWidth + 1 && bounds[i].Top >= -1 && bounds[i].Bottom <= toolbar.ActualHeight + 1,
+                    "A resource control is outside the toolbar layout.");
+                for (int j = i + 1; j < bounds.Length; j++)
+                    Require(!bounds[i].IntersectsWith(bounds[j]), "Resource toolbar controls overlap.");
+            }
+            if (singleRow)
+                Require(bounds.All(bound => bound.Top < bounds[0].Bottom && bound.Bottom > bounds[0].Top),
+                    "Resource controls must fit on one row at desktop widths.");
         }
-        Require(!Descendants(Field<Grid>(window, "Details")).OfType<Button>().Any(button => button.Content as string is
-            "Add Folder" or "Add File" or "Add Database" or "Edit Database" or "Add Snapshot" or "Add Diagram" or "Remove"),
-            "The old resource-command toolbar must not remain beside Add.");
     }
 
     private static void CheckRowActions(RelationalScopePickerWindow window, OffscreenSurface surface)

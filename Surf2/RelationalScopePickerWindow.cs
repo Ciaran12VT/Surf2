@@ -4,7 +4,6 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
-using System.Windows.Controls.Primitives;
 using Microsoft.Win32;
 using Surf2.Models;
 using Surf2.Services;
@@ -22,8 +21,6 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
     private readonly DataGrid _resources = new() { AutoGenerateColumns = false, CanUserAddRows = false, CanUserDeleteRows = false,
         SelectionMode = DataGridSelectionMode.Single, SelectionUnit = DataGridSelectionUnit.FullRow };
     private readonly Button _save = CommandButton("Save", "SurfSaveButtonStyle"), _delete = CommandButton("Delete", "RelationalDangerButtonStyle");
-    private readonly Button _addResource = CommandButton("Add");
-    private readonly ContextMenu _addResourceMenu = new();
     private readonly CheckBox _includeChildren = new() { Content = "Include children", Margin = new(3, 6, 3, 0) };
     private readonly Grid _detailContent = new();
     private readonly bool _manage;
@@ -54,13 +51,8 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
             _detailContent.RowDefinitions.Add(new() { Height = height });
         AddDetail(new TextBlock { Text = "Name", Margin = new(0, 0, 0, 4) }, 0); AddDetail(_name, 1);
         AddDetail(new TextBlock { Text = "Description", Margin = new(0, 8, 0, 4) }, 2); AddDetail(_description, 3);
-        var resourceCommands = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 4) };
-        _addResource.ToolTip = "Add a new resource or reuse an existing Surf resource";
-        AutomationProperties.SetName(_addResource, "Add resource");
-        ConfigureAddResourceMenu();
-        resourceCommands.Children.Add(_addResource);
         _resources.SelectionChanged += (_, _) => UpdateResourceSelection();
-        AddDetail(resourceCommands, 4);
+        AddDetail(CreateResourceCommands(), 4);
         var aliasText = new FrameworkElementFactory(typeof(TextBlock));
         aliasText.SetBinding(TextBlock.TextProperty, new Binding(nameof(ScopedResource.DisplayName)));
         aliasText.SetBinding(FrameworkElement.ToolTipProperty, new Binding(nameof(ScopedResource.DisplayName)));
@@ -160,31 +152,39 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         });
     }
 
-    private void ConfigureAddResourceMenu()
+    private WrapPanel CreateResourceCommands()
     {
-        var create = new MenuItem { Header = "New" };
-        var existing = new MenuItem { Header = "Existing" };
-        _addResourceMenu.Items.Add(create); _addResourceMenu.Items.Add(existing);
-        Add(create, "Folder", () => AddPhysicalResourceAsync(ResourceKind.Folder));
-        Add(create, "File", () => AddPhysicalResourceAsync(ResourceKind.File));
-        Add(create, "Database", () => EditDatabaseAsync(replaceSelected: false));
-        Add(create, "Diagram", AddNewDiagramAsync);
-        Add(existing, "Folder", () => AddExistingPhysicalResourceAsync(ResourceKind.Folder));
-        Add(existing, "File", () => AddExistingPhysicalResourceAsync(ResourceKind.File));
-        Add(existing, "Database", AddExistingSnapshotAsync);
-        Add(existing, "Diagram", AddExistingDiagramAsync);
-        _addResource.ContextMenu = _addResourceMenu;
-        _addResource.Click += (_, _) =>
+        var commands = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new(0, 8, 0, 4) };
+        var label = new TextBlock { Text = "Add:", VerticalAlignment = VerticalAlignment.Center, Margin = new(3) };
+        var mode = new ComboBox
         {
-            _addResourceMenu.PlacementTarget = _addResource;
-            _addResourceMenu.Placement = PlacementMode.Bottom;
-            _addResourceMenu.IsOpen = true;
+            ItemsSource = new[] { "New", "Existing" },
+            SelectedIndex = 0,
+            MinWidth = 100,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new(3)
         };
-        void Add(MenuItem parent, string label, Func<Task> action)
+        AutomationProperties.SetLabeledBy(mode, label);
+        commands.Children.Add(label);
+        commands.Children.Add(mode);
+        AddButton("Folder", existing => existing ? AddExistingPhysicalResourceAsync(ResourceKind.Folder) : AddPhysicalResourceAsync(ResourceKind.Folder));
+        AddButton("File", existing => existing ? AddExistingPhysicalResourceAsync(ResourceKind.File) : AddPhysicalResourceAsync(ResourceKind.File));
+        AddButton("Database", existing => existing ? AddExistingSnapshotAsync() : EditDatabaseAsync(replaceSelected: false));
+        Button diagram = AddButton("Diagram", _ => AddExistingDiagramAsync());
+        diagram.Visibility = Visibility.Collapsed;
+        mode.SelectionChanged += (_, _) =>
+            diagram.Visibility = mode.SelectedItem is "Existing" ? Visibility.Visible : Visibility.Collapsed;
+        return commands;
+
+        Button AddButton(string text, Func<bool, Task> action)
         {
-            var item = new MenuItem { Header = label };
-            item.Click += async (_, _) => await RunAsync(async () => { if (CommitResourceEdits()) await action(); });
-            parent.Items.Add(item);
+            var button = CommandButton(text);
+            button.Click += async (_, _) => await RunAsync(async () =>
+            {
+                if (CommitResourceEdits()) await action(mode.SelectedItem is "Existing");
+            });
+            commands.Children.Add(button);
+            return button;
         }
     }
 
@@ -283,23 +283,6 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
             AddPhysical(new() { Kind = kind, Path = resource.Path, DisplayNameOverride = resource.DisplayNameOverride,
                 DetailsOverride = resource.DetailsOverride, IncludeChildren = resource.IncludeChildren });
         }
-    }
-
-    private async Task AddNewDiagramAsync()
-    {
-        if (_edit == null || _model == null) return;
-        var prompt = new RenameResourceWindow("New Diagram") { Owner = this, Title = "New Diagram" };
-        if (prompt.ShowDialog() != true) return;
-        await SaveFieldsAsync(Lifetime);
-        var diagram = new DiagramDocument { Name = prompt.ResourceName };
-        var scope = _edit.Snapshot();
-        scope.Resources.Add(new() { Kind = ResourceKind.Diagram, Path = diagram.DiagramId,
-            DisplayNameOverride = diagram.Name, DetailsOverride = "Diagram" });
-        var catalogue = await _runtime.StateStore.ReadRuntimeCatalogueTokenAsync(RuntimeStateCatalogue.Diagrams, Lifetime);
-        var saved = await _runtime.StateStore.CreateDiagramInScopeAsync(new(diagram, new Dictionary<int, byte[]>()), scope,
-            _edit.ExpectedToken, catalogue, Guid.NewGuid(), Lifetime);
-        ChangedScopeKeys.Add(saved.Scope.Key); await ReloadScopeOwnerAsync(saved.Scope, scope);
-        SetStatus("Created an empty diagram. Open it from Object Explorer to edit its contents.");
     }
 
     private async Task EditResourceAsync(ScopedResource resource)

@@ -4,13 +4,14 @@ namespace Surf2.Models;
 
 public sealed class CodeWindowSettings
 {
-    private static readonly string[] DefaultExtensions = [".cs", ".vb", ".vbs", ".sql", ".js", ".xml", ".csv"];
+    private static readonly string[] DefaultExtensions = [".cs", ".vb", ".vbs", ".sql", ".js", ".json", ".xml", ".csv"];
 
     public const string PlainTextLanguage = "Plain Text";
     public const string CSharpLanguage = "C#";
     public const string VisualBasicLanguage = "VB";
     public const string SqlServerLanguage = "SQL Server";
     public const string JavaScriptLanguage = "JavaScript";
+    public const string JsonLanguage = "JSON";
     public const string XmlLanguage = "XML";
     public const string XlsLanguage = "XLS";
 
@@ -21,6 +22,7 @@ public sealed class CodeWindowSettings
         VisualBasicLanguage,
         SqlServerLanguage,
         JavaScriptLanguage,
+        JsonLanguage,
         XmlLanguage,
         XlsLanguage
     ];
@@ -97,6 +99,7 @@ public sealed class CodeWindowSettings
             ".vb" or ".vbs" => VisualBasicLanguage,
             ".sql" => SqlServerLanguage,
             ".js" => JavaScriptLanguage,
+            ".json" => JsonLanguage,
             ".xml" => XmlLanguage,
             ".csv" => XlsLanguage,
             _ => PlainTextLanguage
@@ -122,6 +125,7 @@ public sealed class CodeWindowSettings
             VisualBasicLanguage => "VB",
             SqlServerLanguage => "SQL",
             JavaScriptLanguage => "JS",
+            JsonLanguage => "JSON",
             XmlLanguage => "XML",
             XlsLanguage => "XLS",
             _ => "TEXT"

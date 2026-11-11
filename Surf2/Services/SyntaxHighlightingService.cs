@@ -26,6 +26,7 @@ public sealed class SyntaxHighlightingService
                 CodeWindowSettings.VisualBasicLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".vb"),
                 CodeWindowSettings.SqlServerLanguage => HighlightingManager.Instance.GetDefinition(SqlDefinitionName),
                 CodeWindowSettings.JavaScriptLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".js"),
+                CodeWindowSettings.JsonLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".json"),
                 CodeWindowSettings.XmlLanguage => HighlightingManager.Instance.GetDefinitionByExtension(".xml"),
                 _ => null
             };
@@ -45,6 +46,8 @@ public sealed class SyntaxHighlightingService
 
         return HighlightingManager.Instance.GetDefinitionByExtension(extension);
     }
+
+    internal static bool IsJson(IHighlightingDefinition? definition) => definition?.Name == "Json";
 
     private static void RegisterSqlHighlighting()
     {

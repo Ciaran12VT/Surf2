@@ -37,6 +37,12 @@ internal static class MasterRegressionSuite
         app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         try
         {
+            if (args is ["--json"])
+            {
+                Run("JSON code highlighting, lossless display formatting and language overrides", JsonCodeRenderingTests.Run);
+                return _failures == 0 ? 0 : 1;
+            }
+
             Run("Opening a search selects the first match and navigation updates the counter", SearchNavigation);
             Run("Search options and counters use the same matches", SearchOptions);
             Run("A missing match preserves the active search", MissingSearch);
@@ -51,6 +57,7 @@ internal static class MasterRegressionSuite
             Run("Pending references and ready reference styling", V2ReferencePresentationTests.Run);
             Run("Relational table capture selections", V2CaptureSelectionTests.Run);
             Run("Paged grid range selection and selected clipboard output", V2GridSelectionTests.Run);
+            Run("JSON code highlighting, lossless display formatting and language overrides", JsonCodeRenderingTests.Run);
 
             if (args.Length == 2 && args[0] == "--preview")
             {
@@ -58,7 +65,7 @@ internal static class MasterRegressionSuite
             }
             else if (args.Length != 0)
             {
-                Console.Error.WriteLine("Usage: Surf2.RegressionTests [--preview <absolute PNG path>]");
+                Console.Error.WriteLine("Usage: Surf2.RegressionTests [--preview <absolute PNG path> | --json]");
                 _failures++;
             }
         }

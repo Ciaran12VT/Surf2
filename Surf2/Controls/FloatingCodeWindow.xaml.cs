@@ -43,6 +43,8 @@ public partial class FloatingCodeWindow : UserControl
     private ReferenceHighlightColorizer? _referenceHighlightColorizer;
     private readonly SearchPanel _searchPanel;
     private readonly DispatcherTimer _shiftMouseScrollTimer;
+    private string? _unformattedJsonContent;
+    private bool _isJsonPresentation;
     private bool _suppressCursorPositionChanged;
     private bool _isActive;
 
@@ -59,8 +61,7 @@ public partial class FloatingCodeWindow : UserControl
         ToolTip = state.FilePath;
 
         double initialFontSize = state.FontSize > 0 ? state.FontSize : 13;
-        Editor.Text = content;
-        Editor.SyntaxHighlighting = highlighting;
+        SetCodePresentation(content, highlighting);
         Editor.FontSize = Math.Clamp(initialFontSize, MinimumFontSize, MaximumFontSize);
         State.FontSize = Editor.FontSize;
         _searchPanel = SearchPanel.Install(Editor);
@@ -252,7 +253,26 @@ public partial class FloatingCodeWindow : UserControl
 
     public void ApplySyntaxHighlighting(IHighlightingDefinition? highlighting)
     {
+        bool isJson = SyntaxHighlightingService.IsJson(highlighting);
+        if (isJson == _isJsonPresentation)
+        {
+            Editor.SyntaxHighlighting = highlighting;
+            return;
+        }
+
+        SetCodePresentation(_unformattedJsonContent ?? Editor.Text, highlighting);
+    }
+
+    private void SetCodePresentation(string content, IHighlightingDefinition? highlighting)
+    {
+        _isJsonPresentation = SyntaxHighlightingService.IsJson(highlighting);
+        _unformattedJsonContent = _isJsonPresentation ? content : null;
+        string displayContent = _isJsonPresentation ? JsonCodeFormattingService.FormatForDisplay(content) : content;
         Editor.SyntaxHighlighting = highlighting;
+        if (!string.Equals(Editor.Text, displayContent, StringComparison.Ordinal))
+        {
+            Editor.Text = displayContent;
+        }
     }
 
     public void ApplyReferenceHighlights(IReadOnlyDictionary<string, ReferenceHighlightStyleSetting> highlightStyles,
