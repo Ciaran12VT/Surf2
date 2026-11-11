@@ -191,11 +191,38 @@ public static partial class StorageRegressionSuite
         long assetKey = Convert.ToInt64(await fixture.DestinationSqlAsync(
             "SELECT AssetKey FROM surf.DiagramImageDefinition WHERE DiagramImageDefinitionKey=@Key;",
             RelationalSession.Parameter("@Key", SqlDbType.BigInt, imageKey)));
-        // A valid FK can still be semantically inconsistent. Damage only the owned empty sibling, then repair it.
-        await fixture.DestinationSqlAsync("UPDATE surf.DiagramImageDefinition SET AssetKey=@Asset WHERE DiagramImageDefinitionKey=@Key;",
+        long emptyImageDataKey = Convert.ToInt64(await fixture.DestinationSqlAsync(
+            "SELECT ImageDataBase64ContentKey FROM surf.DiagramImageDefinition WHERE DiagramImageDefinitionKey=@Key;",
+            RelationalSession.Parameter("@Key", SqlDbType.BigInt, emptyKey)));
+        // An asset with empty base64 is valid. Point the fixture's inline data at invalid base64 to exercise a failed load.
+        await fixture.DestinationSqlAsync("""
+UPDATE surf.DiagramImageDefinition SET AssetKey=@Asset,ImageDataBase64ContentKey=NameRegexContentKey
+WHERE DiagramImageDefinitionKey=@Key;
+""",
             RelationalSession.Parameter("@Asset", SqlDbType.BigInt, assetKey), RelationalSession.Parameter("@Key", SqlDbType.BigInt, emptyKey));
         try
         {
+            var ruleOwner = Required(await store.ReadSettingsTokenAsync(), "image rule owner");
+            var rules = await StateAccessObservedAsync(connection, async () =>
+            {
+                var first = await store.ListRuntimeImageRulesAsync(ruleOwner, pageSize: 1);
+                var cursor = Required(first.Next, "first runtime image rule cursor");
+                var second = await store.ListRuntimeImageRulesAsync(ruleOwner, cursor, pageSize: 1);
+                check(cursor.EffectiveOrder == 1 && second.Next == null,
+                    "Runtime image rules use ordinal fallback ordering and a bounded continuation");
+                return new[] { first.Items.Single(), second.Items.Single() };
+            }, commands =>
+            {
+                StateAccessNoReads(commands, check, "Runtime image rules", "Asset");
+                check(commands.All(c => !c.Text.Contains("BASE64", StringComparison.Ordinal)),
+                    "Runtime image rules read regex text without the original image data");
+            }, check, "runtime image rules");
+            var expectedRules = expected.DiagramImages.Images.Select((image, index) => new RuntimeImageRule(
+                index == 0 ? imageKey : emptyKey, image.Id, image.Name, image.NameRegex, image.ContentRegex,
+                image.Regex, image.MatchTarget, image.ResourceTypeFilter));
+            check(rules.SequenceEqual(expectedRules),
+                "Runtime image rules preserve distinct name, content, and legacy regex values across pages");
+
             var unrelated = await access.LoadStartupPreferencesAsync();
             await using var unrelatedEdit = StateAccessEdit(unrelated, check, "startup with inconsistent unselected image");
             var imageLoad = await StateAccessObservedAsync(connection, () => access.LoadImageAsync(imageKey), commands =>
@@ -222,7 +249,10 @@ public static partial class StorageRegressionSuite
         }
         finally
         {
-            await fixture.DestinationSqlAsync("UPDATE surf.DiagramImageDefinition SET AssetKey=NULL WHERE DiagramImageDefinitionKey=@Key;",
+            await fixture.DestinationSqlAsync("""
+UPDATE surf.DiagramImageDefinition SET AssetKey=NULL,ImageDataBase64ContentKey=@ImageData
+WHERE DiagramImageDefinitionKey=@Key;
+""", RelationalSession.Parameter("@ImageData", SqlDbType.BigInt, emptyImageDataKey),
                 RelationalSession.Parameter("@Key", SqlDbType.BigInt, emptyKey));
         }
         await using (var empty = StateAccessEdit(await access.LoadImageAsync(emptyKey), check, "repaired empty image"))

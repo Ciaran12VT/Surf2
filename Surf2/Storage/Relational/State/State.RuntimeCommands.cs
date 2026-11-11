@@ -612,11 +612,14 @@ DELETE FROM surf.Diagram WHERE DiagramKey=@Key;
             await using var command = Command(c, t, """
 SELECT TOP (@Take) s.DiagramImageDefinitionKey,s.SortOrdinal,s.EffectiveOrder,
 CONVERT(bigint,DATALENGTH(s.Id)),s.Id,CONVERT(bigint,DATALENGTH(s.Name)),s.Name,
-CONVERT(bigint,DATALENGTH(s.NameRegex)),s.NameRegex,CONVERT(bigint,DATALENGTH(s.ContentRegex)),s.ContentRegex,
-CONVERT(bigint,DATALENGTH(s.Regex)),s.Regex,CONVERT(bigint,DATALENGTH(s.MatchTarget)),s.MatchTarget,
+CONVERT(bigint,DATALENGTH(nameRule.Text)),nameRule.Text,CONVERT(bigint,DATALENGTH(contentRule.Text)),contentRule.Text,
+CONVERT(bigint,DATALENGTH(legacyRule.Text)),legacyRule.Text,CONVERT(bigint,DATALENGTH(s.MatchTarget)),s.MatchTarget,
 CONVERT(bigint,DATALENGTH(s.ResourceTypeFilter)),s.ResourceTypeFilter
-FROM (SELECT DiagramImageDefinitionKey,SortOrdinal,Id,Name,NameRegex,ContentRegex,[Regex],MatchTarget,ResourceTypeFilter,
+FROM (SELECT DiagramImageDefinitionKey,SortOrdinal,Id,Name,NameRegexContentKey,ContentRegexContentKey,RegexContentKey,MatchTarget,ResourceTypeFilter,
 CASE WHEN SortOrder>0 THEN CONVERT(bigint,SortOrder) ELSE SortOrdinal+1 END EffectiveOrder FROM surf.DiagramImageDefinition WHERE ProfileKey=1 AND AssetKey IS NOT NULL) s
+JOIN surf.TextContent nameRule ON nameRule.ContentKey=s.NameRegexContentKey
+JOIN surf.TextContent contentRule ON contentRule.ContentKey=s.ContentRegexContentKey
+JOIN surf.TextContent legacyRule ON legacyRule.ContentKey=s.RegexContentKey
 WHERE s.EffectiveOrder>@Order OR (s.EffectiveOrder=@Order AND (s.SortOrdinal>@Ordinal OR (s.SortOrdinal=@Ordinal AND s.DiagramImageDefinitionKey>@Key)))
 ORDER BY s.EffectiveOrder,s.SortOrdinal,s.DiagramImageDefinitionKey;
 """, Key((long)pageSize + 1, "@Take"), Key(after?.EffectiveOrder ?? -1, "@Order"), Key(after?.Ordinal ?? -1, "@Ordinal"), Key(after?.Key ?? 0));
