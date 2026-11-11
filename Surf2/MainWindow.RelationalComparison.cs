@@ -12,7 +12,7 @@ namespace Surf2;
 public partial class MainWindow
 {
     private readonly Dictionary<Task, AccessCancellation> _relationalComparisonOperations = [];
-    private readonly HashSet<Window> _relationalComparisonWindows = [];
+    private readonly Dictionary<Window, RelationalComparisonResultSession?> _relationalComparisonWindows = [];
     private readonly HashSet<Task> _relationalComparisonRetirements = [];
     private AccessCancellation? _activeRelationalComparison;
     private long _relationalComparisonGeneration;
@@ -102,12 +102,12 @@ public partial class MainWindow
             try
             {
                 if (!await CanPublishRelationalComparisonAsync(service, scope, generation, ct)) return;
-                var window = new RelationalComparisonResultWindow(result, title,
+                var session = new RelationalComparisonResultSession(result, left.Resource, right.Resource,
                     (row, token) => RunRelationalComparisonAsync((s, currentScope, g, cancellation) =>
                         OpenRelationalComparisonCoreAsync(s, row.Left, row.Right, currentScope, g, cancellation), token),
-                    (updated, token) => service.CompareCollectionsAsync(left, right, scope, updated, token), options) { Owner = this };
-                result = null; // The window owns cleanup, including a failed Show.
-                OwnRelationalComparisonWindow(window); return;
+                    (updated, token) => service.CompareCollectionsAsync(left, right, scope, updated, token), options);
+                result = null; // The session owns cleanup, including a failed Show.
+                OwnRelationalComparisonWindow(session.View, session); return;
             }
             finally { if (result != null) await result.DisposeAsync(); }
         }
@@ -132,9 +132,12 @@ public partial class MainWindow
             try
             {
                 if (!await CanPublishRelationalComparisonAsync(service, scope, generation, ct)) return;
-                var window = new RelationalComparisonResultWindow(result, title + " (key: " + string.Join(", ", keys) + ")") { Owner = this };
+                var table = (left ?? right)!.Resource;
+                var session = new RelationalComparisonResultSession(result,
+                    left?.Resource ?? CreateMissingComparisonResource(table, "(missing left)"),
+                    right?.Resource ?? CreateMissingComparisonResource(table, "(missing right)"), keys);
                 result = null;
-                OwnRelationalComparisonWindow(window); return;
+                OwnRelationalComparisonWindow(session.View, session); return;
             }
             finally { if (result != null) await result.DisposeAsync(); }
         }
@@ -148,23 +151,22 @@ public partial class MainWindow
         var template = (left ?? right)!.Resource;
         OwnRelationalComparisonWindow(new ResourceFileDiffWindow(left?.Resource ?? CreateMissingComparisonResource(template, "(missing left)"),
             right?.Resource ?? CreateMissingComparisonResource(template, "(missing right)"), leftText, rightText,
-            options.IgnoreWhitespace, options.IgnoreCase) { Owner = this });
+            options.IgnoreWhitespace, options.IgnoreCase));
         StatusText = title + ".";
     }
-    private void OwnRelationalComparisonWindow(Window window)
+    private void OwnRelationalComparisonWindow(Window window, RelationalComparisonResultSession? session = null)
     {
-        _relationalComparisonWindows.Add(window);
+        _relationalComparisonWindows.Add(window, session);
         window.Closed += (_, _) =>
         {
             _relationalComparisonWindows.Remove(window);
-            if (window is RelationalComparisonResultWindow resultWindow)
-                TrackRelationalComparisonRetirement(resultWindow.Disposal);
+            if (session != null) TrackRelationalComparisonRetirement(session.Disposal);
         };
-        try { window.Show(); StatusText = window.Title + "."; }
+        try { window.Owner = this; window.Show(); StatusText = window.Title + "."; }
         catch
         {
             _relationalComparisonWindows.Remove(window);
-            TrackRelationalComparisonRetirement(CloseRelationalComparisonWindowAsync(window));
+            TrackRelationalComparisonRetirement(CloseRelationalComparisonWindowAsync(window, session));
             throw;
         }
     }
@@ -218,17 +220,17 @@ public partial class MainWindow
         ++_relationalComparisonGeneration;
         var operations = _relationalComparisonOperations.ToArray();
         var windows = _relationalComparisonWindows.ToArray();
-        _relationalComparisonWindows.ExceptWith(windows);
+        _relationalComparisonWindows.Clear();
         _activeRelationalComparison = null;
         foreach (var operation in operations) _ = operation.Value.Cancel();
         // Close starts synchronously, while each window's SQL/file work drains
         // asynchronously. Closed handlers and this owner share the same task.
-        foreach (var window in windows)
-            TrackRelationalComparisonRetirement(CloseRelationalComparisonWindowAsync(window));
+        foreach (var (window, session) in windows)
+            TrackRelationalComparisonRetirement(CloseRelationalComparisonWindowAsync(window, session));
     }
-    private static async Task CloseRelationalComparisonWindowAsync(Window window)
+    private static async Task CloseRelationalComparisonWindowAsync(Window window, RelationalComparisonResultSession? session)
     {
-        if (window is RelationalComparisonResultWindow resultWindow) await resultWindow.CloseAndDisposeAsync();
+        if (session != null) await session.CloseAndDisposeAsync();
         else window.Close();
     }
     private void TrackRelationalComparisonRetirement(Task work)

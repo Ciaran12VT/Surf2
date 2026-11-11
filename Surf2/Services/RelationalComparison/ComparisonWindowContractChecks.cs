@@ -3,10 +3,12 @@ using System.Reflection;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.Xml.Linq;
+using Surf2.Models;
 using Surf2.Storage.Relational.Capture;
 
 namespace Surf2.Services.RelationalComparison;
@@ -43,7 +45,11 @@ public static class ComparisonWindowContractChecks
         string root = Path.Combine(Path.GetTempPath(), "Surf2ComparisonWindowChecks", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var stores = new List<ComparisonResultStore>();
-        var windows = new List<RelationalComparisonResultWindow>();
+        var sessions = new List<RelationalComparisonResultSession>();
+        var leftTable = Resource("Current rows", "Table Data", ComparisonResourceKind.TableData);
+        var rightTable = Resource("Saved rows", "Table Data", ComparisonResourceKind.TableData);
+        var leftCollection = Resource("Current database", "Database", ComparisonResourceKind.DatabaseSnapshot, collection: true);
+        var rightCollection = Resource("Saved version", "Database Version", ComparisonResourceKind.DatabaseSnapshot, collection: true);
         var rebuildStarted = Signal();
         var releaseRebuild = new TaskCompletionSource<ComparisonResultStore>(TaskCreationOptions.RunContinuationsAsynchronously);
         var operationStarted = Signal();
@@ -56,12 +62,15 @@ public static class ComparisonWindowContractChecks
             var old = await ResultAsync("old");
             var replacement = await ResultAsync("stale");
             CancellationToken rebuildToken = default;
-            var retired = new RelationalComparisonResultWindow(old, "Retired context", rebuild: (_, ct) =>
-            {
-                rebuildToken = ct; rebuildStarted.TrySetResult();
-                return releaseRebuild.Task; // Deliberately ignores cancellation like a late provider.
-            });
-            windows.Add(retired);
+            var retired = new RelationalComparisonResultSession(old, leftCollection, rightCollection,
+                (_, _) => Task.CompletedTask,
+                (_, ct) =>
+                {
+                    rebuildToken = ct; rebuildStarted.TrySetResult();
+                    return releaseRebuild.Task; // Deliberately ignores cancellation like a late provider.
+                }, new());
+            sessions.Add(retired);
+            ((ResourceCollectionDiffWindow)retired.View).IgnoreWhitespaceCheckBox.IsChecked = true;
             Start(retired, Method(retired, "RebuildAsync").CreateDelegate<Func<CancellationToken, Task>>(retired));
             await rebuildStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
             long generation = Field<long>(retired, "_generation");
@@ -70,45 +79,58 @@ public static class ComparisonWindowContractChecks
                 "Closing synchronously generation-fences and cancels delayed comparison work");
             Check(!retirement.IsCompleted, "Window retirement waits for a provider that ignores cancellation");
             var freshResult = await ResultAsync("fresh");
-            var fresh = new RelationalComparisonResultWindow(freshResult, "New context");
-            windows.Add(fresh);
-            foreach (string field in new[] { "_previous", "_next", "_export" })
+            var fresh = new RelationalComparisonResultSession(freshResult, leftTable, rightTable, ["Id"]);
+            sessions.Add(fresh);
+            foreach (string field in new[] { "_previous", "_next" })
                 Check(DependencyPropertyHelper.GetValueSource(Field<Button>(fresh, field), Control.StyleProperty).IsExpression,
-                    "Comparison toolbar resolves its Surf style dynamically: " + field);
+                    "Comparison paging resolves its Surf style dynamically: " + field);
             if (appXamlPath != null)
             {
                 var styles = ReadButtonStyles(appXamlPath);
-                fresh.Resources.MergedDictionaries.Add(styles);
-                foreach (string field in new[] { "_previous", "_next", "_export" })
+                fresh.View.Resources.MergedDictionaries.Add(styles);
+                foreach (string field in new[] { "_previous", "_next" })
                 {
                     var button = Field<Button>(fresh, field);
-                    string key = field == "_export" ? "SurfSaveButtonStyle" : "SurfPrimaryButtonStyle";
-                    Check(ReferenceEquals(button.Style, styles[key]) && button.Foreground is SolidColorBrush foreground &&
+                    Check(ReferenceEquals(button.Style, styles["SurfPrimaryButtonStyle"]) && button.Foreground is SolidColorBrush foreground &&
                         foreground.Color == Colors.White && button.Background is SolidColorBrush background &&
                         Contrast(foreground.Color, background.Color) >= 4.5,
-                        "Actual Surf toolbar style uses readable white text: " + field);
+                        "Actual Surf paging style uses readable white text: " + field);
                 }
             }
             releaseRebuild.TrySetResult(replacement);
             await retirement.WaitAsync(TimeSpan.FromSeconds(10));
             Check(ReferenceEquals(Field<ComparisonResultStore>(retired, "_result"), old) &&
-                Field<DataGrid>(retired, "_grid").ItemsSource == null,
+                Field<Selector>(retired, "_rows").ItemsSource == null,
                 "Late rebuilt results are never bound to a retired WPF window");
             await DisposedAsync(old, "Retired window disposes its original spool");
             await DisposedAsync(replacement, "Retired window disposes the late replacement spool");
             Check(!Field<bool>(fresh, "_closing") && (await freshResult.ReadPageAsync()).Rows.Single().Key == "fresh" &&
                 Directory.EnumerateDirectories(root).Count() == 1,
                 "Completing old retirement leaves a subsequent new-context window and spool intact");
+            var table = (TableDataDiffWindow)fresh.View;
+            Check(table.Title == "Compare Current rows and Saved rows" &&
+                table.HeaderText.Text == "Table data: Current rows  <->  Saved rows" &&
+                table.RowsDataGrid.Columns.Select(column => column.Header as string)
+                    .SequenceEqual(new[] { "Key", "Status", "Changed Columns", "Left Row", "Right Row" }) &&
+                table.RowsDataGrid.GridLinesVisibility == DataGridGridLinesVisibility.Horizontal,
+                "Relational table results use the master title, heading and five table columns");
+            await RefreshAsync(fresh);
+            Check(table.StatusTextBlock.Text == "Key: Id. 1 identical, 0 altered, 0 added, 0 removed." &&
+                Field<StackPanel>(fresh, "_paging").Visibility == Visibility.Collapsed && table.FindPanel.Visibility == Visibility.Collapsed &&
+                Field<MenuItem>(fresh, "_export").IsEnabled,
+                "One-page table results retain the master summary with optional paging, Find and CSV export");
             // Two competing refreshes exercise cancellation/generation of actual result pages.
             Start(fresh, Method(fresh, "RefreshAsync").CreateDelegate<Func<CancellationToken, Task>>(fresh));
             Field<TextBox>(fresh, "_search").Text = "no-match";
             await WaitForTasksAsync(fresh);
-            Check(Field<DataGrid>(fresh, "_grid").ItemsSource is IReadOnlyList<ComparisonResultRow> { Count: 0 },
+            Check(Field<Selector>(fresh, "_rows").ItemsSource is IReadOnlyList<ComparisonResultRow> { Count: 0 },
                 "Newer WPF search refresh wins over the cancelled earlier page");
             await fresh.CloseAndDisposeAsync();
 
-            var callbacks = new RelationalComparisonResultWindow(await ResultAsync("callbacks"), "Cancellation callbacks");
-            windows.Add(callbacks);
+            await CheckCollectionAsync();
+
+            var callbacks = new RelationalComparisonResultSession(await ResultAsync("callbacks"), leftTable, rightTable, ["Id"]);
+            sessions.Add(callbacks);
             CancellationToken operationToken = default;
             Start(callbacks, async ct =>
             {
@@ -139,7 +161,7 @@ public static class ComparisonWindowContractChecks
         {
             if (stores.Count > 1) releaseRebuild.TrySetResult(stores[1]);
             releaseOperation.TrySetResult(); releaseCallback.Set();
-            foreach (var window in windows) await window.CloseAndDisposeAsync();
+            foreach (var session in sessions) await session.CloseAndDisposeAsync();
             foreach (var store in stores) await store.DisposeAsync();
             Directory.Delete(root); // Exact UUID-owned directory, now empty; never recursive.
         }
@@ -158,6 +180,69 @@ public static class ComparisonWindowContractChecks
             var result = await ComparisonTableEngine.BuildAsync(input, input, ["Id"], new() { StagingDirectory = root });
             stores.Add(result); return result;
         }
+
+        async Task CheckCollectionAsync()
+        {
+            Guid epoch = Guid.NewGuid();
+            var folder = new RelationalComparisonTarget(Resource("Procedures", "Folder", ComparisonResourceKind.DatabaseObjectFolder, collection: true), epoch);
+            var before = new RelationalComparisonTarget(Resource("inspect.sql", "Stored Procedure", ComparisonResourceKind.StoredProcedure),
+                epoch, SnapshotKey: 1, ResourceKey: 2, RevisionKey: 3, VersionKey: 4, HistoricalEntryKey: 5);
+            var after = before with { SnapshotKey = 6, ResourceKey = 7, RevisionKey = 8, VersionKey = null, HistoricalEntryKey = null };
+            var result = ComparisonResultStore.FromMemory(
+            [
+                new("Procedures", "Different", "", "Procedures", "Procedures", IsCollection: true, Left: folder, Right: folder),
+                new("Procedures/inspect.sql", "Different", "", "inspect.sql", "inspect.sql", Left: before, Right: after),
+                new("Procedures/verify.sql", "Missing right", "", "verify.sql", "", Left: before)
+            ], new() { PageSize = 2 });
+            stores.Add(result);
+            ComparisonResultRow? opened = null;
+            var session = new RelationalComparisonResultSession(result, leftCollection, rightCollection,
+                (row, _) => { opened = row; return Task.CompletedTask; },
+                (_, _) => throw new InvalidOperationException("The collection fixture does not change comparison options."), new());
+            sessions.Add(session);
+            var collection = (ResourceCollectionDiffWindow)session.View;
+            var list = collection.RowsListView;
+            Check(collection.Title == "Compare Current database and Saved version" &&
+                collection.LeftHeaderText.Text == "Database: Current database" && collection.RightHeaderText.Text == "Database Version: Saved version" &&
+                ((GridView)list.View).Columns.Select(column => column.Header as string).SequenceEqual(new[] { "Left", "Status", "Right" }) &&
+                list.ContextMenu.Items.OfType<MenuItem>().Select(item => item.Header as string).SequenceEqual(new[] { "Compare with...", "Exclude" }),
+                "Relational collection results use the master headings, side-by-side columns and row actions");
+            await RefreshAsync(session);
+            var rows = (ResourceCollectionDiffRow[])list.ItemsSource;
+            var previous = Field<Button>(session, "_previous");
+            var next = Field<Button>(session, "_next");
+            var paging = Field<StackPanel>(session, "_paging");
+            Check(rows.Length == 2 && rows[0].IsFolder && rows[0].IsExpanded && rows[1].Indent == 18 &&
+                rows[1].DisplayStatus == "Different" && paging.Visibility == Visibility.Visible && !previous.IsEnabled && next.IsEnabled,
+                "Collection results show only one page of colored, indented master rows at a time");
+
+            session.Open(rows[1]);
+            await WaitForTasksAsync(session);
+            Check(opened?.Left == before && opened?.Right == after,
+                "Opening a rendered row retains its exact historical and current targets");
+            next.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitForTasksAsync(session);
+            Check(((ResourceCollectionDiffRow[])list.ItemsSource).Single().DisplayStatus == "Missing right" &&
+                previous.IsEnabled && !next.IsEnabled, "Collection paging reaches the final row without materializing both pages");
+            previous.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await WaitForTasksAsync(session);
+
+            rows = (ResourceCollectionDiffRow[])list.ItemsSource;
+            list.SelectedItem = rows[0];
+            list.ContextMenu.Items.OfType<MenuItem>().Single(item => item.Header as string == "Exclude")
+                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            Check(rows.All(row => row.DisplayStatus == "Excluded" && !row.CanOpenDiff) && list.Items.Count == 2,
+                "Excluding a folder marks it and its descendants while keeping their rows visible");
+            session.Toggle(rows[0]);
+            await WaitForTasksAsync(session);
+            Check(((ResourceCollectionDiffRow[])list.ItemsSource).Single() is { IsFolder: true, IsExpanded: false, IsExcluded: true } &&
+                paging.Visibility == Visibility.Collapsed, "The inline folder toggle collapses descendants and removes unnecessary paging");
+            collection.SearchTextBox.Text = " inspect ";
+            await WaitForTasksAsync(session);
+            Check(((ResourceCollectionDiffRow[])list.ItemsSource).Single() is { RelativePath: "Procedures/inspect.sql", IsExcluded: true },
+                "Find reaches descendants of collapsed folders and retains exclusion styling");
+            await session.CloseAndDisposeAsync();
+        }
     }
 
     private static async IAsyncEnumerable<CaptureRow> Rows(string key)
@@ -167,11 +252,14 @@ public static class ComparisonWindowContractChecks
         yield return new(0, document.RootElement.Clone(), document.RootElement.GetRawText().Length * 2L);
     }
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static ComparisonResource Resource(string name, string type, ComparisonResourceKind kind, bool collection = false) =>
+        new(name, type, name, kind, kind.ToString(), collection, kind == ComparisonResourceKind.StoredProcedure,
+            kind == ComparisonResourceKind.TableData, name);
     private static ResourceDictionary ReadButtonStyles(string path)
     {
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
-        string[] keys = ["SurfActionButtonStyle", "SurfPrimaryButtonStyle", "SurfSaveButtonStyle", "SurfCloseButtonStyle"];
+        string[] keys = ["SurfActionButtonStyle", "SurfPrimaryButtonStyle"];
         var source = XDocument.Load(path);
         var dictionary = new XElement(presentation + "ResourceDictionary", new XAttribute(XNamespace.Xmlns + "x", xaml.NamespaceName),
             source.Descendants(presentation + "Style").Where(style => keys.Contains((string?)style.Attribute(xaml + "Key")))
@@ -190,13 +278,18 @@ public static class ComparisonWindowContractChecks
         BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new MissingMethodException(name);
     private static T Field<T>(object target, string name) => (T)(target.GetType().GetField(name,
         BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(target) ?? throw new MissingFieldException(name));
-    private static void Start(RelationalComparisonResultWindow window, Func<CancellationToken, Task> action) =>
-        Method(window, "Start").Invoke(window, [action]);
-    private static async Task WaitForTasksAsync(RelationalComparisonResultWindow window)
+    private static void Start(RelationalComparisonResultSession session, Func<CancellationToken, Task> action) =>
+        Method(session, "Start").Invoke(session, [action]);
+    private static Task RefreshAsync(RelationalComparisonResultSession session)
     {
-        while (Field<HashSet<Task>>(window, "_tasks").Count != 0)
+        Start(session, Method(session, "RefreshAsync").CreateDelegate<Func<CancellationToken, Task>>(session));
+        return WaitForTasksAsync(session);
+    }
+    private static async Task WaitForTasksAsync(RelationalComparisonResultSession session)
+    {
+        while (Field<HashSet<Task>>(session, "_tasks").Count != 0)
         {
-            await Task.WhenAll(Field<HashSet<Task>>(window, "_tasks").ToArray()).WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.WhenAll(Field<HashSet<Task>>(session, "_tasks").ToArray()).WaitAsync(TimeSpan.FromSeconds(10));
             await Task.Yield();
         }
     }

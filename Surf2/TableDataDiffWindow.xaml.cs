@@ -5,11 +5,15 @@ namespace Surf2;
 
 public partial class TableDataDiffWindow : Window
 {
-    public TableDataDiffWindow(TableDataDiffResult result)
+    internal TableDataDiffWindow(ComparisonResource left, ComparisonResource right)
     {
         InitializeComponent();
-        Title = $"Compare {result.Left.DisplayName} and {result.Right.DisplayName}";
-        HeaderText.Text = $"Table data: {result.Left.DisplayName}  <->  {result.Right.DisplayName}";
+        Title = $"Compare {left.DisplayName} and {right.DisplayName}";
+        HeaderText.Text = $"Table data: {left.DisplayName}  <->  {right.DisplayName}";
+    }
+
+    public TableDataDiffWindow(TableDataDiffResult result) : this(result.Left, result.Right)
+    {
         RowsDataGrid.ItemsSource = result.Rows;
 
         int added = result.Rows.Count(row => row.Status == TableDataDiffStatus.Added);

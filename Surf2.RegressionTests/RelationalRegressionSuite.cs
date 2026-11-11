@@ -110,6 +110,11 @@ if (args.Contains("--scope-ui", StringComparer.Ordinal))
     await StorageRegressionSuite.RunScopePickerUiChecksAsync(Check);
     if (args.Length == 1) { Console.WriteLine($"Passed {passed} scope UI scenarios."); return; }
 }
+if (args.Contains("--comparison-ui", StringComparer.Ordinal))
+{
+    foreach (string name in await Surf2.Services.RelationalComparison.ComparisonWindowContractChecks.RunAsync()) Check(true, name);
+    if (args.Length == 1) { Console.WriteLine($"Passed {passed} comparison UI checks."); return; }
+}
 if (args.Contains("--scope-dirty", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunRuntimeScopeSwitchDirtyChecksAsync(Check);

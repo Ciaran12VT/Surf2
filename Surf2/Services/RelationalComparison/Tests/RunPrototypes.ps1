@@ -19,8 +19,8 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $assembly = Join-Path $OutputDirectory 'ComparisonPrototypes.dll'
 $files = @('ComparisonContracts.cs','ComparisonScratch.cs','ComparisonExternalSort.cs','ComparisonDiskKeys.cs',
     'ComparisonCodecs.cs','ComparisonTextHash.cs','ComparisonResultStore.cs','ComparisonCollectionEngine.cs',
-    'RelationalComparisonService.Tables.cs','ComparisonContractChecks.cs','RelationalComparisonResultWindow.cs',
-    'ComparisonWindowContractChecks.cs','ComparisonScratchContractChecks.cs') | ForEach-Object { Join-Path $source $_ }
+    'RelationalComparisonService.Tables.cs','ComparisonContractChecks.cs','ComparisonScratchContractChecks.cs') |
+    ForEach-Object { Join-Path $source $_ }
 $surf = Split-Path -Parent (Split-Path -Parent $source)
 $files += Join-Path $surf 'Storage/Relational/Access/AccessCancellation.cs'
 $files += Join-Path $surf 'Services/OwnedScratchLease.cs'

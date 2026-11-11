@@ -3,18 +3,20 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Collections.ObjectModel;
 using Surf2.Models;
+using Surf2.Services.RelationalComparison;
 
 namespace Surf2;
 
 public partial class ResourceCollectionDiffWindow : Window
 {
-    private readonly IReadOnlyList<ResourceCollectionDiffRow> _allRows;
+    private readonly IReadOnlyList<ResourceCollectionDiffRow> _allRows = [];
     private readonly ObservableCollection<ResourceCollectionDiffRow> _visibleRows = [];
     private readonly Action<ResourceCollectionDiffRow> _openRow;
     private readonly ComparisonResource _leftCollection;
     private readonly ComparisonResource _rightCollection;
-    private readonly IReadOnlyList<ResourceComparisonDocument> _leftDocuments;
-    private readonly IReadOnlyList<ResourceComparisonDocument> _rightDocuments;
+    private readonly IReadOnlyList<ResourceComparisonDocument> _leftDocuments = [];
+    private readonly IReadOnlyList<ResourceComparisonDocument> _rightDocuments = [];
+    private readonly RelationalComparisonResultSession? _relational;
     private bool _ignoreWhitespace;
     private bool _ignoreCase;
     private bool _loadingDiffOptions;
@@ -26,7 +28,6 @@ public partial class ResourceCollectionDiffWindow : Window
         bool ignoreWhitespaceByDefault,
         bool ignoreCaseByDefault)
     {
-        InitializeComponent();
         _openRow = openRow;
         _allRows = result.Rows.ToList();
         _leftCollection = result.Left;
@@ -47,19 +48,38 @@ public partial class ResourceCollectionDiffWindow : Window
             .Select(group => group.First())
             .OrderBy(document => document.RelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        Title = $"Compare {result.Left.DisplayName} and {result.Right.DisplayName}";
-        LeftHeaderText.Text = $"{result.Left.TypeDisplay}: {result.Left.DisplayName}";
-        RightHeaderText.Text = $"{result.Right.TypeDisplay}: {result.Right.DisplayName}";
+        InitializePresentation(ignoreWhitespaceByDefault, ignoreCaseByDefault);
         RowsListView.ItemsSource = _visibleRows;
-        _ignoreWhitespace = ignoreWhitespaceByDefault;
-        _ignoreCase = ignoreCaseByDefault;
-        _loadingDiffOptions = true;
-        IgnoreWhitespaceCheckBox.IsChecked = _ignoreWhitespace;
-        IgnoreCaseCheckBox.IsChecked = _ignoreCase;
-        _loadingDiffOptions = false;
         RecalculateStatuses();
         RefreshVisibleRows();
         UpdateStatusText();
+    }
+
+    internal ResourceCollectionDiffWindow(
+        ComparisonResource left,
+        ComparisonResource right,
+        ComparisonOptions options,
+        RelationalComparisonResultSession session)
+    {
+        _relational = session;
+        _openRow = session.Open;
+        _leftCollection = left;
+        _rightCollection = right;
+        InitializePresentation(options.IgnoreWhitespace, options.IgnoreCase);
+    }
+
+    private void InitializePresentation(bool ignoreWhitespaceByDefault, bool ignoreCaseByDefault)
+    {
+        _loadingDiffOptions = true;
+        InitializeComponent();
+        Title = $"Compare {_leftCollection.DisplayName} and {_rightCollection.DisplayName}";
+        LeftHeaderText.Text = $"{_leftCollection.TypeDisplay}: {_leftCollection.DisplayName}";
+        RightHeaderText.Text = $"{_rightCollection.TypeDisplay}: {_rightCollection.DisplayName}";
+        _ignoreWhitespace = ignoreWhitespaceByDefault;
+        _ignoreCase = ignoreCaseByDefault;
+        IgnoreWhitespaceCheckBox.IsChecked = _ignoreWhitespace;
+        IgnoreCaseCheckBox.IsChecked = _ignoreCase;
+        _loadingDiffOptions = false;
     }
 
     private void RowsListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -86,6 +106,12 @@ public partial class ResourceCollectionDiffWindow : Window
             return;
         }
 
+        if (_relational != null)
+        {
+            _relational.Exclude(row);
+            return;
+        }
+
         row.IsExcluded = true;
         if (!row.IsFolder)
         {
@@ -104,6 +130,12 @@ public partial class ResourceCollectionDiffWindow : Window
 
     private void CompareWithMenuItem_Click(object sender, RoutedEventArgs e)
     {
+        if (_relational != null)
+        {
+            _relational.CompareWith();
+            return;
+        }
+
         if (_leftDocuments.Count == 0 && _rightDocuments.Count == 0)
         {
             StatusTextBlock.Text = "There are no comparable resources in either collection.";
@@ -167,7 +199,7 @@ public partial class ResourceCollectionDiffWindow : Window
 
     private void DiffOptionCheckBox_CheckedChanged(object sender, RoutedEventArgs e)
     {
-        if (_loadingDiffOptions)
+        if (_loadingDiffOptions || _relational != null)
         {
             return;
         }
@@ -180,6 +212,11 @@ public partial class ResourceCollectionDiffWindow : Window
 
     private void SearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (_loadingDiffOptions || _relational != null)
+        {
+            return;
+        }
+
         _searchText = SearchTextBox.Text.Trim();
         RefreshVisibleRows();
     }
@@ -188,6 +225,12 @@ public partial class ResourceCollectionDiffWindow : Window
     {
         if ((sender as FrameworkElement)?.DataContext is not ResourceCollectionDiffRow row || !row.IsFolder)
         {
+            return;
+        }
+
+        if (_relational != null)
+        {
+            _relational.Toggle(row);
             return;
         }
 

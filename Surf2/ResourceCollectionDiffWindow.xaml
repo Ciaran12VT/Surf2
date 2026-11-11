@@ -191,9 +191,11 @@
             </ListView.View>
         </ListView>
 
-        <TextBlock x:Name="StatusTextBlock"
-                   Grid.Row="2"
-                   Margin="0,10,0,0"
-                   Foreground="#64748B" />
+        <DockPanel Grid.Row="2" Margin="0,10,0,0">
+            <ContentControl x:Name="ResultCommands" DockPanel.Dock="Right" Focusable="False" />
+            <TextBlock x:Name="StatusTextBlock"
+                       Foreground="#64748B"
+                       TextWrapping="Wrap" />
+        </DockPanel>
     </Grid>
 </Window>

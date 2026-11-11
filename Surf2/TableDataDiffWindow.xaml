@@ -14,11 +14,27 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TextBlock x:Name="HeaderText"
-                   FontSize="13"
-                   FontWeight="SemiBold"
-                   Foreground="#1F2937"
-                   TextTrimming="CharacterEllipsis" />
+        <DockPanel>
+            <DockPanel x:Name="FindPanel"
+                       DockPanel.Dock="Right"
+                       Margin="12,0,0,0"
+                       Visibility="Collapsed">
+                <TextBlock Margin="0,0,6,0"
+                           VerticalAlignment="Center"
+                           Text="Find:" />
+                <TextBox x:Name="SearchTextBox"
+                         Width="260"
+                         Height="26"
+                         VerticalContentAlignment="Center"
+                         AutomationProperties.Name="Find comparison rows" />
+            </DockPanel>
+            <TextBlock x:Name="HeaderText"
+                       VerticalAlignment="Center"
+                       FontSize="13"
+                       FontWeight="SemiBold"
+                       Foreground="#1F2937"
+                       TextTrimming="CharacterEllipsis" />
+        </DockPanel>
 
         <DataGrid x:Name="RowsDataGrid"
                   Grid.Row="1"
@@ -46,8 +62,14 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <TextBlock x:Name="StatusTextBlock"
-                   Grid.Row="2"
-                   Foreground="#64748B" />
+        <DockPanel Grid.Row="2">
+            <ContentControl x:Name="ResultCommands"
+                            DockPanel.Dock="Right"
+                            Focusable="False" />
+            <TextBlock x:Name="StatusTextBlock"
+                       VerticalAlignment="Center"
+                       Foreground="#64748B"
+                       TextWrapping="Wrap" />
+        </DockPanel>
     </Grid>
 </Window>
