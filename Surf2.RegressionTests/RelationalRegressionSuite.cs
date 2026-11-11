@@ -17,6 +17,12 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--history-file-rows", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunHistoryFileRowsChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} history file-row checks.");
+    return;
+}
 if (args.Contains("--export-folder", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunDatabaseExportFolderImportChecksAsync(Check);

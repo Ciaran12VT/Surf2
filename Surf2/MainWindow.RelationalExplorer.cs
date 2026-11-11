@@ -845,44 +845,58 @@ public partial class MainWindow
 
     private string? GetRelationalTextFileNameSeed(string path) => _relationalTextFileNameSeeds.GetValueOrDefault(path);
 
-    private ContextMenu CreateRelationalObjectExplorerContextMenu(FileSystemNode node)
+    private ContextMenu? CreateRelationalObjectExplorerContextMenu(FileSystemNode node)
     {
         var menu = new ContextMenu();
-        if (!_relationalExplorerNodes.TryGetValue(node, out var summary)) return menu;
-        bool present = summary.Exists && summary.IsScopeResourceLoaded;
+        if (!_relationalExplorerNodes.TryGetValue(node, out var summary)) return null;
         // Comparison owner supplies the actual selected-source route. These availability checks use summaries only.
         bool canCompare = GetRelationalComparisonAvailability(node, out bool canCompareTableData);
-        if (present && canCompare)
+        // Master offers comparison for a loaded physical reference even if its path
+        // is currently missing; executing it reports the unavailable source.
+        canCompare |= summary.IsScopeResourceLoaded && !summary.Exists && !summary.IsVirtualFolder &&
+            summary.ResourceKind is ResourceKind.File or ResourceKind.Folder;
+        if (_activeScope != null && canCompare)
         {
-            Add(summary.Category == ExplorerCategory.Tables ? "Compare Table Metadata" : "Compare",
+            Add(summary.Role == ExplorerNodeRole.DatabaseDocument && summary.Category == ExplorerCategory.Tables ? "Compare Table Metadata" : "Compare",
                 () => CompareObjectExplorerNodeAsync(node, false));
             if (canCompareTableData)
                 Add("Compare Table Data", () => CompareObjectExplorerNodeAsync(node, true));
         }
-        if (summary.IsScopeResourceRoot && summary.SnapshotKey.HasValue)
+        if (_activeScope != null && summary.IsScopeResourceRoot && summary.SnapshotKey.HasValue)
         {
-            Add("Edit Database", () => InvokeSnapshotAsync(RelationalDatabaseEditHandler), RelationalDatabaseEditHandler != null);
-            Add("Capture from SQL", () => InvokeSnapshotAsync(RelationalDatabaseCaptureHandler), RelationalDatabaseCaptureHandler != null);
+            Separate();
             Add("History", () => InvokeSnapshotAsync(RelationalDatabaseHistoryHandler), RelationalDatabaseHistoryHandler != null);
             Add("Export DB Data", () => InvokeSnapshotAsync(RelationalDatabaseExportHandler), RelationalDatabaseExportHandler != null);
         }
-        if (summary.IsScopeResourceRoot && !string.IsNullOrEmpty(summary.ScopeResourceId))
+        if (CanToggleScopeResourceLoad(node))
         {
+            Separate();
             Add(summary.IsScopeResourceLoaded ? "Unload" : "Load", () => SetScopeResourceLoadedAsync(summary.ScopeResourceId, !summary.IsScopeResourceLoaded));
             Add("Remove From Scope", () => RemoveScopeResourceAsync(summary.ScopeResourceId), RelationalScopeResourceRemovalHandler != null);
         }
-        if (summary.IsVirtualFolder) Add("Disband", () => DisbandVirtualFolderAsync(summary.VirtualFolderId));
-        Add("New Virtual Folder Here", () => CreateVirtualFolderAsync(summary.NaturalParentKey));
-        if (summary.IsDirectory && !summary.IsVirtualFolder && summary.IsScopeResourceLoaded)
-            Add("New Virtual Folder Inside", () => CreateVirtualFolderAsync(summary.NodeKey));
-        Add("Add Existing Resources", AddRelationalExistingResourcesAsync);
-        if (summary.Role == ExplorerNodeRole.DiagramRoot) Add("New Diagram", () => { CreateNewBlankDiagram(); return Task.CompletedTask; });
-        if (present && !summary.IsVirtualDocument && summary.ResourceKind is ResourceKind.File or ResourceKind.Folder && !summary.IsVirtualFolder)
+        if (summary.IsVirtualFolder) { Separate(); Add("Disband", () => DisbandVirtualFolderAsync(summary.VirtualFolderId)); }
+        if (_activeScope != null)
+        {
+            Separate();
+            Add("New Virtual Folder Here", () => CreateVirtualFolderAsync(summary.NaturalParentKey));
+            if (summary.IsDirectory && !summary.IsVirtualFolder && summary.IsScopeResourceLoaded)
+                Add("New Virtual Folder Inside", () => CreateVirtualFolderAsync(summary.NodeKey));
+            Separate(); Add("Add Existing Resources", AddRelationalExistingResourcesAsync);
+        }
+        if (summary.Role == ExplorerNodeRole.DiagramRoot)
+        {
+            Separate(); Add("New Diagram", () => { CreateNewBlankDiagram(); return Task.CompletedTask; });
+        }
+        if (CanOpenContainingFolder(node))
+        {
+            Separate();
             Add("Open Containing Folder", () => { OpenContainingFolder(node); return Task.CompletedTask; });
-        return menu;
+        }
+        return menu.Items.Count == 0 ? null : menu;
+        void Separate() { if (menu.Items.Count > 0) menu.Items.Add(new Separator()); }
         void Add(string label, Func<Task> command, bool enabled = true)
         {
-            var item = new MenuItem { Header = label, IsEnabled = enabled, ToolTip = enabled ? null : "Selected relational operation is not connected." };
+            var item = new MenuItem { Header = label, IsEnabled = enabled };
             item.Click += async (_, _) =>
             {
                 try { await command(); }

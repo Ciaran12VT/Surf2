@@ -112,6 +112,7 @@ public static partial class StorageRegressionSuite
             var content = (FrameworkElement)main.Content; main.Content = null; root.Children.Add(content);
             host.RootVisual = root; RuntimeWpfArrange(root, 1280, 820); await RuntimeWpfIdleAsync();
             var scope = RuntimeWpfField<ExplorerScope>(main, "_relationalExplorerScope");
+            VerifyV2ExplorerMenuParity(main, scope, folder, callerPath, check);
             var selector = RuntimeWpfNamed<ComboBox>(main, "ObjectExplorerSearchTargetComboBox");
             var footer = RuntimeWpfNamed<Border>(main, "RelationalIndexFooter");
             var index = RuntimeWpfField<ScopeReferenceIndex>(main, "_referenceIndex");
@@ -164,6 +165,7 @@ public static partial class StorageRegressionSuite
                 check, "V2 startup builds no per-file SQL index documents");
             RuntimeWpfArrange(root, 1280, 820); await RuntimeWpfIdleAsync();
             RuntimeWpfSaveRender(root, outputDir, "v2-workspace-ready", 1280, 820, check);
+            await VerifyV2HistoryUiParityAsync(main, scope, models.Snapshots, outputDir, check);
             await fixture.VerifySourceUnchangedAsync(check);
         }
         finally

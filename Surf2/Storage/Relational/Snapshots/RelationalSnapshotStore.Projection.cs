@@ -8,6 +8,8 @@ public sealed partial class RelationalSnapshotStore
     public async Task<HistoricalSnapshotContext> OpenHistoricalSnapshotAsync(long snapshotKey, long versionKey, CancellationToken ct = default)
     {
         var connection = await Open(ct).ConfigureAwait(false);
+        if (versionKey == 0)
+            return await HistoricalSnapshotContext.BuildInitialCurrentAsync(connection, Epoch, snapshotKey, ct).ConfigureAwait(false);
         return await HistoricalSnapshotContext.BuildAsync(connection, Epoch, snapshotKey, versionKey, ct).ConfigureAwait(false);
     }
 

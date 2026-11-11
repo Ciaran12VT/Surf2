@@ -100,10 +100,9 @@ public partial class MainWindow
     private async Task OpenRelationalHistoryAsync(SnapshotWorkflow work, ExplorerNodeSummary node)
     {
         var snapshot = await RequireRelationalSnapshotNodeAsync(work, node);
-        var window = new RelationalSnapshotHistoryWindow(work.Runtime, snapshot) { Owner = this };
+        var window = new RelationalSnapshotHistoryWindow(work.Runtime, snapshot) { Owner = this, VerifyWriteAccess = RequireRelationalWrite };
         window.OpenRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => OpenRelationalHistoricalResourceAsync(w, e.Target), window);
-        window.CompareRequested += (_, e) => QueueRelationalSnapshotWorkflow(async w =>
-        { RequireRelationalSnapshotContext(w); await OpenRelationalComparisonAsync(e.Left, e.Right); }, window);
+        window.CompareWithRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CompareRelationalHistoryWithAsync(w, e.Target), window);
         window.CopyRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CopyRelationalHistoricalResourceAsync(w, e.Target), window);
         window.SnapshotChanged += _ => QueueRelationalSnapshotWorkflow(RefreshRelationalSnapshotRootsAsync);
         OwnRelationalSnapshotWindow(work, window, window.CloseAndDrainAsync);
@@ -203,43 +202,9 @@ public partial class MainWindow
         await using var version = await OpenRelationalHistoricalTargetAsync(work, target);
         var entry = await FindRelationalHistoricalEntryAsync(version, target, work.Token);
         var service = new RelationalSnapshotHistoryService(work.Runtime);
-        var preview = await Task.Run(() => service.ReadPreviewAsync(version, entry, work.Token), work.Token);
+        string content = await Task.Run(() => service.ReadFileTextAsync(version, entry, work.Token), work.Token);
         RequireRelationalSnapshotContext(work);
-        string title = target.Resource.DisplayName + " (historical version " + target.VersionKey + ")";
-        if (preview.CapturedData is { } captured)
-        {
-            IReadOnlyList<GridColumn>? columns = null;
-            int units = 0; long bytes = 0;
-            await foreach (var tableEntry in version.StreamAsync(HistoricalCollection.Tables, work.Token))
-            {
-                RequireRelationalHistoricalMetadataBudget(ref units, ref bytes, tableEntry);
-                if (!StringComparer.OrdinalIgnoreCase.Equals(tableEntry.SchemaName, entry.SchemaName) ||
-                    !StringComparer.OrdinalIgnoreCase.Equals(tableEntry.Name, entry.Name)) continue;
-                var table = await version.ReadTableMetadataAsync(tableEntry, work.Token);
-                if (table.Columns.Count != 0) columns = table.Columns.OrderBy(c => c.Column.Ordinal)
-                    .Select((c, i) => new GridColumn(i, c.Column.ColumnName, c.Column.ColumnName)).ToArray();
-                break;
-            }
-            IDataGridSource? source = await CapturedGridSource.OpenAsync(work.Runtime.CapturedData, captured.Summary.DataSetKey,
-                cancellationToken: work.Token, displayColumns: columns);
-            try
-            {
-                RequireRelationalSnapshotContext(work);
-                var grid = new HistoricalGridWindow(title, source) { Owner = this }; source = null;
-                OwnRelationalSnapshotWindow(work, grid, grid.CloseAndDrainAsync); ShowRelationalSnapshotWindow(grid);
-            }
-            finally { if (source != null) await source.DisposeAsync(); }
-        }
-        else
-        {
-            var window = new Window { Owner = this, Title = title, Width = 1000, Height = 650, MinWidth = 640, MinHeight = 420,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Content = new TextBox { Text = preview.Text ?? "", FontFamily = new("Consolas"), FontSize = 13, IsReadOnly = true,
-                    AcceptsReturn = true, AcceptsTab = true, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                    HorizontalScrollBarVisibility = ScrollBarVisibility.Auto } };
-            OwnRelationalSnapshotWindow(work, window, () => { window.Close(); return Task.CompletedTask; }); ShowRelationalSnapshotWindow(window);
-        }
-        StatusText = title + ".";
+        ShowRelationalHistoryFileDiff(work, target.Resource.DisplayName, target.Resource.DisplayName, content, content, viewOnly: true);
     }
     private async Task<HistoricalSnapshotContext> OpenRelationalHistoricalTargetAsync(SnapshotWorkflow work, RelationalComparisonTarget target)
     {
@@ -275,30 +240,37 @@ public partial class MainWindow
         var service = new RelationalSnapshotHistoryService(work.Runtime);
         if (target.Resource.IsCollection)
         {
-            var prompt = new RenameResourceWindow(target.Resource.DisplayName) { Owner = this, Title = "Copy Database Version" };
+            var prompt = new RenameResourceWindow(target.Resource.DisplayName) { Owner = this, Title = "Restore Database Version To" };
             OwnRelationalSnapshotWindow(work, prompt, () => { prompt.Close(); return Task.CompletedTask; });
             if (prompt.ShowDialog() != true) return;
             await SaveRelationalScopeAsync(work.Token); RequireRelationalSnapshotContext(work);
             var result = await Task.Run(() => service.RestoreVersionAsCopyAsync(target.SnapshotKey!.Value, target.VersionKey!.Value,
                 work.Scope.Snapshot(), work.Scope.ExpectedToken, prompt.ResourceName, ct: work.Token), work.Token);
             RequireRelationalSnapshotContext(work); await AdoptRelationalSnapshotScopeAsync(work, result);
-            StatusText = "Copied historical version to " + result.Snapshot.DisplayName + "."; return;
+            StatusText = "Restored historical version as '" + result.Snapshot.DisplayName + "'."; return;
         }
         var entry = await FindRelationalHistoricalEntryAsync(source, target, work.Token);
-        string? definition = null;
-        if (entry.Collection == HistoricalCollection.Objects)
-            definition = (await Task.Run(() => service.ReadPreviewAsync(source, entry, work.Token), work.Token)).Text;
+        string content = await Task.Run(() => service.ReadFileTextAsync(source, entry, work.Token), work.Token);
+        var snapshots = await ReadRelationalHistoryScopeSnapshotsAsync(work, useAliases: false);
+        var targets = snapshots.Select(snapshot => new DatabaseRestoreTargetOption(snapshot.DisplayName, snapshot.SnapshotId))
+            .OrderBy(option => option.DisplayName, StringComparer.OrdinalIgnoreCase).ToArray();
         RequireRelationalSnapshotContext(work);
-        var picker = new SnapshotCopyTargetWindow(work.Runtime, entry.SchemaName, entry.Name, definition) { Owner = this };
-        OwnRelationalSnapshotWindow(work, picker, picker.CloseAndDrainAsync);
-        bool? selected; try { selected = picker.ShowDialog(); } finally { await picker.CloseAndDrainAsync(); }
-        if (selected != true || picker.SelectedSnapshot is not { } destination) return;
+        if (targets.Length == 0) { StatusText = "No target databases are available."; return; }
+        var picker = new DatabaseHistoryRestoreToWindow(targets,
+            targets.FirstOrDefault(option => option.SnapshotId == source.Header.SnapshotId),
+            CreateRestoredResourceName(SqlName.FormatPlainMultipartName(entry.SchemaName, entry.Name)),
+            content, entry.Collection == HistoricalCollection.Objects) { Owner = this, Title = "Restore File To" };
+        OwnRelationalSnapshotWindow(work, picker, () => { picker.Close(); return Task.CompletedTask; });
+        if (picker.ShowDialog() != true || picker.SelectedTarget is not { } selected) return;
+        var destination = snapshots.First(snapshot => snapshot.SnapshotId == selected.SnapshotId);
+        (string schemaName, string objectName) = SplitDatabaseObjectName(picker.ResourceName);
         RequireRelationalSnapshotContext(work);
         var resultResource = await Task.Run(() => service.RestoreResourceAsCopyAsync(
             new(work.Runtime.Session.Epoch, destination.SnapshotKey, destination.RowVersion), target.SnapshotKey!.Value,
-            target.VersionKey!.Value, target.ResourceKey!.Value, picker.SchemaName, picker.ResourceName, picker.EditedText, work.Token), work.Token);
+            target.VersionKey!.Value, target.ResourceKey!.Value, schemaName, objectName,
+            entry.Collection == HistoricalCollection.Objects ? picker.EditedContent : null, work.Token), work.Token);
         RequireRelationalSnapshotContext(work); await RefreshRelationalSnapshotRootsAsync(work);
-        StatusText = "Copied historical resource into " + resultResource.Snapshot.DisplayName + ".";
+        StatusText = "Restored historical resource to " + resultResource.Snapshot.DisplayName + " as " + schemaName + "." + objectName + ".";
     }
 
     private async Task AdoptRelationalSnapshotScopeAsync(SnapshotWorkflow work, RelationalCaptureResult result)
@@ -353,6 +325,7 @@ public partial class MainWindow
                 RelationalDatabaseCaptureWindow capture => capture.CloseCompletion,
                 HistoricalGridWindow grid => grid.CloseCompletion,
                 SnapshotCopyTargetWindow picker => picker.CloseCompletion,
+                RelationalHistoryFilePickerWindow picker => picker.CloseCompletion,
                 _ => Task.CompletedTask
             });
         };

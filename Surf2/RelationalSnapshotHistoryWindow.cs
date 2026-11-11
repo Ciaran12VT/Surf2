@@ -1,296 +1,379 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
+using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using Microsoft.Win32;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
+using Surf2.Models;
 using Surf2.Services;
 using Surf2.Services.RelationalComparison;
 using Surf2.Services.RelationalSnapshots;
 using Surf2.Storage.Relational.Snapshots;
-using static Surf2.Services.RelationalSnapshots.SnapshotWindowStyles;
 
 namespace Surf2;
 
 public sealed class RelationalHistoryOpenEventArgs(RelationalComparisonTarget target) : EventArgs
 { public RelationalComparisonTarget Target { get; } = target; }
-public sealed class RelationalHistoryCompareEventArgs(RelationalComparisonTarget left, RelationalComparisonTarget right) : EventArgs
-{ public RelationalComparisonTarget Left { get; } = left; public RelationalComparisonTarget Right { get; } = right; }
 
-public sealed class RelationalSnapshotHistoryWindow : Window
+/// <summary>The master's history presentation, backed by immutable SQL version locators.</summary>
+public sealed partial class RelationalSnapshotHistoryWindow : Window
 {
     private readonly RelationalRuntime _runtime;
     private readonly RelationalSnapshotHistoryService _service;
     private SnapshotSummary _snapshot;
-    private readonly ComboBox _histories = new() { DisplayMemberPath = nameof(SnapshotHistorySummary.HistoryKey), MinWidth = 130 };
-    private readonly DataGrid _versions = ListGrid(DataGridSelectionMode.Extended), _changes = ListGrid(), _resources = ListGrid();
-    private readonly TextBox _preview = new() { IsReadOnly = true, AcceptsReturn = true, FontFamily = new("Consolas"),
-        VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
-    private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly Button _historyNext = ToolButton("\uE72A", "Next history page"), _versionNext = ToolButton("\uE72A", "Next version page"),
-        _changeNext = ToolButton("\uE72A", "Next change page"), _resourceNext = ToolButton("\uE72A", "Next resource page");
-    private readonly Button _open = Command("Open"), _compareResource = Command("Compare Current"), _compareVersions = Command("Compare Versions"),
-        _restoreVersion = Command("Restore Version", "SurfSaveButtonStyle"), _restoreResource = Command("Restore Resource", "SurfSaveButtonStyle"), _export = ToolButton("\uE74E", "Export selected resource"),
-        _exportVersion = Command("Export Version"), _copyVersion = Command("Copy Version", "SurfSaveButtonStyle"), _copyResource = Command("Copy Resource", "SurfSaveButtonStyle"),
-        _close = Command("Close", "SurfCloseButtonStyle"), _reload = ToolButton("\uE72C", "Reload selected snapshot");
-    private SnapshotCursor? _historyCursor, _versionCursor, _changeCursor, _resourceCursor;
-    private SnapshotVersionSummary? _version;
-    private HistoricalSnapshotContext? _context;
-    private CancellationTokenSource? _operation;
-    private Task _cancellation = Task.CompletedTask, _closingTask = Task.CompletedTask;
+    private readonly List<HistoryVersionRow> _versionRows = [];
+    private readonly ObservableCollection<HistoryRow> _visibleRows = [];
+    private readonly DispatcherTimer _filterTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
     private readonly TaskCompletionSource _closeCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private bool _busy, _closing, _allowClose, _closed;
+    private CancellationTokenSource? _operation;
+    private Task _cancellation = Task.CompletedTask;
+    private Task? _initialization;
+    private bool _busy, _closing, _allowClose, _closed, _filterPending;
+    private long _filterGeneration, _metadataBytes;
+    private int _metadataUnits;
+    private string? _lineCountFailure;
     public SnapshotSummary? UpdatedSnapshot { get; private set; }
     public bool RequiresReload { get; private set; }
     public Exception? CleanupFailure { get; private set; }
+    public Action? VerifyWriteAccess { get; set; }
     public Task CloseCompletion => _closeCompletion.Task;
+    public Task Initialization => _initialization ?? Task.CompletedTask;
+    public Task CurrentOperation { get; private set; } = Task.CompletedTask;
     public Task CloseAndDrainAsync() { Dispatcher.VerifyAccess(); Close(); return CloseCompletion; }
     public event EventHandler<RelationalHistoryOpenEventArgs>? OpenRequested;
-    public event EventHandler<RelationalHistoryCompareEventArgs>? CompareRequested;
+    public event EventHandler<RelationalHistoryOpenEventArgs>? CompareWithRequested;
     public event EventHandler<RelationalHistoryOpenEventArgs>? CopyRequested;
     public event Action<SnapshotSummary>? SnapshotChanged;
 
     public RelationalSnapshotHistoryWindow(RelationalRuntime runtime, SnapshotSummary snapshot)
     {
-        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime)); _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
-        _service = new(runtime); Title = "Snapshot History: " + snapshot.DisplayName; Width = 1000; Height = 680; MinWidth = 800; MinHeight = 560;
-        ThemeWindow(this);
-        WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var root = new Grid { Margin = new(16) };
-        root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new());
-        root.RowDefinitions.Add(new() { Height = new(130) }); root.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        var header = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(0, 0, 0, 8) };
-        header.Children.Add(new TextBlock { Text = "History", VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 8, 0) });
-        header.Children.Add(_histories); header.Children.Add(_historyNext); header.Children.Add(_reload); Add(root, header, 0);
-        var lists = new Grid(); lists.ColumnDefinitions.Add(new() { Width = new(290) }); lists.ColumnDefinitions.Add(new());
-        _versions.Columns.Add(Column("Version", nameof(SnapshotVersionSummary.VersionName)));
-        _versions.Columns.Add(Column("Number", nameof(SnapshotVersionSummary.VersionNumber), 60));
-        _versions.Columns.Add(Column("Changes", nameof(SnapshotVersionSummary.ChangeCount), 65));
-        _changes.Columns.Add(Column("Resource", nameof(SnapshotChangeSummary.DisplayName)));
-        _changes.Columns.Add(Column("Kind", nameof(SnapshotChangeSummary.ChangeKind), 100));
-        _resources.Columns.Add(Column("Resource", nameof(HistoricalSnapshotEntry.Name)));
-        _resources.Columns.Add(Column("Schema", nameof(HistoricalSnapshotEntry.SchemaName), 100));
-        _resources.Columns.Add(Column("Kind", nameof(HistoricalSnapshotEntry.Collection), 100));
-        ThemeGrid(_versions); ThemeGrid(_changes); ThemeGrid(_resources);
-        var versions = PagedList(_versions, _versionNext); versions.Margin = new(0, 0, 10, 0); lists.Children.Add(versions);
-        var tabs = new TabControl(); tabs.Items.Add(new TabItem { Header = "Resources", Content = PagedList(_resources, _resourceNext) });
-        tabs.Items.Add(new TabItem { Header = "Changes", Content = PagedList(_changes, _changeNext) });
-        Grid.SetColumn(tabs, 1); lists.Children.Add(tabs); Add(root, lists, 1);
-        _preview.Margin = new(0, 8, 0, 8); Add(root, _preview, 2);
-        var footer = new StackPanel(); footer.Children.Add(Status(_status));
-        var commands = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
-        foreach (var button in new[] { _open, _compareResource, _compareVersions, _restoreResource, _restoreVersion,
-            _copyResource, _copyVersion, _export, _exportVersion, _close }) commands.Children.Add(button);
-        footer.Children.Add(commands); Add(root, footer, 3); Content = root;
-        _histories.SelectionChanged += async (_, _) => await RunAsync(() => ReadVersionsAsync(null));
-        _versions.SelectionChanged += async (_, e) =>
+        _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
+        _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
+        _service = new(runtime);
+        InitializeComponent();
+        Title = "History - " + snapshot.DisplayName;
+        HeaderTextBlock.Text = "Database History: " + snapshot.DisplayName;
+        RowsListView.ItemsSource = _visibleRows;
+        RowsListView.ContextMenu = new ContextMenu();
+        _filterTimer.Tick += async (_, _) =>
         {
-            if (e.AddedItems.Count != 0 && e.AddedItems[0] is SnapshotVersionSummary selected) await RunAsync(() => SelectVersionAsync(selected));
-            if (!_busy) SetBusy(false);
+            _filterTimer.Stop();
+            if (_busy) { _filterPending = true; return; }
+            await RunAsync(ApplyFilterAsync);
         };
-        _resources.SelectionChanged += async (_, _) => await RunAsync(PreviewResourceAsync);
-        _changes.SelectionChanged += async (_, _) => await RunAsync(PreviewChangeAsync);
-        _historyNext.Click += async (_, _) => await RunAsync(() => ReadHistoriesAsync(_historyCursor));
-        _versionNext.Click += async (_, _) => await RunAsync(() => ReadVersionsAsync(_versionCursor));
-        _changeNext.Click += async (_, _) => await RunAsync(() => ReadChangesAsync(_changeCursor));
-        _resourceNext.Click += async (_, _) => await RunAsync(() => ReadResourcesAsync(_resourceCursor));
-        _reload.Click += async (_, _) => await RunAsync(ReloadAsync);
-        _open.Click += async (_, _) => await RunAsync(async () => OpenRequested?.Invoke(this,
-            new(await _service.ResourceTargetAsync(SelectedContext(), SelectedResource(), Token))));
-        _compareResource.Click += async (_, _) => await RunAsync(CompareResourceAsync);
-        _compareVersions.Click += (_, _) => CompareVersions();
-        _restoreVersion.Click += async (_, _) => await RunAsync(() => RestoreAsync(false));
-        _restoreResource.Click += async (_, _) => await RunAsync(() => RestoreAsync(true));
-        _copyResource.Click += async (_, _) => await RunAsync(async () => CopyRequested?.Invoke(this,
-            new(await _service.ResourceTargetAsync(SelectedContext(), SelectedResource(), Token))));
-        _copyVersion.Click += (_, _) => { if (_version != null) CopyRequested?.Invoke(this,
-            new(_service.VersionTarget(_snapshot, _version.VersionKey, _version.VersionName))); };
-        _export.Click += async (_, _) => await ExportAsync(false); _exportVersion.Click += async (_, _) => await ExportAsync(true);
-        _close.Click += (_, _) => Close(); Closing += OnClosing; Closed += (_, _) =>
+        Loaded += async (_, _) => await InitializeAsync();
+        Closing += OnClosing;
+        Closed += (_, _) =>
         {
-            _closed = true;
+            _closed = true; _filterTimer.Stop();
             if (CleanupFailure is { } failure) _closeCompletion.TrySetException(failure);
             else _closeCompletion.TrySetResult();
         };
-        Loaded += async (_, _) => await RunAsync(() => ReadHistoriesAsync(null)); SetBusy(false);
     }
-    private CancellationToken Token => _operation!.Token;
-    private HistoricalSnapshotContext SelectedContext() => _context ?? throw new InvalidOperationException("Select a version.");
-    private HistoricalSnapshotEntry SelectedResource() => _resources.SelectedItem as HistoricalSnapshotEntry ?? throw new InvalidOperationException("Select a resource.");
-    private async Task ReadHistoriesAsync(SnapshotCursor? cursor)
+    public Task InitializeAsync()
     {
-        var page = await _service.ListHistoriesAsync(_snapshot.SnapshotKey, cursor: cursor, ct: Token);
-        _historyCursor = page.Next; _histories.ItemsSource = page.Items; _histories.SelectedIndex = page.Items.Count == 0 ? -1 : 0;
-        await ReadVersionsAsync(null);
+        Dispatcher.VerifyAccess();
+        return _initialization ??= RunAsync(ReadVersionsAsync);
     }
-    private async Task ReadVersionsAsync(SnapshotCursor? cursor)
-    {
-        if (_histories.SelectedItem is not SnapshotHistorySummary history) { _versions.ItemsSource = null; await ClearVersionAsync(); return; }
-        var page = await _service.ListVersionsAsync(_snapshot.SnapshotKey, history.HistoryKey, cursor: cursor, ct: Token);
-        _versionCursor = page.Next; _versions.ItemsSource = page.Items; _versions.SelectedIndex = page.Items.Count == 0 ? -1 : 0;
-        if (page.Items.Count != 0) await SelectVersionAsync(page.Items[0]); else await ClearVersionAsync();
-    }
-    private async Task ClearVersionAsync()
-    {
-        if (_context != null) { await _context.DisposeAsync(); _context = null; }
-        _version = null; _resourceCursor = _changeCursor = null; _resources.ItemsSource = _changes.ItemsSource = null; _preview.Clear();
-    }
-    private async Task SelectVersionAsync(SnapshotVersionSummary version)
-    {
-        await ClearVersionAsync();
-        _context = await _service.OpenVersionAsync(_snapshot.SnapshotKey, version.VersionKey, Token); _version = version;
-        await ReadResourcesAsync(null); await ReadChangesAsync(null);
-        _status.Text = version.VersionName + " / " + version.VersionNumber + " / " + version.ChangeCount + " change(s).";
-    }
-    private async Task ReadResourcesAsync(SnapshotCursor? cursor)
-    {
-        var page = await SelectedContext().ReadResources(null, null, 50, cursor, Token);
-        _resources.ItemsSource = page.Items; _resourceCursor = page.Next; _preview.Clear();
-    }
-    private async Task ReadChangesAsync(SnapshotCursor? cursor)
-    {
-        if (_version == null) return;
-        var page = await _service.ListChangesAsync(_snapshot.SnapshotKey, _version.VersionKey, cursor: cursor, ct: Token);
-        _changes.ItemsSource = page.Items; _changeCursor = page.Next;
-    }
-    private async Task PreviewResourceAsync()
-    {
-        if (_resources.SelectedItem is not HistoricalSnapshotEntry entry || _context == null) return;
-        DisplayPreview(await Task.Run(() => _service.ReadPreviewAsync(_context, entry, Token), Token));
-    }
-    private async Task PreviewChangeAsync()
-    {
-        if (_changes.SelectedItem is not SnapshotChangeSummary change) return;
-        DisplayPreview(await Task.Run(() => _service.ReadPreviousPayloadAsync(_snapshot.SnapshotKey, change, Token), Token));
-    }
-    private void DisplayPreview(RelationalHistoryPreview preview)
-    {
-        _preview.Text = preview.Text is { Length: > 32768 } text ? text[..32768] : preview.Text ?? "";
-        if (preview.Text is { Length: > 32768 }) _status.Text = "Text preview limited to 32,768 characters. The selected export remains complete.";
-        else if (preview.CapturedData is { } data) _status.Text = data.Summary.ActualRowCount + " captured row(s), " + data.Columns.Count + " column(s).";
-        else if (preview.Text == null) _status.Text = "This change has no previous payload.";
-    }
-    private async Task CompareResourceAsync()
-    {
-        var historical = await _service.ResourceTargetAsync(SelectedContext(), SelectedResource(), Token);
-        var current = await _runtime.Snapshots.ResolveResourceAsync(historical.ResourceKey!.Value, ct: Token)
-            ?? throw new InvalidOperationException("The resource is absent from the current snapshot. Compare versions instead.");
-        CompareRequested?.Invoke(this, new(historical, RelationalComparisonService.FromResource(current, _runtime.Session.Epoch)));
-    }
-    private void CompareVersions()
-    {
-        var selected = _versions.SelectedItems.Cast<SnapshotVersionSummary>().ToArray();
-        if (selected.Length != 2) { _status.Text = "Select two versions."; return; }
-        CompareRequested?.Invoke(this, new(_service.VersionTarget(_snapshot, selected[0].VersionKey, selected[0].VersionName),
-            _service.VersionTarget(_snapshot, selected[1].VersionKey, selected[1].VersionName)));
-    }
-    private async Task RestoreAsync(bool resourceOnly)
-    {
-        if (_version == null) throw new InvalidOperationException("Select a version.");
-        var expected = new SnapshotRuntimeToken(_runtime.Session.Epoch, _snapshot.SnapshotKey, _snapshot.RowVersion);
-        long version = _version.VersionKey; long? resource = resourceOnly ? SelectedResource().ResourceKey : null;
-        var token = Token;
-        var result = await Task.Run(() => resource is { } key
-            ? _service.RestoreResourceAsync(expected, version, key, ct: token)
-            : _service.RestoreVersionAsync(expected, version, ct: token), token);
-        _snapshot = result.Snapshot; UpdatedSnapshot = result.Snapshot;
-        SnapshotChanged?.Invoke(result.Snapshot);
-        await ClearVersionAsync(); await ReadHistoriesAsync(null); _status.Text = "Restored as a new version.";
-    }
-    private async Task ExportAsync(bool wholeVersion)
-    {
-        if (_busy || _version == null) return;
-        if (!wholeVersion && _resources.SelectedItem is not HistoricalSnapshotEntry) return;
-        bool data = !wholeVersion && SelectedResource().Collection == HistoricalCollection.TableDataSets;
-        var dialog = new SaveFileDialog { FileName = wholeVersion ? "snapshot-version.zip" : data ? "captured-table.csv" : "resource.sql",
-            Filter = wholeVersion ? "ZIP archive|*.zip" : data ? "CSV|*.csv" : "SQL text|*.sql", OverwritePrompt = true };
-        if (dialog.ShowDialog(this) != true) return;
-        await RunAsync(async () =>
-        {
-            var token = Token;
-            if (wholeVersion) await Task.Run(() => _service.ExportVersionAsync(_snapshot.SnapshotKey, _version.VersionKey, dialog.FileName, ct: token), token);
-            else
-            {
-                var context = SelectedContext(); var resource = SelectedResource();
-                await Task.Run(() => _service.ExportResourceAsync(context, resource, dialog.FileName, token), token);
-            }
-            _status.Text = "Export complete.";
-        });
-    }
-    private async Task ReloadAsync()
+    public Task ReloadRowsAsync() => RunAsync(async () =>
     {
         _snapshot = await _runtime.Snapshots.GetSnapshotAsync(_snapshot.SnapshotKey, Token) ?? throw new SnapshotConcurrencyException();
-        RequiresReload = false; await ClearVersionAsync(); await ReadHistoriesAsync(null);
-    }
-    private async Task RunAsync(Func<Task> action)
+        RequiresReload = false; await ReadVersionsAsync();
+    });
+    private CancellationToken Token => _operation!.Token;
+    private async Task ReadVersionsAsync()
     {
-        if (_busy || _closed || _closing) return;
-        _busy = true; _operation = new(); _cancellation = Task.CompletedTask; SetBusy(true);
+        _versionRows.Clear(); _metadataBytes = 0; _metadataUnits = 0; _lineCountFailure = null;
+        _visibleRows.Clear(); StatusTextBlock.Text = "Loading history…";
+        var token = Token;
+        var versions = await Task.Run(() => _service.GetDisplayedVersionsAsync(_snapshot, token), token);
+        foreach (var version in versions)
+        {
+            ReserveMetadata(version.VersionName.Length * 2L + 256);
+            var row = new HistoryVersionRow(version); _versionRows.Add(row);
+            // An initial version's file count is its reconstructed resource count, not ChangeCount.
+            // This reads identity metadata only; definitions and captured rows remain unloaded.
+            if (version.IsInitial) await LoadChildrenAsync(row);
+        }
+        RefreshVisibleRows();
+        if (!string.IsNullOrWhiteSpace(HistoryFilterTextBox.Text)) await ApplyFilterAsync();
+    }
+    private void ReserveMetadata(long bytes)
+    {
+        _metadataBytes = checked(_metadataBytes + bytes);
+        if (++_metadataUnits > 100_000 || _metadataBytes > 32L * 1024 * 1024)
+            throw new InvalidDataException("This history exceeds the window's metadata budget. Open a smaller snapshot history.");
+    }
+    private async Task LoadChildrenAsync(HistoryVersionRow row)
+    {
+        if (row.ChildrenLoaded) return;
+        StatusTextBlock.Text = "Loading " + row.VersionColumn + "…";
+        var token = Token;
+        var files = await Task.Run(() => _service.ListFileRowsAsync(row.Version, token), token);
+        foreach (var file in files) ReserveMetadata(384 + 2L * (file.DisplayName.Length + file.RelativePath.Length + file.OriginalResourceKey.Length));
+        row.Children.AddRange(files.OrderBy(f => DatabaseHistoryDisplay.GetResourceTypeSortOrder(f.Kind))
+            .ThenBy(f => DatabaseHistoryDisplay.GetFileNameDisplay(f.DisplayName, f.RelativePath), StringComparer.OrdinalIgnoreCase)
+            .Select(file => new HistoryFileRow(row, file)));
+        row.ChildrenLoaded = true;
+    }
+    private void RefreshVisibleRows()
+    {
+        if (_closed) return;
+        var selected = RowsListView.SelectedItem as HistoryRow;
+        string filter = HistoryFilterTextBox.Text.Trim(); bool filtered = filter.Length != 0;
+        int files = 0, versions = 0; _visibleRows.Clear();
+        foreach (var version in _versionRows)
+        {
+            var children = filtered ? version.Children.Where(c => c.Matches(filter)).ToList() : version.Children;
+            if (filtered && !version.Matches(filter) && children.Count == 0) continue;
+            _visibleRows.Add(version); versions++;
+            if (!version.IsExpanded && !filtered) continue;
+            foreach (var child in children) { _visibleRows.Add(child); files++; }
+        }
+        if (selected != null && _visibleRows.Contains(selected)) RowsListView.SelectedItem = selected;
+        StatusTextBlock.Text = filtered ? $"{files} matching file(s) in {versions} version(s)." : $"{_versionRows.Count} version(s).";
+        if (_lineCountFailure != null) StatusTextBlock.Text += " Some line counts are unavailable: " + _lineCountFailure;
+    }
+    private async Task ApplyFilterAsync()
+    {
+        _filterPending = false; long generation = _filterGeneration;
+        if (!string.IsNullOrWhiteSpace(HistoryFilterTextBox.Text))
+            foreach (var version in _versionRows)
+            {
+                if (generation != _filterGeneration) { _filterPending = true; return; }
+                await LoadChildrenAsync(version);
+            }
+        string filter = HistoryFilterTextBox.Text.Trim();
+        if (filter.Length > 0 && filter.All(c => char.IsDigit(c) || c is '+' or '-'))
+            await LoadCountsAsync(_versionRows.SelectMany(v => v.Children).ToArray(), generation);
+        RefreshVisibleRows(); await LoadVisibleCountsAsync(generation);
+    }
+    private Task LoadVisibleCountsAsync(long generation) => LoadCountsAsync(_visibleRows.OfType<HistoryFileRow>().ToArray(), generation);
+    private async Task LoadCountsAsync(IReadOnlyList<HistoryFileRow> rows, long generation)
+    {
+        foreach (var group in rows.Where(row => !row.CountsLoaded).GroupBy(row => row.File.Version.VersionKey))
+        {
+            if (generation != _filterGeneration) { _filterPending = true; return; }
+            var byFile = group.ToDictionary(row => row.File);
+            var files = byFile.Keys.ToArray(); var token = Token;
+            // One worker reuses the selected/previous SQL projections. Each UI update is
+            // awaited, so close waits for the iterator and its contexts to retire.
+            await Task.Run(async () =>
+            {
+                await foreach (var counts in _service.CountFileLinesAsync(files, token).ConfigureAwait(false))
+                {
+                    bool keepGoing = await Dispatcher.InvokeAsync(() =>
+                    {
+                        if (generation != _filterGeneration) { _filterPending = true; return false; }
+                        var row = byFile[counts.File];
+                        if (counts.Error is { } error) { row.SetCountError(error); _lineCountFailure ??= error; }
+                        else row.SetCounts(counts.Added, counts.Removed);
+                        return !_closing;
+                    });
+                    if (!keepGoing) break;
+                }
+            }, token);
+        }
+        RefreshVisibleRows();
+    }
+    private void HistoryFilterTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        ++_filterGeneration;
+        if (_initialization == null || _closing || _closed) return;
+        if (string.IsNullOrWhiteSpace(HistoryFilterTextBox.Text)) RefreshVisibleRows();
+        _filterPending = true; _filterTimer.Stop(); _filterTimer.Start();
+    }
+    public async Task ToggleRowAsync(HistoryVersionRow row)
+    {
+        if (_busy || _closing || _closed) return;
+        if (row.IsExpanded) { row.IsExpanded = false; RefreshVisibleRows(); return; }
+        await RunAsync(async () =>
+        {
+            await LoadChildrenAsync(row); row.IsExpanded = true; RefreshVisibleRows();
+            await LoadVisibleCountsAsync(_filterGeneration);
+        });
+    }
+    private async void RowsListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (FindAncestor<Button>(e.OriginalSource as DependencyObject) != null) return;
+        if (RowsListView.SelectedItem is HistoryVersionRow row) await ToggleRowAsync(row);
+    }
+    private async void ToggleRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if ((sender as FrameworkElement)?.DataContext is HistoryVersionRow row) await ToggleRowAsync(row);
+    }
+    private void RowsListView_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (FindAncestor<ListViewItem>(e.OriginalSource as DependencyObject) is { } item) { item.IsSelected = true; item.Focus(); }
+    }
+    private void RowsListView_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        ContextMenu? menu = RowsListView.SelectedItem switch
+        {
+            HistoryVersionRow version => CreateVersionContextMenu(version),
+            HistoryFileRow file => CreateFileContextMenu(file), _ => null
+        };
+        if (menu == null || _busy || _closing) { e.Handled = true; return; }
+        RowsListView.ContextMenu = menu;
+    }
+    private ContextMenu CreateVersionContextMenu(HistoryVersionRow row)
+    {
+        var menu = new ContextMenu();
+        AddMenuItem(menu, "Compare With...", () => { CompareWithRequested?.Invoke(this, new(VersionTarget(row))); return Task.CompletedTask; });
+        AddMenuItem(menu, "Restore", () => RestoreVersionAsync(row), write: true);
+        AddMenuItem(menu, "Restore To...", () => { VerifyWriteAccess?.Invoke(); CopyRequested?.Invoke(this, new(VersionTarget(row))); return Task.CompletedTask; }, write: true);
+        return menu;
+    }
+    private ContextMenu CreateFileContextMenu(HistoryFileRow row)
+    {
+        var menu = new ContextMenu();
+        AddMenuItem(menu, "View", () => ViewFileAsync(row));
+        AddMenuItem(menu, "Compare With...", async () => CompareWithRequested?.Invoke(this, new(await FileTargetAsync(row))));
+        AddMenuItem(menu, "Restore", () => RestoreFileAsync(row), write: true);
+        AddMenuItem(menu, "Restore To...", async () => { VerifyWriteAccess?.Invoke(); CopyRequested?.Invoke(this, new(await FileTargetAsync(row))); }, write: true);
+        return menu;
+    }
+    private void AddMenuItem(ContextMenu menu, string header, Func<Task> action, bool write = false)
+    {
+        var item = new MenuItem { Header = header, IsEnabled = !_busy && !_closing && (!write || !RequiresReload) };
+        item.Click += async (_, _) => await RunAsync(action); menu.Items.Add(item);
+    }
+    private RelationalComparisonTarget VersionTarget(HistoryVersionRow row)
+    {
+        var target = _service.VersionTarget(_snapshot, row.Version.VersionKey, row.Version.VersionName);
+        return target with { Resource = target.Resource with { DisplayName = _snapshot.DisplayName + " " + row.Version.VersionName } };
+    }
+    private Task<RelationalComparisonTarget> FileTargetAsync(HistoryFileRow row) => _service.FileTargetAsync(row.File, Token);
+    private async Task ViewFileAsync(HistoryFileRow row)
+    {
+        if (row.File.Entry != null) { OpenRequested?.Invoke(this, new(await FileTargetAsync(row))); return; }
+        string text = row.File.RelativePath + " does not exist in " + row.File.Version.VersionName + ".";
+        string label = row.NameColumn + " (" + row.File.Version.VersionName + ")";
+        var resource = new ComparisonResource(label, "Database Resource", label, ComparisonResourceKind.StoredProcedure,
+            "DatabaseResource", false, true, false, label);
+        var window = new ResourceFileDiffWindow(resource, resource, text, text, false, false, startInUnifiedMode: true)
+        { Owner = this, Title = row.NameColumn + " - " + row.File.Version.VersionName };
+        window.Show();
+    }
+    private async Task RestoreVersionAsync(HistoryVersionRow row)
+    {
+        VerifyWriteAccess?.Invoke(); RequireRestoreReady();
+        if (MessageBox.Show(this, $"Restore {_snapshot.DisplayName} to {row.Version.VersionName}? This will create a new version.",
+            "Restore Database Version", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        var token = Token;
+        var restored = await Task.Run(() => _service.RestoreVersionAsync(ExpectedSnapshot(), row.Version.VersionKey, ct: token), token);
+        await AdoptRestoredSnapshotAsync(restored);
+    }
+    private async Task RestoreFileAsync(HistoryFileRow row)
+    {
+        VerifyWriteAccess?.Invoke(); RequireRestoreReady(); var token = Token;
+        var restored = await Task.Run(() => _service.RestoreResourceAsync(ExpectedSnapshot(), row.File.Version.VersionKey, row.File.ResourceKey, ct: token), token);
+        await AdoptRestoredSnapshotAsync(restored);
+    }
+    private void RequireRestoreReady()
+    { if (RequiresReload) throw new InvalidOperationException("Close and reopen history before restoring after a snapshot conflict."); }
+    private SnapshotRuntimeToken ExpectedSnapshot() => new(_runtime.Session.Epoch, _snapshot.SnapshotKey, _snapshot.RowVersion);
+    private async Task AdoptRestoredSnapshotAsync(RelationalHistoryRestoreResult restored)
+    {
+        _snapshot = restored.Snapshot; UpdatedSnapshot = restored.Snapshot;
+        SnapshotChanged?.Invoke(restored.Snapshot); await ReadVersionsAsync();
+    }
+    private Task RunAsync(Func<Task> action)
+    {
+        if (_busy || _closing || _closed) return Task.CompletedTask;
+        return CurrentOperation = RunCoreAsync(action);
+    }
+    private async Task RunCoreAsync(Func<Task> action)
+    {
+        _busy = true; _operation = new(); _cancellation = Task.CompletedTask;
         try { await action(); }
-        catch (SnapshotPublicationOutcomeUnknownException error) { RequiresReload = true; _status.Text = error.Message; }
-        catch (SnapshotConcurrencyException error) { RequiresReload = true; _status.Text = error.Message; }
-        catch (OperationCanceledException) { _status.Text = "Cancelled."; }
-        catch (Exception error) { _status.Text = error.Message; }
+        catch (SnapshotPublicationOutcomeUnknownException error) { RequiresReload = true; StatusTextBlock.Text = error.Message + " Close and reopen history before restoring."; }
+        catch (SnapshotConcurrencyException error) { RequiresReload = true; StatusTextBlock.Text = error.Message + " Close and reopen history before restoring."; }
+        catch (OperationCanceledException) when (Token.IsCancellationRequested) { StatusTextBlock.Text = "Cancelled."; }
+        catch (Exception error) { if (_closing) CleanupFailure ??= error; StatusTextBlock.Text = error.Message; }
         finally
         {
             try { await _cancellation; }
-            catch (Exception error) { CleanupFailure ??= error; _status.Text = "Cancellation failed: " + error.Message; }
-            _operation.Dispose(); _operation = null; _busy = false; SetBusy(false);
-            if (_closing) _closingTask = DrainAndCloseAsync(ClearVersionAsync());
+            catch (Exception error) { CleanupFailure ??= error; StatusTextBlock.Text = "Cancellation failed: " + error.Message; }
+            _operation.Dispose(); _operation = null; _busy = false; RowsListView.IsEnabled = !_closing;
+            if (_closing) { _allowClose = true; await Dispatcher.InvokeAsync(Close); }
+            else if (_filterPending) { _filterTimer.Stop(); _filterTimer.Start(); }
         }
-    }
-    private void SetBusy(bool busy)
-    {
-        _histories.IsEnabled = _versions.IsEnabled = _changes.IsEnabled = _resources.IsEnabled = !busy;
-        _historyNext.IsEnabled = !busy && _historyCursor != null; _versionNext.IsEnabled = !busy && _versionCursor != null;
-        _changeNext.IsEnabled = !busy && _changeCursor != null; _resourceNext.IsEnabled = !busy && _resourceCursor != null;
-        _reload.IsEnabled = !busy;
-        foreach (var button in new[] { _open, _compareResource, _restoreResource, _copyResource, _export }) button.IsEnabled = !busy && _resources.SelectedItem != null;
-        _compareVersions.IsEnabled = !busy && _versions.SelectedItems.Count == 2;
-        _restoreVersion.IsEnabled = !busy && _version != null && !RequiresReload;
-        _restoreResource.IsEnabled &= !RequiresReload; _exportVersion.IsEnabled = !busy && _version != null;
-        _copyVersion.IsEnabled = !busy && _version != null;
     }
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        if (_allowClose) return; e.Cancel = true;
-        if (_closing || !_closingTask.IsCompleted) return; _closing = true; _close.IsEnabled = false;
-        if (_busy) { _status.Text = "Cancelling..."; _cancellation = _operation!.CancelAsync(); }
-        else
+        _filterTimer.Stop();
+        if (_allowClose) return;
+        if (_closing) { e.Cancel = true; return; }
+        _closing = true; HistoryFilterTextBox.IsEnabled = false; RowsListView.IsEnabled = false;
+        if (_busy) { e.Cancel = true; StatusTextBlock.Text = "Cancelling…"; _cancellation = _operation!.CancelAsync(); }
+        else _allowClose = true;
+    }
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+    private static T? FindAncestor<T>(DependencyObject? source) where T : DependencyObject
+    {
+        while (source != null)
         {
-            var cleanup = ClearVersionAsync();
-            if (cleanup.IsCompleted)
-            {
-                try { cleanup.GetAwaiter().GetResult(); }
-                catch (Exception error) { CleanupFailure ??= error; }
-                _allowClose = true; e.Cancel = false;
-            }
-            else _closingTask = DrainAndCloseAsync(cleanup);
+            if (source is T value) return value;
+            source = source is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
         }
+        return null;
     }
-    private async Task DrainAndCloseAsync(Task cleanup)
+    public abstract class HistoryRow : INotifyPropertyChanged
     {
-        try { await cleanup; }
-        catch (Exception error) { CleanupFailure ??= error; _status.Text = error.Message; }
-        finally
-        {
-            _allowClose = true;
-            // Queue the final close even if cleanup completed between the check and await.
-            await Dispatcher.InvokeAsync(Close);
-        }
+        public event PropertyChangedEventHandler? PropertyChanged;
+        public abstract bool IsVersion { get; }
+        public abstract string VersionColumn { get; }
+        public abstract string ResourceTypeColumn { get; }
+        public abstract string NameColumn { get; }
+        public abstract string AddedColumn { get; }
+        public abstract string RemovedColumn { get; }
+        public virtual Thickness IndentMargin => new(0);
+        public virtual Visibility ToggleVisibility => Visibility.Hidden;
+        public virtual string ToggleGlyph => "";
+        public virtual string ToggleToolTip => "";
+        public virtual bool Matches(string filter) => new[] { VersionColumn, ResourceTypeColumn, NameColumn, AddedColumn, RemovedColumn }
+            .Any(value => DatabaseHistoryDisplay.ContainsText(value, filter));
+        protected void Notify([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
     }
-    private static DataGrid ListGrid(DataGridSelectionMode selection = DataGridSelectionMode.Single) => new()
-    { AutoGenerateColumns = false, IsReadOnly = true, CanUserAddRows = false, CanUserDeleteRows = false, SelectionMode = selection,
-        EnableRowVirtualization = true, SelectionUnit = DataGridSelectionUnit.FullRow };
-    private static DataGridTextColumn Column(string header, string property, double? width = null) => new()
+    public sealed class HistoryVersionRow(SnapshotVersionSummary version) : HistoryRow
     {
-        Header = header, Binding = new Binding(property),
-        Width = width is { } fixedWidth ? new(fixedWidth) : new(1, DataGridLengthUnitType.Star),
-        MinWidth = width ?? 120, MaxWidth = width ?? double.PositiveInfinity
-    };
-    private static Grid PagedList(DataGrid list, Button next)
-    {
-        var grid = new Grid(); grid.RowDefinitions.Add(new()); grid.RowDefinitions.Add(new() { Height = GridLength.Auto });
-        grid.Children.Add(list); next.HorizontalAlignment = HorizontalAlignment.Right; Add(grid, next, 1); return grid;
+        private bool _expanded, _childrenLoaded;
+        public SnapshotVersionSummary Version { get; } = version;
+        public List<HistoryFileRow> Children { get; } = [];
+        public bool ChildrenLoaded { get => _childrenLoaded; set { _childrenLoaded = value; Notify(); Notify(nameof(RemovedColumn)); Notify(nameof(ToggleVisibility)); } }
+        public bool IsExpanded { get => _expanded; set { _expanded = value; Notify(); Notify(nameof(ToggleGlyph)); Notify(nameof(ToggleToolTip)); } }
+        public override bool IsVersion => true;
+        public override string VersionColumn => "Version " + Version.VersionName;
+        public override string ResourceTypeColumn => "";
+        public override string NameColumn => "";
+        public override string AddedColumn => Version.CreatedAtUtc.LocalDateTime.ToString("g", CultureInfo.CurrentCulture);
+        public override string RemovedColumn => (ChildrenLoaded ? Children.Count.ToString(CultureInfo.CurrentCulture) : Version.IsInitial ? "…" : Version.ChangeCount.ToString(CultureInfo.CurrentCulture)) + " file(s)";
+        public override Visibility ToggleVisibility => (ChildrenLoaded ? Children.Count != 0 : Version.IsInitial || Version.ChangeCount != 0) ? Visibility.Visible : Visibility.Hidden;
+        public override string ToggleGlyph => IsExpanded ? "▲" : "▼";
+        public override string ToggleToolTip => IsExpanded ? "Collapse" : "Expand";
     }
-    private static void Add(Grid grid, UIElement element, int row) { Grid.SetRow(element, row); grid.Children.Add(element); }
+    public sealed class HistoryFileRow(HistoryVersionRow version, RelationalHistoryFileSummary file) : HistoryRow
+    {
+        private int? _added, _removed;
+        public HistoryVersionRow VersionRow { get; } = version;
+        public RelationalHistoryFileSummary File { get; } = file;
+        public bool CountsLoaded { get; private set; }
+        public string? CountError { get; private set; }
+        public override bool IsVersion => false;
+        public override string VersionColumn => "";
+        public override string ResourceTypeColumn => DatabaseHistoryDisplay.GetResourceTypeDisplay(File.Kind);
+        public override string NameColumn => DatabaseHistoryDisplay.GetFileNameDisplay(File.DisplayName, File.RelativePath);
+        public override string AddedColumn => _added.HasValue ? "+" + _added.Value.ToString(CultureInfo.CurrentCulture) : CountError == null ? "…" : "—";
+        public override string RemovedColumn => _removed.HasValue ? "-" + _removed.Value.ToString(CultureInfo.CurrentCulture) : CountError == null ? "…" : "—";
+        public override Thickness IndentMargin => new(28, 0, 0, 0);
+        public override bool Matches(string filter) => base.Matches(filter) || DatabaseHistoryDisplay.ContainsText(File.DisplayName, filter) || DatabaseHistoryDisplay.ContainsText(File.RelativePath, filter);
+        public void SetCounts(int added, int removed) { _added = added; _removed = removed; CountsLoaded = true; Notify(nameof(AddedColumn)); Notify(nameof(RemovedColumn)); }
+        public void SetCountError(string message) { CountError = message; CountsLoaded = true; Notify(nameof(AddedColumn)); Notify(nameof(RemovedColumn)); }
+    }
 }

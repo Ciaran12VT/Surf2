@@ -65,6 +65,11 @@ public sealed partial class RelationalSnapshotHistoryService
         IProgress<RelationalCaptureProgress>? progress = null, CancellationToken ct = default)
     {
         await using var version = await OpenVersionAsync(snapshotKey, versionKey, ct).ConfigureAwait(false);
+        if (versionKey == 0)
+        {
+            await ExportCurrentAsync(new(_runtime.Session.Epoch, snapshotKey, version.Header.RowVersion), destinationPath, progress, ct).ConfigureAwait(false);
+            return;
+        }
         var budget = new SnapshotOperationBudget(_limits);
         await AtomicExportAsync(destinationPath, async output =>
         {

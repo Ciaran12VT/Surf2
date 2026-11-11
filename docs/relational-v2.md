@@ -32,6 +32,8 @@ Export-folder import accepts extracted master named-folder exports and V2 `resou
 
 V2 history saves an immutable baseline of the prior metadata collections in the same transaction as each publication. It retains exact selection predicates and column/key ordering while referencing the existing immutable bodies and captured rows. Earlier migrated history continues to replay master's reverse changes, including the current TOP/WHERE selection merge rules. Baselines are included in V2 package exports.
 
+Database history retains master's expandable five-column list, Find box, and version/file context menus. File details and line counts load when needed; View, Compare With, Restore and Restore To use selected relational revisions. A snapshot without saved versions displays an initial row from a read-only projection, without writing history just to open the window. Object Explorer retains master's menu labels, order and separators; database editing and capture remain in the scope resource editor.
+
 ## SQL image storage
 
 `surf.Asset` holds immutable binary image bytes, content hashes, media types, and lengths. Library entries and diagram/workbench occurrences refer to those assets. Replacing one image updates that occurrence; historical versions and other occurrences retain their previous bytes. Identical content can share storage.
@@ -64,6 +66,7 @@ Build on Windows with the .NET 10 SDK. SQL integration fixtures use isolated `Su
 dotnet Surf2.RegressionTests/bin/Debug/net10.0-windows/Surf2.RegressionTests.dll --scope-ui
 dotnet Surf2.RegressionTests/bin/Debug/net10.0-windows/Surf2.RegressionTests.dll --resource-management
 dotnet Surf2.RegressionTests/bin/Debug/net10.0-windows/Surf2.RegressionTests.dll --export-folder
+dotnet Surf2.RegressionTests/bin/Debug/net10.0-windows/Surf2.RegressionTests.dll --history-file-rows
 ```
 
 The script builds the solution and runs each test process sequentially, retaining detailed logs under the test output's `verification-logs` directory. Its `master` suite covers inherited editor, search-link, scrollbar, image-swap, pending-reference presentation, capture-query behavior and paged-grid selection. The `catalogue` suite checks 1,000 procedures, duplicate aliases, query-count bounds, concurrent cancellation and raw UTF-16 text. The `storage` suite checks migration, SQL image reopening, concurrent asset deduplication, snapshot editing, exact history and package roundtrips. The `capture` suite exercises TOP, WHERE, empty captures, and source preservation. The `workspace` fixture opens a migrated database in an offscreen WPF host and checks availability before and after background loading, navigation, and mixed physical/SQL search; it writes loading and ready screenshots under the test output directory. The `compatibility` suite covers the inherited migration, local/ZIP import, export, recovery, raw text and SQL capture paths.
@@ -71,3 +74,5 @@ The script builds the solution and runs each test process sequentially, retainin
 Implementation verification passed: a build with zero warnings/errors, 18 master regression groups, 19 catalogue checks, 27 storage/editor checks, 6 capture checks, 22 migrated-workspace checks, and 3,875 compatibility checks. Separate grid provider and binding suites passed 4,790 and 2,026 assertions respectively. These checks use synthetic, isolated fixtures; no user database was migrated or benchmarked.
 
 The resource-management update passed 18 scope UI scenarios (light/dark themes and multiple window sizes), 9 resource-management SQL checks, the expanded 31 workspace/database-source checks, and 37 export-folder checks. New historical exports include object-kind metadata so empty definitions remain importable; older historical exports continue to infer object kind from a parseable SQL declaration.
+
+The master history/menu restoration passed 94 migrated-workspace checks, 53 focused history checks, 27 storage checks and all 18 inherited master regression groups. History and file-picker XAML match master apart from their class names. The workspace checks compare expanded history rows and Find results against the original master window, verify Explorer menus for 16 node states, and render history/picker screenshots. History checks cover exact line counts and CSV text, deleted files, snapshots without history, bounded batched reads, stale heads and cancellation cleanup.

@@ -24,6 +24,45 @@ public sealed class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSna
     private HistoricalSnapshotContext(SqlConnection connection, Guid epoch, SnapshotSummary header, long versionKey, long historyKey)
     { _connection = connection; Epoch = epoch; Header = header; VersionKey = versionKey; HistoryKey = historyKey; _headToken=header.RowVersion.ToArray(); }
 
+    // The initial/current row for a migrated snapshot with no stored history is a
+    // read-only projection. Zero is never persisted as a version identity.
+    internal static async Task<HistoricalSnapshotContext> BuildInitialCurrentAsync(SqlConnection connection, Guid epoch,
+        long snapshotKey, CancellationToken ct)
+    {
+        HistoricalSnapshotContext? context = null;
+        try
+        {
+            SnapshotSummary header;
+            await using (var command = Command(connection, null, """
+                SELECT CONVERT(bigint,256)+DATALENGTH(s.OriginalSnapshotId)+DATALENGTH(s.DisplayName)+DATALENGTH(s.DatabaseName),
+                    s.SnapshotKey,s.PublicId,s.OriginalSnapshotId,s.DisplayName,s.DatabaseName,s.ImportedAtUtc,s.SortOrdinal,s.RowVersion
+                FROM surf.DatabaseSnapshot s WHERE s.SnapshotKey=@Snapshot AND s.IsPublished=1 AND s.CurrentVersionKey IS NULL
+                    AND NOT EXISTS(SELECT 1 FROM surf.SnapshotVersion v WHERE v.HistoryKey=
+                        (SELECT TOP(1) h.HistoryKey FROM surf.SnapshotHistory h WHERE h.SnapshotKey=s.SnapshotKey ORDER BY h.SortOrdinal,h.HistoryKey));
+                """, Key("@Snapshot", snapshotKey)))
+            {
+                using var cancel = RelationalSession.CancelCommand(command, ct);
+                await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
+                if (!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new SnapshotConcurrencyException();
+                SnapshotReadGuard.RequireBytes(reader.GetInt64(0), RelationalSnapshotStore.MaximumMetadataPageBytes, command);
+                header = new(reader.GetInt64(1), reader.GetGuid(2), reader.GetString(3), reader.GetString(4), reader.GetString(5),
+                    reader.GetFieldValue<DateTimeOffset>(6), reader.GetInt64(7), null, (byte[])reader.GetValue(8));
+            }
+            context = new(connection, epoch, header, 0, 0);
+            await context.Execute(CreateWorkTablesSql, ct).ConfigureAwait(false);
+            await context.Execute(SeedSql, ct, Key("@Snapshot", snapshotKey)).ConfigureAwait(false);
+            context._building = false;
+            await context.ValidateHead(ct).ConfigureAwait(false);
+            return context;
+        }
+        catch
+        {
+            if (context != null) await context.DisposeAsync().ConfigureAwait(false);
+            else await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
     internal static async Task<HistoricalSnapshotContext> BuildAsync(SqlConnection connection, Guid epoch, long snapshotKey, long versionKey, CancellationToken ct)
     {
         HistoricalSnapshotContext? context = null;
