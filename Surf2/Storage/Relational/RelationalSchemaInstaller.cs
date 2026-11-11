@@ -12,7 +12,7 @@ namespace Surf2.Storage.Relational;
 public sealed class RelationalSchemaInstaller
 {
     private static readonly string[] ScriptNames =
-        ["001.Core.sql", "001.Snapshots.sql", "001.Capture.sql", "001.State.sql", "001.Indexes.sql"];
+        ["001.Core.sql", "001.Snapshots.sql", "001.Capture.sql", "001.State.sql", "001.Indexes.sql", "002.FullTableData.sql"];
 
     public async Task InitializeDestinationAsync(string sourceConnectionString,
         string destinationConnectionString, Guid migrationIdentity, byte[] sourceFingerprint,
@@ -202,11 +202,13 @@ EXEC sys.sp_executesql @Sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public static string[] ReadScripts()
+    public static string[] ReadScripts(int schemaVersion = PersistenceFormatProbe.SupportedSchemaVersion)
     {
+        if (schemaVersion is < 1 or > PersistenceFormatProbe.SupportedSchemaVersion)
+            throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         Assembly assembly = typeof(RelationalSchemaInstaller).Assembly;
         string[] resources = assembly.GetManifestResourceNames();
-        return ScriptNames.Select(name =>
+        return ScriptNames.Take(schemaVersion == 1 ? 5 : ScriptNames.Length).Select(name =>
         {
             string resource = resources.SingleOrDefault(resource => resource.EndsWith("." + name, StringComparison.Ordinal))
                 ?? throw new InvalidOperationException("The relational schema installation is incomplete.");

@@ -51,7 +51,7 @@ public sealed partial class RelationalPackageImporter
         if (database == package.Manifest.SourceDatabaseIdentity) throw PackageRowDecoding.Bad("Destination must have an independent database identity");
         var known = new List<KnownTable>();
         // Check every fixed-table definition before the first imported value or deferred constraint.
-        foreach (var spec in PackageTableCatalogue.Authoritative)
+        foreach (var spec in PackageTableCatalogue.ForSchema(package.Manifest.DatabaseSchemaVersion))
         {
             var table = await ReadKnownAsync(connection, null, spec, ct);
             CompareMetadata(package.Tables[spec.Key].Table, table.Metadata); known.Add(table);
@@ -61,14 +61,17 @@ public sealed partial class RelationalPackageImporter
         foreach (var table in known)
             rows = checked(rows + await LoadTableAsync(connection, table, package.Tables[table.Spec.Key], package,
                 settings, import, fingerprint, database, ct));
-        var captures = await CreateCaptureTablesAsync(connection, package, ct);
+        var captures = package.Manifest.DatabaseSchemaVersion == 1
+            ? await CreateCaptureTablesAsync(connection, package, ct) : new List<KnownTable>();
         await ConstraintsAsync(connection, null, captures, enable: false, ct);
         foreach (var table in captures)
             rows = checked(rows + await LoadTableAsync(connection, table, package.Tables[table.Spec.Key], package,
                 settings, import, fingerprint, database, ct));
         known.AddRange(captures);
         await lease.EnsureHeldAsync(ct);
-        long capturedRows = await ValidateCaptureModelsAsync(connection, captures, import, fingerprint, database, ct);
+        long capturedRows = package.Manifest.DatabaseSchemaVersion == 1
+            ? captures.Sum(table => package.Tables[table.Spec.Key].RowCount)
+            : await ValidateCaptureModelsAsync(connection, import, fingerprint, database, ct);
         await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct))
         {
             await RequireImportAsync(connection, transaction, import, fingerprint, database, ct);
@@ -79,6 +82,23 @@ public sealed partial class RelationalPackageImporter
                 await ValidateStoredTableAsync(connection, transaction, table, package.Tables[table.Spec.Key], package, settings, ct);
             }
             await ValidateDatabaseAsync(connection, transaction, known, captures, capturedRows, ct);
+            await lease.EnsureHeldAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
+        if (package.Manifest.DatabaseSchemaVersion == 1)
+        {
+            await new RelationalCaptureSchemaUpgrade().UpgradeAsync(_destination, cancellationToken: ct);
+            if (await ValidateCaptureModelsAsync(connection, import, fingerprint, database, ct) != capturedRows)
+                throw PackageRowDecoding.Bad("Converted JSON capture count differs from the package");
+        }
+        await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct))
+        {
+            await RequireImportAsync(connection, transaction, import, fingerprint, database, ct);
+            await ValidateDatabaseAsync(connection, transaction, known.Where(t => t.Spec.Schema == "surf").ToArray(), [], capturedRows, ct);
+            await ExecuteAsync(connection, transaction, """
+IF EXISTS(SELECT 1 FROM surf.DataSet d WHERE NOT EXISTS(SELECT 1 FROM surf.FullTableData f WHERE f.DataSetKey=d.DataSetKey))
+ THROW 51110,'An imported dataset has no JSON payload.',1;
+""", ct);
             await lease.EnsureHeldAsync(ct);
             await PublishAsync(connection, transaction, package, import, fingerprint, database, ct);
             await transaction.CommitAsync(ct);
@@ -91,6 +111,8 @@ public sealed partial class RelationalPackageImporter
     private async Task<long> LoadTableAsync(SqlConnection connection, KnownTable table, RelationalPackageTableStream stream,
         PackageInput package, RelationalPackageImportOptions options, Guid import, byte[] fingerprint, Guid database, CancellationToken ct)
     {
+        if (table.Spec.Name == "FullTableData")
+            return await LoadFullTableDataAsync(connection, stream, package, import, fingerprint, database, ct);
         var columns = table.StreamColumns;
         long fixedBytes = BulkFixedBytes(columns.Length, options.BatchRows);
         long rowOverhead = BulkRowOverhead(columns.Length);
@@ -226,8 +248,8 @@ public sealed partial class RelationalPackageImporter
     {
         await using var command = Command(connection, transaction, """
 SELECT f.DatabaseIdentity FROM surf.StorageFormatInfo f JOIN surf.MigrationRun r ON r.MigrationIdentity=@Import
-WHERE f.Singleton=1 AND f.FormatIdentifier=N'Surf2.RelationalV2' AND f.State='Migrating' AND f.SchemaVersion=1
-AND f.MinimumReaderVersion=1 AND f.MinimumWriterVersion=1 AND r.SourceFingerprint=@Hash
+WHERE f.Singleton=1 AND f.FormatIdentifier=N'Surf2.RelationalV2' AND f.State='Migrating' AND f.SchemaVersion=2
+AND f.MinimumReaderVersion=2 AND f.MinimumWriterVersion=2 AND r.SourceFingerprint=@Hash
 AND r.ConverterVersion=1 AND r.Status='Converting';
 """, RelationalSession.Parameter("@Import", SqlDbType.UniqueIdentifier, import), RelationalSession.Parameter("@Hash", SqlDbType.Binary, fingerprint, 32));
         using var cancel = RelationalSession.CancelCommand(command, ct);

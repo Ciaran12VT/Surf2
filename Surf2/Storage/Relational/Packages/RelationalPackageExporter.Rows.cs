@@ -41,10 +41,11 @@ public sealed partial class RelationalPackageExporter
                     else if (chunked)
                     {
                         long length = reader.GetInt64(sourceOrdinal);
-                        if (length < 0 || length > _limits.MaxCellBytes)
+                        long cellLimit = spec.Name == "FullTableData" ? int.MaxValue : _limits.MaxCellBytes;
+                        if (length < 0 || length > cellLimit)
                             throw new RelationalPackageLimitException("An authoritative SQL cell exceeds the package cell-byte limit.");
                         rowBytes = checked(rowBytes + length);
-                        if (rowBytes > _limits.MaxRowBytes) throw new RelationalPackageLimitException("Package source-row byte limit exceeded.");
+                        if (spec.Name != "FullTableData" && rowBytes > _limits.MaxRowBytes) throw new RelationalPackageLimitException("Package source-row byte limit exceeded.");
                         await using var input = reader.GetStream(sourceOrdinal + 1);
                         await PackageRowEncoding.WriteChunksAsync(writer, input, length, buffer, ct);
                     }
@@ -91,29 +92,20 @@ public sealed partial class RelationalPackageExporter
     {
         await using var command = Command(connection, transaction, $"""
 SELECT CONVERT(bit,CASE WHEN EXISTS (SELECT 1 FROM surf.TableDataRevision t WHERE ({PackageTableCatalogue.Revision("t.RevisionKey")})
-AND NOT EXISTS (SELECT 1 FROM surf.DataSet d WHERE d.RevisionKey=t.RevisionKey AND ({PackageTableCatalogue.DataSet("d")}))) THEN 1 ELSE 0 END);
+AND NOT EXISTS (SELECT 1 FROM surf.DataSet d JOIN surf.FullTableData f ON f.DataSetKey=d.DataSetKey
+ WHERE d.RevisionKey=t.RevisionKey AND ({PackageTableCatalogue.DataSet("d")}))) THEN 1 ELSE 0 END);
 """);
         using var cancellation = RelationalSession.CancelCommand(command, ct);
         if ((bool)(await command.ExecuteScalarAsync(ct) ?? true)) throw new InvalidDataException("A published sealed table-data revision has no complete dataset.");
+        command.CommandText = $"""
+SELECT CONVERT(bit,CASE WHEN EXISTS (
+ SELECT 1 FROM surf.DataSet d JOIN surf.FullTableData f ON f.DataSetKey=d.DataSetKey
+ OUTER APPLY (SELECT COUNT_BIG(*) [RowCount] FROM OPENJSON(f.JsonPayload)) r
+ WHERE ({PackageTableCatalogue.DataSet("d")}) AND (LEFT(LTRIM(f.JsonPayload),1)<>N'['
+ OR d.ActualRowCount<>r.[RowCount] OR d.ExpectedActualRowCount IS NULL OR d.ExpectedActualRowCount<>r.[RowCount])
+) THEN 1 ELSE 0 END);
+""";
+        if ((bool)(await command.ExecuteScalarAsync(ct) ?? true)) throw new InvalidDataException("Captured JSON row counts differ from their dataset catalogue.");
     }
 
-    private async Task ValidateCaptureCountsAsync(SqlConnection connection, SqlTransaction transaction,
-        PackageTableSpec spec, CancellationToken ct)
-    {
-        await using var command = Command(connection, transaction, $"""
-SELECT d.ActualRowCount,d.ExpectedActualRowCount,r.[RowCount],r.FirstRow,r.LastRow
-FROM surf.DataSet d OUTER APPLY (SELECT COUNT_BIG(*) [RowCount],MIN(RowOrdinal) FirstRow,MAX(RowOrdinal) LastRow
-FROM {spec.Qualified} t WHERE t.DataSetKey=d.DataSetKey) r
-WHERE d.LayoutKey=@Layout AND ({PackageTableCatalogue.DataSet("d")});
-""", RelationalSession.Parameter("@Layout", SqlDbType.BigInt, spec.CaptureLayoutKey!.Value));
-        using var cancellation = RelationalSession.CancelCommand(command, ct);
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            long actual = reader.GetInt64(0), stored = reader.GetInt64(2);
-            if (actual < 0 || reader.IsDBNull(1) || reader.GetInt64(1) != actual || stored != actual ||
-                (stored > 0 && (reader.IsDBNull(3) || reader.IsDBNull(4) || reader.GetInt64(3) != 0 || reader.GetInt64(4) != stored - 1)))
-                throw new InvalidDataException("Captured export count or stable ordinals do not match the Ready dataset catalogue.");
-        }
-    }
 }

@@ -119,6 +119,8 @@ AND m.ScriptChecksum=@Checksum AND (SELECT COUNT_BIG(*) FROM surf.StorageFormatI
             return;
         }
         var result = await new PersistenceFormatProbe().ProbeAsync(_connectionString, cancellationToken);
+        if (result.SchemaVersion != PersistenceFormatProbe.SupportedSchemaVersion)
+            throw new InvalidOperationException("The relational database needs its startup schema migration before use.");
         if (result.Format != PersistenceFormat.Relational)
         {
             if (result.Format == PersistenceFormat.Incomplete && _validationMigration.HasValue)
@@ -128,11 +130,12 @@ AND m.ScriptChecksum=@Checksum AND (SELECT COUNT_BIG(*) FROM surf.StorageFormatI
                 command.CommandText = """
 SELECT COUNT_BIG(*) FROM surf.MigrationRun r JOIN surf.StorageFormatInfo f ON f.Singleton=1
 WHERE r.MigrationIdentity=@Migration AND r.SourceFingerprint=@Fingerprint AND r.ConverterVersion=1
-AND r.Status='Converting' AND f.State='Migrating' AND f.SchemaVersion=1 AND f.DatabaseIdentity=@Database;
+AND r.Status='Converting' AND f.State='Migrating' AND f.SchemaVersion=@Version AND f.DatabaseIdentity=@Database;
 """;
                 command.Parameters.Add(Parameter("@Migration", SqlDbType.UniqueIdentifier, _validationMigration.Value));
                 command.Parameters.Add(Parameter("@Fingerprint", SqlDbType.Binary, _validationFingerprint, 32));
                 command.Parameters.Add(Parameter("@Database", SqlDbType.UniqueIdentifier, result.DatabaseIdentity));
+                command.Parameters.Add(Parameter("@Version", SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion));
                 if ((long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L) == 1)
                 {
                     PinIdentity(result.DatabaseIdentity ?? Guid.Empty);

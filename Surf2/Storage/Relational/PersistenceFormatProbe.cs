@@ -27,7 +27,7 @@ public sealed record PersistenceFormatResult(
 public sealed class PersistenceFormatProbe
 {
     public const string FormatIdentifier = "Surf2.RelationalV2";
-    public const int SupportedSchemaVersion = 1;
+    public const int SupportedSchemaVersion = 2;
 
     public async Task<PersistenceFormatResult> ProbeAsync(
         string connectionString,
@@ -119,7 +119,7 @@ FROM surf.StorageFormatInfo;
                         return Result(PersistenceFormat.Unsupported, "The format marker is not unique.");
                 }
 
-                if (identifier != FormatIdentifier || version != SupportedSchemaVersion ||
+                if (identifier != FormatIdentifier || version is < 1 or > SupportedSchemaVersion ||
                     minimumReader > SupportedSchemaVersion || minimumWriter > SupportedSchemaVersion ||
                     minimumReader < 1 || minimumWriter < 1 || identity == Guid.Empty || singleton != 1 || state is not ("Ready" or "Migrating"))
                 {
@@ -131,9 +131,9 @@ FROM surf.StorageFormatInfo;
 SELECT COUNT_BIG(*) FROM surf.SchemaMigration
 WHERE SchemaVersion=@Version AND ScriptChecksum=@Checksum;
 """;
-                command.Parameters.Add(RelationalSession.Parameter("@Version", SqlDbType.Int, SupportedSchemaVersion));
+                command.Parameters.Add(RelationalSession.Parameter("@Version", SqlDbType.Int, version));
                 command.Parameters.Add(RelationalSession.Parameter("@Checksum", SqlDbType.Binary,
-                    RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts()), 32));
+                    RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts(version)), 32));
                 if (!Equals(await command.ExecuteScalarAsync(cancellationToken), 1L))
                     return Result(PersistenceFormat.Unsupported, "The installed schema checksum is not supported by this application.");
 

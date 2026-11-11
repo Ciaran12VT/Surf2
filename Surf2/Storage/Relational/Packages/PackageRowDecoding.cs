@@ -16,6 +16,46 @@ internal sealed class PackageRowDecoding(Stream input, RelationalPackageLimits l
     private readonly long _maximumRowBytes = Math.Min(limits.MaxRowBytes, rowByteBudget ?? limits.MaxRowBytes);
     internal long RowBytes => _rowBytes;
 
+    // A captured table is one SQL value, but its package transfer remains bounded
+    // to individual base64 chunks rather than the generic row allocation budget.
+    internal async Task<long?> ReadFullTableDataAsync(
+        Func<long, long, CancellationToken, Task> beginAsync,
+        Func<ReadOnlyMemory<byte>, CancellationToken, Task> appendAsync, CancellationToken ct)
+    {
+        if (!await _tokens.BeginRowAsync(ct)) return null;
+        await _tokens.NextAsync(ct);
+        long key = Integer(_tokens.String(), 1, long.MaxValue);
+        await _tokens.NextAsync(ct);
+        _tokens.Require(JsonTokenType.StartObject);
+        await _tokens.PropertyAsync("byteLength", ct);
+        long length = Integer(_tokens.String(), 4, int.MaxValue - 1);
+        if ((length & 1) != 0) throw Bad("Captured JSON must contain complete UTF-16 code units");
+        await beginAsync(key, length, ct);
+        await _tokens.PropertyAsync("chunks", ct);
+        _tokens.Require(JsonTokenType.StartArray);
+        long remaining = length;
+        var buffer = new byte[65536];
+        while (true)
+        {
+            await _tokens.NextAsync(ct);
+            if (_tokens.Kind == JsonTokenType.EndArray) break;
+            string chunk = _tokens.String();
+            if (chunk.Length == 0 || chunk.Length > 87384 || chunk.Length % 4 != 0 ||
+                !Convert.TryFromBase64String(chunk, buffer, out int count) || count == 0 ||
+                count > remaining || Convert.ToBase64String(buffer, 0, count) != chunk)
+                throw Bad("Invalid captured JSON chunk");
+            await appendAsync(buffer.AsMemory(0, count), ct);
+            remaining -= count;
+        }
+        if (remaining != 0) throw Bad("Captured JSON ended before its declared byte length");
+        await _tokens.NextAsync(ct);
+        _tokens.Require(JsonTokenType.EndObject);
+        await _tokens.NextAsync(ct);
+        _tokens.Require(JsonTokenType.EndArray);
+        await _tokens.EndRowAsync(ct);
+        return key;
+    }
+
     internal async Task<object[]?> ReadAsync(IReadOnlyList<RelationalPackageColumn> columns, CancellationToken ct)
     {
         if (!await _tokens.BeginRowAsync(ct)) return null;

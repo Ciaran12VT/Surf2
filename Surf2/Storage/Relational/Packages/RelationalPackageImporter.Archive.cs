@@ -53,12 +53,12 @@ public sealed partial class RelationalPackageImporter
         catch (JsonException) { throw PackageRowDecoding.Bad("Malformed or unsupported manifest fields"); }
         if (manifest.PackageIdentifier != RelationalPackageFormat.Identifier || manifest.PackageVersion != 2 ||
             manifest.ExporterVersion != 1 || manifest.RowEncodingVersion != 1 ||
-            manifest.DatabaseFormatIdentifier != PersistenceFormatProbe.FormatIdentifier || manifest.DatabaseSchemaVersion != 1 ||
-            manifest.MinimumReaderVersion != 1 || manifest.MinimumWriterVersion != 1 || manifest.SourceDatabaseIdentity == Guid.Empty ||
+            manifest.DatabaseFormatIdentifier != PersistenceFormatProbe.FormatIdentifier || manifest.DatabaseSchemaVersion is < 1 or > 2 ||
+            manifest.MinimumReaderVersion != manifest.DatabaseSchemaVersion || manifest.MinimumWriterVersion != manifest.DatabaseSchemaVersion || manifest.SourceDatabaseIdentity == Guid.Empty ||
             manifest.SourceCreatedAtUtc == default || manifest.ExportedAtUtc == default ||
             manifest.Consistency is not ("SqlSnapshot-v1" or "SqlSerializableBlocking-v1") ||
             manifest.LocalFilePolicy != "ExplicitCallerSelection-v1" || manifest.Tables == null || manifest.LocalFiles == null ||
-            manifest.Tables.Count < PackageTableCatalogue.Authoritative.Length || manifest.Tables.Count > _limits.MaxTables)
+            manifest.Tables.Count < PackageTableCatalogue.ForSchema(manifest.DatabaseSchemaVersion).Count() || manifest.Tables.Count > _limits.MaxTables)
             throw PackageRowDecoding.Bad("Unsupported package/format/consistency contract");
         var tables = new Dictionary<string, RelationalPackageTableStream>(StringComparer.Ordinal);
         var usedEntries = new HashSet<string>(StringComparer.Ordinal) { RelationalPackageFormat.ManifestEntry };
@@ -70,9 +70,9 @@ public sealed partial class RelationalPackageImporter
             var table = stream.Table;
             PackageTableSpec spec;
             if (table.Schema == "surf")
-                spec = PackageTableCatalogue.Authoritative.SingleOrDefault(candidate => candidate.Name == table.Name)
+                spec = PackageTableCatalogue.ForSchema(manifest.DatabaseSchemaVersion).SingleOrDefault(candidate => candidate.Name == table.Name)
                     ?? throw PackageRowDecoding.Bad("Excluded authoritative table");
-            else if (table.Schema == "capture" && table.Name != null && table.Name.StartsWith("Data_", StringComparison.Ordinal))
+            else if (manifest.DatabaseSchemaVersion == 1 && table.Schema == "capture" && table.Name != null && table.Name.StartsWith("Data_", StringComparison.Ordinal))
             {
                 long key = PackageRowDecoding.Integer(table.Name[5..], 1, long.MaxValue);
                 int count = table.Columns.Count - 6;
@@ -102,7 +102,7 @@ public sealed partial class RelationalPackageImporter
                     fk.Name?.Length > 128 || fk.ReferencedSchema?.Length > 128 || fk.ReferencedTable?.Length > 128)
                     throw PackageRowDecoding.Bad("Invalid bounded FK metadata");
         }
-        foreach (var spec in PackageTableCatalogue.Authoritative)
+        foreach (var spec in PackageTableCatalogue.ForSchema(manifest.DatabaseSchemaVersion))
             if (!tables.ContainsKey(spec.Key)) throw PackageRowDecoding.Bad("Required authoritative table omitted");
         foreach (var local in manifest.LocalFiles)
         {

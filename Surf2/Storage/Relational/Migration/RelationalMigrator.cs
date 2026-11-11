@@ -104,7 +104,9 @@ public sealed class RelationalMigrator
             }
             else if (destination.Format is PersistenceFormat.Incomplete or PersistenceFormat.Relational)
             {
-                bool complete = await VerifyRecoveryAsync(session, stage, cancellationToken);
+                bool complete = await VerifyRecoveryAsync(session, stage, cancellationToken, destination.SchemaVersion!.Value);
+                if (destination.SchemaVersion == 1)
+                    await new RelationalCaptureSchemaUpgrade().UpgradeAsync(request.DestinationConnectionString, progress, cancellationToken);
                 if (complete)
                 {
                     reporting.Finish("This recovery migration is already validated and complete.");
@@ -179,22 +181,23 @@ AND r.Status='Converting' AND f.State='Migrating')
         await transaction.CommitAsync(ct);
     }
 
-    private static async Task<bool> VerifyRecoveryAsync(RelationalSession session, LegacySourceStage stage, CancellationToken ct)
+    private static async Task<bool> VerifyRecoveryAsync(RelationalSession session, LegacySourceStage stage, CancellationToken ct, int schemaVersion)
     {
         await using var connection = await session.OpenAsync(ct);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-SELECT r.Status FROM surf.MigrationRun r JOIN surf.SchemaMigration s ON s.SchemaVersion=1
+SELECT r.Status FROM surf.MigrationRun r JOIN surf.SchemaMigration s ON s.SchemaVersion=@Version
 JOIN surf.StorageFormatInfo f ON f.Singleton=1
 WHERE r.MigrationIdentity=@Migration AND r.SourceFingerprint=@Fingerprint AND r.ConverterVersion=1
-AND s.ScriptChecksum=@Checksum AND f.FormatIdentifier=@Format AND f.SchemaVersion=1
+AND s.ScriptChecksum=@Checksum AND f.FormatIdentifier=@Format AND f.SchemaVersion=@Version
 AND ((f.State='Migrating' AND r.Status='Converting')
  OR (f.State='Ready' AND r.Status='Complete' AND f.CompletedMigrationIdentity=@Migration));
 """;
         command.Parameters.Add(RelationalSession.Parameter("@Migration", SqlDbType.UniqueIdentifier, stage.MigrationIdentity));
         command.Parameters.Add(RelationalSession.Parameter("@Fingerprint", SqlDbType.Binary, stage.Fingerprint, 32));
         command.Parameters.Add(RelationalSession.Parameter("@Checksum", SqlDbType.Binary,
-            RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts()), 32));
+            RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts(schemaVersion)), 32));
+        command.Parameters.Add(RelationalSession.Parameter("@Version", SqlDbType.Int, schemaVersion));
         command.Parameters.Add(RelationalSession.Parameter("@Format", SqlDbType.NVarChar, PersistenceFormatProbe.FormatIdentifier, 64));
         object? status = await command.ExecuteScalarAsync(ct);
         return status is string state ? state == "Complete" : throw new InvalidDataException("Recovery source, converter, schema or migration identity does not match.");

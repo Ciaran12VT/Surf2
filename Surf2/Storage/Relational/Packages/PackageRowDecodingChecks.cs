@@ -44,6 +44,58 @@ public static class PackageRowDecodingChecks
         byte[] exact = [0, 0xD8, 65, 0, 0, 0xDC];
         string blob = "[{\"byteLength\":\"6\",\"chunks\":[\"AA==\",\"2EE=\",\"AA==\",\"ANw=\"]}]\n";
         Check(((byte[])await DecodeAsync(blob, Column("nvarchar"))).AsSpan().SequenceEqual(exact), "Split code units/unpaired surrogates retain exact bytes");
+        byte[] captureBytes = Encoding.Unicode.GetBytes("[{\"text\":\"" + new string('x', 70000) + "😀\"}]");
+        using (var encodedCapture = new MemoryStream())
+        {
+            using (var writer = new Utf8JsonWriter(encodedCapture))
+            {
+                writer.WriteStartArray();
+                writer.WriteStringValue("17");
+                using var payload = new MemoryStream(captureBytes);
+                await PackageRowEncoding.WriteChunksAsync(writer, payload, captureBytes.Length, new byte[32767], ct);
+                writer.WriteEndArray();
+                await writer.FlushAsync(ct);
+            }
+            encodedCapture.WriteByte((byte)'\n');
+            encodedCapture.Position = 0;
+            var decoder = new PackageRowDecoding(encodedCapture, limits);
+            using var restored = new MemoryStream();
+            long observedKey = 0, observedLength = 0;
+            Task Begin(long key, long length, CancellationToken token)
+            {
+                observedKey = key;
+                observedLength = length;
+                return Task.CompletedTask;
+            }
+            Task Append(ReadOnlyMemory<byte> bytes, CancellationToken token)
+            {
+                Check(bytes.Length <= 65536, "Captured payload decoder bounds each chunk");
+                return restored.WriteAsync(bytes, token).AsTask();
+            }
+            Check(await decoder.ReadFullTableDataAsync(Begin, Append, ct) == 17 && observedKey == 17 &&
+                observedLength == captureBytes.Length && restored.ToArray().AsSpan().SequenceEqual(captureBytes),
+                "Captured JSON exceeds generic cell limits and preserves split UTF-16 exactly");
+            Check(await decoder.ReadFullTableDataAsync(Begin, Append, ct) == null, "Captured payload exact EOF");
+        }
+        foreach (string malformed in new[]
+        {
+            "[\"1\",{\"byteLength\":\"5\",\"chunks\":[]}]\n",
+            "[\"1\",{\"byteLength\":\"4\",\"chunks\":[\"AA==\"]}]\n",
+            "[\"1\",{\"byteLength\":\"4\",\"chunks\":[\"AAAAAAA=\"]}]\n"
+        })
+        {
+            using var input = new MemoryStream(Encoding.UTF8.GetBytes(malformed));
+            var decoder = new PackageRowDecoding(input, limits);
+            try
+            {
+                await decoder.ReadFullTableDataAsync((_, _, _) => Task.CompletedTask, (_, _) => Task.CompletedTask, ct);
+                throw new InvalidOperationException("Malformed captured JSON package was accepted.");
+            }
+            catch (InvalidDataException) { passed.Add("Captured JSON rejects malformed declared length/chunks"); }
+        }
+        Check(PackageTableCatalogue.ForSchema(1).All(table => table.Name != "FullTableData") &&
+            PackageTableCatalogue.ForSchema(2).Count(table => table.Name == "FullTableData") == 1,
+            "Legacy package catalogue and JSON package catalogue remain explicit");
         SqlDecimal number = SqlDecimal.Parse("12345678901234567890123456789012345678");
         using (var output = new MemoryStream())
         {

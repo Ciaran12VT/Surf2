@@ -1,6 +1,7 @@
 using System.Data;
 using System.IO;
 using System.Text.Json;
+using System.Text;
 using Microsoft.Data.SqlClient;
 
 namespace Surf2.Storage.Relational.Capture;
@@ -32,6 +33,12 @@ OUTPUT INSERTED.DataSetKey VALUES (@Revision, @Layout, @Reported, @Expected, @Im
         using var cancellation = RelationalSession.CancelCommand(command, cancellationToken);
         long dataSetKey = (long)(await command.ExecuteScalarAsync(cancellationToken)
             ?? throw new InvalidDataException("No dataset identity was returned."));
+        await using (var payload = Command(connection, transaction,
+            "INSERT surf.FullTableData(DataSetKey, JsonPayload) VALUES (@DataSet, N'[]');", Key("@DataSet", dataSetKey)))
+        {
+            using var payloadCancellation = RelationalSession.CancelCommand(payload, cancellationToken);
+            await payload.ExecuteNonQueryAsync(cancellationToken);
+        }
         await transaction.CommitAsync(cancellationToken);
         return new(_session.Epoch, dataSetKey, layoutKey);
     }
@@ -83,11 +90,6 @@ VALUES (@Layout, @Ordinal, @Name, @Type, @Length, @Precision, @Scale, @Nullable,
                 RelationalSession.Parameter("@Identity", SqlDbType.Bit, column.SourceIdentity));
             using var cancellation = RelationalSession.CancelCommand(insert, cancellationToken);
             await insert.ExecuteNonQueryAsync(cancellationToken);
-        }
-        await using (var ddl = Command(connection, transaction, layout.CreateTableSql(key)))
-        {
-            using var cancellation = RelationalSession.CancelCommand(ddl, cancellationToken);
-            await ddl.ExecuteNonQueryAsync(cancellationToken);
         }
         return key;
     }
@@ -151,8 +153,8 @@ WHERE DataSetKey = @DataSet AND LayoutKey = @Layout;
         await using (var connection = await _session.OpenAsync(cancellationToken))
             layout = await ReadLayoutAsync(connection, null, handle.LayoutKey, cancellationToken);
         RequireWriteBudget(layout);
-        var batch = new List<EncodedCaptureRow>();
-        long overhead = CaptureBulkBatch.OverheadBytes(layout);
+        var batch = new List<string>();
+        long overhead = CaptureLimits.BulkTableOverheadBytes(layout.Columns.Length);
         long bytes = overhead;
         long next = expectedNextRowOrdinal;
         await foreach (var row in rows.WithCancellation(cancellationToken).ConfigureAwait(false))
@@ -160,23 +162,23 @@ WHERE DataSetKey = @DataSet AND LayoutKey = @Layout;
             cancellationToken.ThrowIfCancellationRequested();
             var encoded = CaptureRowCodec.Encode(layout, row, _limits);
             if (encoded.EstimatedBytes + overhead > _limits.WriteBatchBytes)
-                throw new CaptureLimitException("One row plus bulk-table overhead exceeds the write-batch memory budget.");
+                throw new CaptureLimitException("One row plus reserved batch overhead exceeds the write memory budget.");
             if (batch.Count > 0 && (batch.Count >= _limits.WriteBatchRows || bytes + encoded.EstimatedBytes > _limits.WriteBatchBytes))
             {
-                next = await WriteBatchAsync(handle, layout, batch, next, cancellationToken);
+                next = await WriteBatchAsync(handle, batch, next, cancellationToken);
                 batch.Clear();
                 bytes = overhead;
             }
-            batch.Add(encoded);
+            batch.Add(row.GetRawText());
             bytes += encoded.EstimatedBytes;
             if (batch.Count == _limits.WriteBatchRows || bytes == _limits.WriteBatchBytes)
             {
-                next = await WriteBatchAsync(handle, layout, batch, next, cancellationToken);
+                next = await WriteBatchAsync(handle, batch, next, cancellationToken);
                 batch.Clear();
                 bytes = overhead;
             }
         }
-        if (batch.Count > 0) next = await WriteBatchAsync(handle, layout, batch, next, cancellationToken);
+        if (batch.Count > 0) next = await WriteBatchAsync(handle, batch, next, cancellationToken);
         else
         {
             var progress = await GetWriteProgressAsync(handle, cancellationToken);
@@ -190,14 +192,19 @@ WHERE DataSetKey = @DataSet AND LayoutKey = @Layout;
     {
         long minimum = CaptureLimits.GetMinimumWriteBatchBytes(layout.Columns.Length);
         if (_limits.WriteBatchBytes < minimum)
-            throw new CaptureLimitException($"The {layout.Columns.Length}-column layout needs a write budget of at least {minimum} bytes for its bulk tables and one minimal row; configured {_limits.WriteBatchBytes} bytes. Read/page budgets need not change.");
+            throw new CaptureLimitException($"The {layout.Columns.Length}-column layout needs a write budget of at least {minimum} bytes for its batch buffers and one minimal row; configured {_limits.WriteBatchBytes} bytes. Read/page budgets need not change.");
     }
 
-    private async Task<long> WriteBatchAsync(CaptureWriteHandle handle, CaptureLayout layout,
-        IReadOnlyList<EncodedCaptureRow> batch, long next, CancellationToken cancellationToken)
+    private async Task<long> WriteBatchAsync(CaptureWriteHandle handle, IReadOnlyList<string> batch, long next, CancellationToken cancellationToken)
     {
-        using var tables = new CaptureBulkBatch(handle, layout, batch, next, _limits);
-        long end = tables.EndOrdinal;
+        long end = checked(next + batch.Count);
+        var json = new StringBuilder();
+        foreach (var row in batch)
+        {
+            if (json.Length > 0 || next > 0) json.Append(',');
+            json.Append(row);
+        }
+        json.Append(']');
         await using var connection = await _session.OpenAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var progress = await ReadProgressAsync(connection, transaction, handle, cancellationToken);
@@ -205,12 +212,17 @@ WHERE DataSetKey = @DataSet AND LayoutKey = @Layout;
             throw new InvalidOperationException("Dataset is not writable at the expected ordinal.");
         if (progress.ExpectedActualRowCount is long expected && end > expected)
             throw new InvalidDataException("More source rows than the expected actual count.");
-        // Both bulk copies and the row checkpoint share this external transaction.
-        // Disposal rolls back partial copies on failure/cancellation, never publishing
-        // a row prefix without its exceptions. Source names never enter SQL mappings.
-        await BulkCopyAsync(connection, transaction, CaptureLayout.QualifiedTable(handle.LayoutKey), tables.Rows, cancellationToken);
-        if (tables.Exceptions.Rows.Count > 0)
-            await BulkCopyAsync(connection, transaction, "[surf].[DataValueException]", tables.Exceptions, cancellationToken);
+        // The JSON suffix and row checkpoint commit together. DATALENGTH/2
+        // gives the UTF-16 code-unit offset expected by nvarchar .WRITE.
+        await using (var append = Command(connection, transaction, """
+DECLARE @Offset bigint = (SELECT DATALENGTH(JsonPayload) / 2 - 1 FROM surf.FullTableData WHERE DataSetKey = @DataSet);
+IF @Offset IS NULL THROW 51020, 'Captured JSON payload is missing.', 1;
+UPDATE surf.FullTableData SET JsonPayload.WRITE(@Suffix, @Offset, 1) WHERE DataSetKey = @DataSet;
+""", Key("@DataSet", handle.DataSetKey), Text("@Suffix", json.ToString())))
+        {
+            using var cancellation = RelationalSession.CancelCommand(append, cancellationToken);
+            await append.ExecuteNonQueryAsync(cancellationToken);
+        }
         await using var update = Command(connection, transaction,
             "UPDATE surf.DataSet SET ActualRowCount = @Next WHERE DataSetKey = @DataSet AND State = 'Writing';",
             Key("@Next", end), Key("@DataSet", handle.DataSetKey));
@@ -218,21 +230,6 @@ WHERE DataSetKey = @DataSet AND LayoutKey = @Layout;
         if (await update.ExecuteNonQueryAsync(cancellationToken) != 1) throw new DBConcurrencyException("Dataset write was not advanced.");
         await transaction.CommitAsync(cancellationToken);
         return end;
-    }
-
-    private static async Task BulkCopyAsync(SqlConnection connection, SqlTransaction transaction,
-        string destination, DataTable table, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        using var bulk = new SqlBulkCopy(connection, SqlBulkCopyOptions.CheckConstraints | SqlBulkCopyOptions.KeepNulls, transaction)
-        {
-            DestinationTableName = destination,
-            BatchSize = table.Rows.Count,
-            EnableStreaming = true
-        };
-        foreach (DataColumn column in table.Columns)
-            bulk.ColumnMappings.Add(column.ColumnName, column.ColumnName);
-        await bulk.WriteToServerAsync(table, cancellationToken);
     }
 
     public Task<CaptureDataSetSummary> CompleteDataSetAsync(CaptureWriteHandle handle,
@@ -257,16 +254,18 @@ WHERE DataSetKey = @DataSet AND LayoutKey = @Layout;
             throw new InvalidDataException("Source rows do not match the expected actual count.");
         if (progress.State == "Writing")
         {
-            await using (var verify = Command(connection, transaction, $"""
-SELECT COUNT_BIG(*), MIN(RowOrdinal), MAX(RowOrdinal) FROM {CaptureLayout.QualifiedTable(handle.LayoutKey)} WHERE DataSetKey = @DataSet;
+            await using (var verify = Command(connection, transaction, """
+IF NOT EXISTS(SELECT 1 FROM surf.FullTableData WHERE DataSetKey = @DataSet)
+    THROW 51020, 'Captured JSON payload is missing.', 1;
+SELECT COUNT_BIG(*) FROM surf.FullTableData AS d CROSS APPLY OPENJSON(d.JsonPayload)
+WHERE d.DataSetKey = @DataSet;
 """, Key("@DataSet", handle.DataSetKey)))
             {
                 using var cancellation = RelationalSession.CancelCommand(verify, cancellationToken);
-                await using var reader = await verify.ExecuteReaderAsync(cancellationToken);
-                await reader.ReadAsync(cancellationToken);
-                long count = reader.GetInt64(0);
-                if (count != progress.NextRowOrdinal || (count > 0 && (reader.GetInt64(1) != 0 || reader.GetInt64(2) != count - 1)))
-                    throw new InvalidDataException("Captured row count or contiguous ordinals failed validation.");
+                long count = (long)(await verify.ExecuteScalarAsync(cancellationToken)
+                    ?? throw new InvalidDataException("Captured JSON count could not be read."));
+                if (count != progress.NextRowOrdinal)
+                    throw new InvalidDataException("Captured JSON row count failed validation.");
             }
             await using var publish = Command(connection, transaction,
                 "UPDATE surf.DataSet SET State = 'Ready', ExpectedActualRowCount = @Expected WHERE DataSetKey = @DataSet AND State = 'Writing';",

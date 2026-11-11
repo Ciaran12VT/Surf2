@@ -56,15 +56,6 @@ public sealed partial class RelationalPackageExporter
                         await ValidateCompleteCapturesAsync(connection, transaction, ct);
                         foreach (var spec in PackageTableCatalogue.Authoritative)
                             await ExportTableAsync(spec);
-                        long after = 0;
-                        while (true)
-                        {
-                            PackageTableSpec? capture = await NextCaptureAsync(connection, transaction, after, ct);
-                            if (capture == null) break;
-                            await ValidateCaptureCountsAsync(connection, transaction, capture, ct);
-                            await ExportTableAsync(capture);
-                            after = capture.CaptureLayoutKey!.Value;
-                        }
                         await transaction.CommitAsync(ct);
 
                         async Task ExportTableAsync(PackageTableSpec spec)
@@ -136,26 +127,13 @@ SELECT Singleton,FormatIdentifier,SchemaVersion,MinimumReaderVersion,MinimumWrit
         using var cancellation = RelationalSession.CancelCommand(command, ct);
         await using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct) || reader.GetByte(0) != 1 || reader.GetString(1) != PersistenceFormatProbe.FormatIdentifier ||
-            reader.GetInt32(2) != PersistenceFormatProbe.SupportedSchemaVersion || reader.GetInt32(3) != 1 || reader.GetInt32(4) != 1 ||
+            reader.GetInt32(2) != PersistenceFormatProbe.SupportedSchemaVersion ||
+            reader.GetInt32(3) != PersistenceFormatProbe.SupportedSchemaVersion || reader.GetInt32(4) != PersistenceFormatProbe.SupportedSchemaVersion ||
             reader.GetString(5) != "Ready" || reader.GetGuid(6) == Guid.Empty)
             throw new InvalidOperationException("Package export requires the exact supported Ready format inside the pinned snapshot.");
         var result = new SourceHeader(reader.GetGuid(6), reader.GetFieldValue<DateTimeOffset>(7), reader.GetInt32(3), reader.GetInt32(4));
         if (await reader.ReadAsync(ct)) throw new InvalidDataException("The source format marker is not unique.");
         return result;
-    }
-
-    private async Task<PackageTableSpec?> NextCaptureAsync(SqlConnection connection, SqlTransaction transaction, long after, CancellationToken ct)
-    {
-        await using var command = Command(connection, transaction, $"""
-SELECT TOP(1) l.LayoutKey,l.ColumnCount,l.EncodingVersion FROM surf.DataLayout l
-WHERE l.LayoutKey>@After AND EXISTS (SELECT 1 FROM surf.DataSet d WHERE d.LayoutKey=l.LayoutKey AND ({PackageTableCatalogue.DataSet("d")}))
-ORDER BY l.LayoutKey;
-""", RelationalSession.Parameter("@After", SqlDbType.BigInt, after));
-        using var cancellation = RelationalSession.CancelCommand(command, ct);
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct)) return null;
-        if (reader.GetInt32(2) != 1) throw new InvalidDataException("Unsupported captured layout encoding in package source.");
-        return PackageTableCatalogue.Capture(reader.GetInt64(0), reader.GetInt32(1));
     }
 
     private async Task<RelationalPackageLocalStream> WriteLocalFileAsync(RelationalPackageLocalFile selected,

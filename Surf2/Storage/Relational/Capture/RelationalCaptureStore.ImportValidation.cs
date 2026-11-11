@@ -38,24 +38,14 @@ public sealed partial class RelationalCaptureStore
         var descriptor = new CaptureDataSetDescriptor(_session.Epoch, summary, Array.AsReadOnly(layout.Columns));
         await using var source = expectedRows.GetAsyncEnumerator(cancellationToken);
         long count = 0;
-        long after = -1;
-        while (true)
+        await foreach (var stored in StreamJsonRowsAsync(descriptor, cancellationToken).ConfigureAwait(false))
         {
-            var batch = await ReadBatchAsync(descriptor, layout, after, cancellationToken);
-            if (batch.Count == 0) break;
-            foreach (var stored in batch)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (stored.RowOrdinal != count || count >= summary.ActualRowCount)
-                    throw new InvalidDataException("Captured import has missing, extra, or non-contiguous stored row ordinals.");
-                if (!await source.MoveNextAsync()) throw new InvalidDataException("Captured import contains more rows than the pinned source.");
-                // Enforce source token/shape limits independently of the caller.
-                _ = CaptureRowCodec.Encode(layout, source.Current, _limits);
-                if (!CaptureRowFidelity.Matches(source.Current, stored.Value))
-                    throw new InvalidDataException($"Captured import row fidelity differs at ordinal {count}.");
-                after = stored.RowOrdinal;
-                count = checked(count + 1);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!await source.MoveNextAsync()) throw new InvalidDataException("Captured import contains more rows than the pinned source.");
+            _ = CaptureRowCodec.Encode(layout, source.Current, _limits);
+            if (!CaptureRowFidelity.Matches(source.Current, stored.Value))
+                throw new InvalidDataException($"Captured import row fidelity differs at ordinal {count}.");
+            count = checked(count + 1);
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (await source.MoveNextAsync()) throw new InvalidDataException("Captured import contains fewer rows than the pinned source.");

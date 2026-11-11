@@ -1,6 +1,9 @@
 using System.Collections.Immutable;
+using System.Data;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Xml.Linq;
 using Microsoft.Data.SqlClient;
 using Surf2.Models;
 using Surf2.Services;
@@ -101,8 +104,124 @@ public static partial class StorageRegressionSuite
         }
         check(Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.Document;")) == 0,
             "V2 browse, direct open, and content search never require or populate the derived document index");
+        await CheckV2CatalogueScaleAsync(fixture, session, content, connection, seeded, check);
         await fixture.VerifySourceUnchangedAsync(check);
     }
+
+    private static async Task CheckV2CatalogueScaleAsync(SqlFixture fixture, RelationalSession session,
+        RelationalContentStore content, string connection, QueryIntegrationFixture seeded, Action<bool, string> check)
+    {
+        const int extraProcedures = 11_673;
+        long unrelated = 0;
+        await InTransactionAsync(session, async (sql, transaction) =>
+        {
+            var writer = new RelationalSnapshotWriter(sql, transaction, content);
+            unrelated = await writer.CreateSnapshotAsync(new("catalogue-unrelated", "Unrelated fixture", "fixture", EvidenceTime, 1));
+        });
+        await SeedV2CatalogueScaleAsync(fixture, seeded, unrelated, extraProcedures);
+
+        // Capture only the generated fixture's parameterized metadata command. Replay it for the
+        // actual plan instead of making the application depend on SQL Server diagnostic privileges.
+        string? catalogueSql = null;
+        SqlParameter[] parameters = [];
+        var runtime = new RelationalRuntime(SqlServerConnectionOptions.FromConnectionString(connection));
+        ExplorerScope scope;
+        var elapsed = Stopwatch.StartNew();
+        using (var trace = new StateAccessSqlTrace(connection, command =>
+        {
+            if (!command.CommandText.Contains("OPENJSON(@Snapshots)", StringComparison.OrdinalIgnoreCase)) return;
+            catalogueSql = command.CommandText;
+            parameters = command.Parameters.Cast<SqlParameter>().Select(parameter => (SqlParameter)((ICloneable)parameter).Clone()).ToArray();
+        }))
+        {
+            scope = await runtime.Explorer.OpenScopeAsync(seeded.ScopeToken.Key, sortCultureName: "en-US");
+            var loads = trace.Commands.Where(command => command.Text.Contains("OPENJSON(@SNAPSHOTS)", StringComparison.Ordinal)).ToArray();
+            check(loads.Length == 1 && loads[0].Numbers.GetValueOrDefault("@Take") == 100_001,
+                "A cold large scope uses one row-bounded catalogue query for its selected snapshots");
+            StateAccessNoReads(trace.Commands, check, "Large startup catalogue", "TextContent", "Asset", "SymbolDefinition", "ResourceDocument");
+        }
+        elapsed.Stop();
+        var catalogue = scope.DatabaseCatalogue ?? throw new InvalidOperationException("Large catalogue was not loaded.");
+        var rows = catalogue[seeded.SnapshotKey];
+        check(catalogue.Count == 1 && rows.Count(row => row.ObjectKind == SqlDatabaseObjectKind.StoredProcedure) == 1000 + extraProcedures &&
+            rows.All(row => row.Resource.SnapshotKey == seeded.SnapshotKey && row.Resource.ObjectName != "RetiredScaleName"),
+            "A large selected catalogue excludes unrelated snapshots and retired revisions");
+        check(rows.Any(row => row.Resource.SchemaName == "revised" && row.Resource.ObjectName == "CurrentScaleName" &&
+            row.Resource.OriginalResourceKey == "catalogue-scale:CatalogueScale11673"),
+            "A current revision supplies exact names even when its original resource locator differs");
+        check(rows.SequenceEqual(rows.OrderBy(row => row.Resource.SortOrdinal).ThenBy(row => row.Resource.ResourceKey)),
+            "A large catalogue restores source order and stable ties after streaming");
+        Console.WriteLine($"Large startup catalogue: {rows.Length:N0} rows in {elapsed.Elapsed.TotalMilliseconds:N0} ms on the generated fixture.");
+
+        await using var sql = await runtime.Session.OpenAsync();
+        await using var planCommand = sql.CreateCommand();
+        planCommand.CommandText = "SET STATISTICS XML ON;\n" + (catalogueSql ?? throw new InvalidOperationException("No catalogue command captured."));
+        planCommand.Parameters.AddRange(parameters);
+        await using var reader = await planCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess);
+        var plans = new List<XDocument>();
+        int streamed = 0;
+        do
+        {
+            while (await reader.ReadAsync())
+            {
+                if (reader.FieldCount == 14) streamed++;
+                else if (reader.FieldCount == 1 && reader.GetFieldType(0) == typeof(string)) plans.Add(XDocument.Parse(reader.GetString(0)));
+                else throw new InvalidOperationException("Unexpected catalogue plan result.");
+            }
+        } while (await reader.NextResultAsync());
+
+        XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
+        var operators = plans.SelectMany(plan => plan.Descendants(ns + "RelOp")).ToArray();
+        bool wideWork = operators.Any(op => (string?)op.Attribute("PhysicalOp") is "Sort" or "Hash Match" &&
+            ((long?)op.Attribute("AvgRowSize") ?? 0) > 512);
+        bool revisionScan = operators.Any(op => (string?)op.Attribute("PhysicalOp") is "Clustered Index Scan" or "Index Scan" or "Table Scan" &&
+            op.Descendants(ns + "Object").Any(source => (string?)source.Attribute("Table") is "[SnapshotResourceRevision]" or
+                "[DatabaseObjectRevision]" or "[TableMetadataRevision]" or "[TableDataRevision]"));
+        check(operators.Length > 0 && streamed == rows.Length && !wideWork && !revisionScan,
+            "The actual large catalogue plan avoids wide sorts, wide hashes and revision-table scans");
+    }
+
+    private static Task<object?> SeedV2CatalogueScaleAsync(SqlFixture fixture, QueryIntegrationFixture seeded,
+        long unrelated, int count) => fixture.DestinationSqlAsync("""
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+        DECLARE @Resources TABLE(ResourceKey bigint PRIMARY KEY, SnapshotKey bigint NOT NULL, N int NOT NULL, Name nvarchar(64) NOT NULL);
+        DECLARE @Revisions TABLE(ResourceKey bigint PRIMARY KEY, RevisionKey bigint NOT NULL);
+        WITH digits(n) AS (SELECT n FROM (VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)) v(n)),
+        numbers AS (SELECT a.n+10*b.n+100*c.n+1000*d.n+10000*e.n+1 n FROM digits a CROSS JOIN digits b CROSS JOIN digits c CROSS JOIN digits d CROSS JOIN digits e)
+        MERGE surf.SnapshotResource AS target
+        USING (SELECT n, s.SnapshotKey, N'CatalogueScale'+CONVERT(nvarchar(16),n) Name
+            FROM numbers CROSS JOIN (VALUES(@Snapshot),(@Unrelated)) s(SnapshotKey) WHERE n<=@Count) AS source
+        ON 1=0 WHEN NOT MATCHED THEN INSERT(SnapshotKey,Kind,SchemaName,ObjectName,NameHash,OriginalResourceKey,ResourceKeyHash,CurrentSortOrdinal)
+            VALUES(source.SnapshotKey,0,N'dbo',source.Name,HASHBYTES('SHA2_256',CONVERT(varbinary(max),N'3:dbo'+CONVERT(nvarchar(16),LEN(source.Name))+N':'+source.Name)),
+                N'catalogue-scale:'+source.Name,HASHBYTES('SHA2_256',CONVERT(varbinary(max),N'catalogue-scale:'+source.Name)),10000+(@Count-source.n)/2)
+        OUTPUT inserted.ResourceKey,source.SnapshotKey,source.n,source.Name INTO @Resources;
+
+        INSERT surf.SnapshotResourceRevision(ResourceKey,SnapshotKey,IsSealed)
+            OUTPUT inserted.ResourceKey,inserted.RevisionKey INTO @Revisions
+            SELECT ResourceKey,SnapshotKey,1 FROM @Resources;
+        INSERT surf.DatabaseObjectRevision(RevisionKey,SchemaName,ObjectName,ObjectKind,TypeDescription,ParentSchemaName,ParentObjectName,DefinitionContentKey)
+            SELECT v.RevisionKey,CASE WHEN r.SnapshotKey=@Snapshot AND r.N=@Count THEN N'revised' ELSE N'dbo' END,
+                CASE WHEN r.SnapshotKey=@Snapshot AND r.N=@Count THEN N'CurrentScaleName' ELSE r.Name END,
+                o.ObjectKind,o.TypeDescription,o.ParentSchemaName,o.ParentObjectName,o.DefinitionContentKey
+            FROM @Resources r JOIN @Revisions v ON v.ResourceKey=r.ResourceKey
+            CROSS JOIN surf.DatabaseObjectRevision o WHERE o.RevisionKey=@SourceRevision;
+        UPDATE r SET CurrentRevisionKey=v.RevisionKey FROM surf.SnapshotResource r JOIN @Revisions v ON v.ResourceKey=r.ResourceKey;
+
+        DELETE FROM @Revisions;
+        INSERT surf.SnapshotResourceRevision(ResourceKey,SnapshotKey,IsSealed)
+            OUTPUT inserted.ResourceKey,inserted.RevisionKey INTO @Revisions
+            SELECT ResourceKey,SnapshotKey,1 FROM @Resources WHERE SnapshotKey=@Snapshot;
+        INSERT surf.DatabaseObjectRevision(RevisionKey,SchemaName,ObjectName,ObjectKind,TypeDescription,ParentSchemaName,ParentObjectName,DefinitionContentKey)
+            SELECT v.RevisionKey,N'dbo',N'RetiredScaleName',o.ObjectKind,o.TypeDescription,o.ParentSchemaName,o.ParentObjectName,o.DefinitionContentKey
+            FROM @Revisions v CROSS JOIN surf.DatabaseObjectRevision o WHERE o.RevisionKey=@SourceRevision;
+        UPDATE surf.DatabaseSnapshot SET IsPublished=1 WHERE SnapshotKey IN(@Snapshot,@Unrelated);
+        UPDATE surf.SnapshotCatalogueHead SET UserKey=UserKey WHERE UserKey=1;
+        COMMIT TRANSACTION;
+        """, RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, seeded.SnapshotKey),
+        RelationalSession.Parameter("@Unrelated", SqlDbType.BigInt, unrelated),
+        RelationalSession.Parameter("@SourceRevision", SqlDbType.BigInt, seeded.Procedure.RevisionKey),
+        RelationalSession.Parameter("@Count", SqlDbType.Int, count));
 
     private static async Task<ImmutableArray<ExplorerNodeSummary>> V2CatalogueChildrenAsync(RelationalExplorerService explorer,
         ExplorerScope scope, ExplorerNodeSummary parent)

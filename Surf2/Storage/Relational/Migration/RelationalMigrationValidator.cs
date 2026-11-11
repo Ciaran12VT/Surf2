@@ -151,13 +151,14 @@ public sealed class RelationalMigrationValidator
         return await OneAsync("""
 SELECT f.DatabaseIdentity FROM surf.MigrationRun m JOIN surf.StorageFormatInfo f ON f.Singleton=1
 WHERE m.MigrationIdentity=@Migration AND m.SourceFingerprint=@Fingerprint
-  AND m.ConverterVersion=1 AND m.Status='Converting' AND f.State='Migrating' AND f.SchemaVersion=1;
+  AND m.ConverterVersion=1 AND m.Status='Converting' AND f.State='Migrating' AND f.SchemaVersion=@Version;
 """, r =>
         {
             Guid identity = r.GetGuid(0);
             Check(identity != Guid.Empty, "migration", "nonempty destination database identity");
             return identity;
         }, "matching converting run and unpublished marker", ct, Migration(),
+            RelationalSession.Parameter("@Version", SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion),
             RelationalSession.Parameter("@Fingerprint", SqlDbType.Binary, _source.Fingerprint, 32));
     }
 

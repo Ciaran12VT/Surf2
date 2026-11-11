@@ -36,7 +36,7 @@ public sealed partial class RelationalCaptureStore
     private static SqlParameter Key(string name, long value) => RelationalSession.Parameter(name, SqlDbType.BigInt, value);
     private static SqlParameter Text(string name, string? value) => RelationalSession.Parameter(name, SqlDbType.NVarChar, value, -1);
 
-    private static async Task<CaptureLayout> ReadLayoutAsync(SqlConnection connection, SqlTransaction? transaction,
+    internal static async Task<CaptureLayout> ReadLayoutAsync(SqlConnection connection, SqlTransaction? transaction,
         long layoutKey, CancellationToken cancellationToken)
     {
         await using var command = Command(connection, transaction, """

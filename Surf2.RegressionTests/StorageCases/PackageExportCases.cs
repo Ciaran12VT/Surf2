@@ -216,11 +216,8 @@ public static partial class StorageRegressionSuite
             archive.Entries.Sum(x => x.Length) == result.UncompressedBytes,
             "ZIP has exactly declared unique entries and exact total uncompressed byte count");
         var names = manifest.Tables.Select(x => x.Table.Schema + "." + x.Table.Name).ToHashSet(StringComparer.Ordinal);
-        check(PackageExpectedTables.All(names.Contains) && names.Count == PackageExpectedTables.Length +
-            manifest.Tables.Count(x => x.Table.Schema == "capture") &&
-            names.All(x => PackageExpectedTables.Contains(x, StringComparer.Ordinal) ||
-                x.StartsWith("capture.Data_", StringComparison.Ordinal)),
-            "Package includes authoritative graph/history/state/content tables and generated captures only");
+        check(names.SetEquals(PackageExpectedTables),
+            "Package includes the fixed authoritative graph and JSON capture table");
         check(!archive.Entries.Any(x => x.FullName.Contains("Surf2Documents", StringComparison.OrdinalIgnoreCase) ||
             x.FullName.Contains("connection-settings", StringComparison.OrdinalIgnoreCase) || x.FullName.Contains("fixturePackage", StringComparison.Ordinal)),
             "ZIP excludes legacy whole-root JSON, bootstrap connection settings and the credential-canary table");
@@ -266,6 +263,11 @@ public static partial class StorageRegressionSuite
                         if (columns[i].Encoding == "utf16le-chunks-v1")
                         {
                             string text = DecodePackageUtf16Units(bytes);
+                            if (stream.Table.Name == "FullTableData" && columns[i].Name == "JsonPayload")
+                            {
+                                using var data = JsonDocument.Parse(text);
+                                capturedRows += data.RootElement.GetArrayLength();
+                            }
                             check(!text.Contains(secret, StringComparison.Ordinal) && !legacyRoots.Contains(text),
                                 "Authoritative text cell excludes credential canary and whole legacy JSON root: " + stream.Table.Name + "." + columns[i].Name);
                             foundDefinition |= stream.Table.Name == "TextContent" && columns[i].Name == "Text" && text == definition;
@@ -292,7 +294,6 @@ public static partial class StorageRegressionSuite
             }
             check(rows == stream.RowCount && rows == sqlRows,
                 "Package NDJSON row count agrees with independent fixture SQL selection: " + stream.Entry);
-            if (stream.Table.Schema == "capture") capturedRows += rows;
         }
         check(foundRaw, "Exported raw UTF-16 chunks preserve exact code units without replacement, including a pair split between chunks");
         check(foundDefinition && foundInlineImageText &&
@@ -300,7 +301,7 @@ public static partial class StorageRegressionSuite
             assetHashes.Contains(Convert.ToHexString(SHA256.HashData(Png(59)))),
             "Package text and binary asset streams retain SQL definitions, inline PNG text and both diagram/settings PNG bytes");
         check(capturedRows > 0 && capturedRows == Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT SUM(ActualRowCount) FROM surf.DataSet;")),
-            "Package generated capture streams cover current and reverse mixed metadata/data history rows");
+            "Package JSON captures cover current and reverse mixed metadata/data history rows");
         foreach ((string name, byte[] expected) in new[] { ("local-files/images/fixture.png", png), ("local-files/notes/fixture.txt", notes) })
         {
             var selected = manifest.LocalFiles.Single(x => x.Entry == name);
@@ -321,7 +322,7 @@ public static partial class StorageRegressionSuite
         "surf.DatabaseObjectRevision", "surf.TableMetadataRevision", "surf.TableDataRevision", "surf.TableDataRevisionMetadata",
         "surf.TableColumnRevision", "surf.PrimaryKeyConstraint", "surf.PrimaryKeyColumn", "surf.SnapshotCurrentColumn",
         "surf.SnapshotCurrentPrimaryKey", "surf.FullDataTableSelection", "surf.SnapshotHistory", "surf.SnapshotVersion",
-        "surf.SnapshotVersionBaseline", "surf.SnapshotChange", "surf.DataSet", "surf.DataLayout", "surf.DataColumn", "surf.DataValueException",
+        "surf.SnapshotVersionBaseline", "surf.SnapshotChange", "surf.DataSet", "surf.DataLayout", "surf.DataColumn", "surf.DataValueException", "surf.FullTableData",
         "surf.ScopeCatalogueState", "surf.Scope", "surf.ScopeResource", "surf.VirtualFolder", "surf.VirtualFolderMember",
         "surf.Diagram", "surf.Workbench", "surf.DiagramRevision", "surf.DiagramObject", "surf.Workflow", "surf.WorkflowItem",
         "surf.DiagramWorkflowBinding", "surf.WorkflowItemMarker", "surf.DiagramPortalTarget", "surf.QueryItem",
@@ -333,9 +334,6 @@ public static partial class StorageRegressionSuite
     private static void ValidatePackageFixtureTable(RelationalPackageTable table)
     {
         if (PackageExpectedTables.Contains(table.Schema + "." + table.Name, StringComparer.Ordinal)) return;
-        if (table.Schema == "capture" && table.Name.StartsWith("Data_", StringComparison.Ordinal) &&
-            long.TryParse(table.Name.AsSpan(5), NumberStyles.None, CultureInfo.InvariantCulture, out long key) &&
-            key > 0 && table.Name == "Data_" + key.ToString(CultureInfo.InvariantCulture)) return;
         throw new InvalidDataException("Unexpected SQL table in fixture export manifest.");
     }
 

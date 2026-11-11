@@ -40,7 +40,8 @@ public static partial class StorageRegressionSuite
 
     // Register in a separate console invocation: WPF permits only one Application per process.
     // This creates/drops ONLY SqlFixture's randomly named databases; it never calls App.OnStartup.
-    public static Task RunRuntimeWpfChecksAsync(Action<bool, string> check, string outputDir, bool startupOnly = false)
+    public static Task RunRuntimeWpfChecksAsync(Action<bool, string> check, string outputDir, bool startupOnly = false,
+        bool captureUpgradeOnly = false)
     {
         ArgumentNullException.ThrowIfNull(check);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputDir);
@@ -67,9 +68,14 @@ public static partial class StorageRegressionSuite
                     app.InitializeComponent();
                     app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                     Directory.CreateDirectory(directory);
-                    await RuntimeWpfCheckCancellationAsync(check);
-                    await RunExplorerChildrenUiChecksAsync(check);
-                    await RunRuntimeWpfFixtureAsync(check, directory, startupOnly);
+                    if (captureUpgradeOnly)
+                        await RuntimeWpfCheckJsonCaptureUpgradeAsync(check);
+                    else
+                    {
+                        await RuntimeWpfCheckCancellationAsync(check);
+                        await RunExplorerChildrenUiChecksAsync(check);
+                        await RunRuntimeWpfFixtureAsync(check, directory, startupOnly);
+                    }
                 }
                 catch (Exception error) { failure = error; }
                 finally

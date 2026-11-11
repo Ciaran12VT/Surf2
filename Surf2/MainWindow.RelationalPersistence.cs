@@ -187,6 +187,13 @@ public partial class MainWindow
         ct.ThrowIfCancellationRequested();
         SetStartupStage(StartupStage.DatabaseFormat);
         PersistenceFormatResult format = await new PersistenceFormatProbe().ProbeAsync(options.ConnectionString, ct);
+        if (format.SchemaVersion == 1 && format.Format is PersistenceFormat.Relational or PersistenceFormat.Incomplete)
+        {
+            SetStartupStage(StartupStage.DatabaseUpgrade);
+            await new RelationalCaptureSchemaUpgrade().UpgradeAsync(options.ConnectionString,
+                new Progress<string>(message => StatusText = message), ct);
+            format = await new PersistenceFormatProbe().ProbeAsync(options.ConnectionString, ct);
+        }
         ct.ThrowIfCancellationRequested();
         if (format.Format == PersistenceFormat.Unavailable &&
             await RelationalDatabaseBootstrap.CanProveDatabaseAbsentAsync(options, ct))
@@ -240,7 +247,7 @@ public partial class MainWindow
 
         if (format.Format != PersistenceFormat.Relational)
             throw new InvalidOperationException("Cannot load this database: " + (format.Reason ?? format.Format.ToString()) +
-                ". No schema or saved data was changed.");
+                ".");
 
         var runtime = new RelationalRuntime(options);
         SetStartupStage(StartupStage.DatabaseReadiness);

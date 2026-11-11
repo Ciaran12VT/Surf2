@@ -92,6 +92,24 @@ public static partial class StorageRegressionSuite
             "Capture revision lookup selects one dataset without loading an unrelated revision");
         var streamed = new List<CaptureRow>();
         await foreach (var row in capture.StreamRowsAsync(f.Current.DataSetKey)) streamed.Add(row);
+        await using (var connection = await session.OpenAsync())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+SELECT JsonPayload FROM surf.FullTableData WHERE DataSetKey=@DataSet;
+SELECT COUNT_BIG(*) FROM sys.tables WHERE schema_id=SCHEMA_ID(N'capture');
+""";
+            command.Parameters.Add(RelationalSession.Parameter("@DataSet", System.Data.SqlDbType.BigInt, f.Current.DataSetKey));
+            await using var reader = await command.ExecuteReaderAsync();
+            check(await reader.ReadAsync(), "Each captured table revision has a keyed JSON payload");
+            using var stored = JsonDocument.Parse(reader.GetString(0));
+            var storedRows = stored.RootElement.EnumerateArray().ToArray();
+            check(storedRows.Length == f.Rows.Length && storedRows.Select((row, i) => JsonEvidenceEquals(row, f.Rows[i])).All(x => x),
+                "The single stored JSON array preserves all captured row evidence");
+            await reader.NextResultAsync();
+            check(await reader.ReadAsync() && reader.GetInt64(0) == 0,
+                "Capturing new table layouts creates no physical capture tables");
+        }
         check(streamed.Select(x => x.RowOrdinal).SequenceEqual(Enumerable.Range(0, f.Rows.Length).Select(x => (long)x)),
             "Streamed captured ordinals are contiguous and ordered");
         check(streamed.Count == f.Rows.Length && streamed.Select((x, i) => JsonEvidenceEquals(f.Rows[i], x.Value)).All(x => x),

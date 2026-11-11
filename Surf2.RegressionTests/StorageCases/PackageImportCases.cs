@@ -38,6 +38,7 @@ public static partial class StorageRegressionSuite
         var exported = await exporter.ExportAsync(package,
             new(LocalFiles: PackageSelectedFiles([selected]), AllowBlockingConsistentFallback: true));
         byte[] packageHash = await PackageFileHashAsync(package);
+        await VerifySchemaOnePackageImportAsync(source, exported, limits, check);
 
         await using (var restored = await SqlFixture.CreateAsync())
         {
@@ -144,10 +145,23 @@ public static partial class StorageRegressionSuite
     private static async Task VerifyPackageImportPublishedAsync(SqlFixture target, RelationalPackageImportResult actual,
         RelationalPackageExportResult exported, Guid identity, Action<bool, string> check)
     {
+        long expectedCapturedRows = 0;
+        using (var archive = ZipFile.OpenRead(exported.Destination))
+        {
+            var dataset = exported.Manifest.Tables.Single(table => table.Table.Name == "DataSet");
+            int ordinal = dataset.Table.Columns.Single(column => column.Name == "ActualRowCount").StreamOrdinal!.Value;
+            await using var input = archive.GetEntry(dataset.Entry)!.Open();
+            using var reader = new StreamReader(input);
+            while (await reader.ReadLineAsync() is { } line)
+            {
+                using var row = JsonDocument.Parse(line);
+                expectedCapturedRows += long.Parse(row.RootElement[ordinal].GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
         check(actual.ImportIdentity == identity && actual.DatabaseIdentity != Guid.Empty &&
             actual.DatabaseIdentity != actual.SourceDatabaseIdentity && actual.SourceDatabaseIdentity == exported.Manifest.SourceDatabaseIdentity &&
             actual.ManifestSha256 == exported.ManifestSha256 && actual.ImportedRows == exported.Manifest.Tables.Sum(x => x.RowCount) &&
-            actual.CapturedRows == exported.Manifest.Tables.Where(x => x.Table.Schema == "capture").Sum(x => x.RowCount) &&
+            actual.CapturedRows == expectedCapturedRows &&
             actual.VerifiedUncompressedBytes == exported.UncompressedBytes,
             "Production package import preserves pinned source identity/hash/counts and creates an independent destination identity");
         check((await new PersistenceFormatProbe().ProbeAsync(target.DestinationConnectionString)).Format == PersistenceFormat.Relational &&
@@ -195,7 +209,8 @@ public static partial class StorageRegressionSuite
             label + ": unqualified history/version reads retain first-history semantics after duplicate-owner round trip");
     }
 
-    private static async Task VerifyPackageImportCaptureAsync(RelationalSession source, RelationalSession target, Action<bool, string> check)
+    private static async Task VerifyPackageImportCaptureAsync(RelationalSession source, RelationalSession target, Action<bool, string> check,
+        bool compareJsonEvidence = false)
     {
         var left = new RelationalCaptureStore(source);
         var right = new RelationalCaptureStore(target);
@@ -220,7 +235,8 @@ public static partial class StorageRegressionSuite
             {
                 if (!await rightRows.MoveNextAsync()) throw new InvalidDataException("Restored capture ends before the source.");
                 check(leftRows.Current.RowOrdinal == rightRows.Current.RowOrdinal &&
-                    leftRows.Current.Value.GetRawText() == rightRows.Current.Value.GetRawText(),
+                    (compareJsonEvidence ? JsonEvidenceEquals(leftRows.Current.Value, rightRows.Current.Value) :
+                        leftRows.Current.Value.GetRawText() == rightRows.Current.Value.GetRawText()),
                     "Package capture round trip retains duplicate/case/nested/null/numeric-token evidence and stable row ordinal: " + key + "/" + rows);
                 rows++;
             }

@@ -24,6 +24,9 @@ internal static class PackageTableCatalogue
 
     internal static readonly PackageTableSpec[] Authoritative = Build();
 
+    internal static IEnumerable<PackageTableSpec> ForSchema(int version) =>
+        Authoritative.Where(table => version >= 2 || table.Name != "FullTableData");
+
     private static PackageTableSpec[] Build()
     {
         var result = new List<PackageTableSpec>
@@ -43,6 +46,7 @@ internal static class PackageTableCatalogue
             new("surf", "DataSet", DataSet, "ReadySealedPublishedDataSet-v1"),
             new("surf", "DataLayout", a => $"EXISTS (SELECT 1 FROM surf.DataSet pd WHERE pd.LayoutKey={a}.LayoutKey AND {DataSet("pd")})", "ReferencedReadyLayout-v1"),
             new("surf", "DataColumn", a => $"EXISTS (SELECT 1 FROM surf.DataSet pd WHERE pd.LayoutKey={a}.LayoutKey AND {DataSet("pd")})", "ReferencedReadyLayout-v1"),
+            new("surf", "FullTableData", a => $"EXISTS (SELECT 1 FROM surf.DataSet pd WHERE pd.DataSetKey={a}.DataSetKey AND {DataSet("pd")})", "ReadyDataSetJson-v1"),
             new("surf", "DataValueException", a => $"EXISTS (SELECT 1 FROM surf.DataSet pd WHERE pd.DataSetKey={a}.DataSetKey AND {DataSet("pd")})", "ReadyDataSetExceptions-v1")
         };
         string[] state = ["ScopeCatalogueState", "Scope", "ScopeResource", "VirtualFolder", "VirtualFolderMember",

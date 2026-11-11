@@ -17,6 +17,19 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--json-capture-startup", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
+        Path.Combine(AppContext.BaseDirectory, "json-capture-startup-checks"), captureUpgradeOnly: true);
+    Console.WriteLine($"Passed {passed} JSON capture startup checks.");
+    return;
+}
+if (args.Contains("--json-capture", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunJsonCaptureUpgradeChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} JSON capture migration checks.");
+    return;
+}
 if (args.Contains("--snapshot-publication", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunSnapshotPublicationPerformanceChecksAsync(Check);

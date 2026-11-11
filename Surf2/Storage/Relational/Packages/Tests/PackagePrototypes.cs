@@ -127,7 +127,7 @@ internal static class PackagePrototypes
     {
         var parser = new TSql160Parser(true);
         var tables = new TableNames();
-        foreach (string file in new[] { "001.Core.sql", "001.Snapshots.sql", "001.Capture.sql", "001.State.sql" })
+        foreach (string file in new[] { "001.Core.sql", "001.Snapshots.sql", "001.Capture.sql", "001.State.sql", "002.FullTableData.sql" })
         {
             using var source = File.OpenText(Path.Combine(schemaPath, file));
             var tree = parser.Parse(source, out var errors);

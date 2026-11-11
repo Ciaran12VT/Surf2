@@ -144,12 +144,13 @@ UPDATE surf.MigrationRun SET Status='Complete',FinishedAtUtc=SYSDATETIMEOFFSET()
 WHERE MigrationIdentity=@Migration AND SourceFingerprint=@Fingerprint AND ConverterVersion=1 AND Status='Converting';
 IF @@ROWCOUNT<>1 THROW 51009, 'Migration state does not permit publication.', 1;
 UPDATE surf.StorageFormatInfo SET State='Ready',CompletedMigrationIdentity=@Migration
-WHERE Singleton=1 AND State='Migrating' AND SchemaVersion=1 AND DatabaseIdentity=@Database;
+WHERE Singleton=1 AND State='Migrating' AND SchemaVersion=@Version AND DatabaseIdentity=@Database;
 IF @@ROWCOUNT<>1 THROW 51010, 'Storage state does not permit publication.', 1;
 """;
         command.Parameters.Add(RelationalSession.Parameter("@Migration", SqlDbType.UniqueIdentifier, source.MigrationIdentity));
         command.Parameters.Add(RelationalSession.Parameter("@Fingerprint", SqlDbType.Binary, source.Fingerprint, 32));
         command.Parameters.Add(RelationalSession.Parameter("@Rows", SqlDbType.BigInt, validation.DataRows));
+        command.Parameters.Add(RelationalSession.Parameter("@Version", SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion));
         command.Parameters.Add(RelationalSession.Parameter("@Database", SqlDbType.UniqueIdentifier, validation.DatabaseIdentity));
         using var cancellation = RelationalSession.CancelCommand(command, ct);
         await command.ExecuteNonQueryAsync(ct);

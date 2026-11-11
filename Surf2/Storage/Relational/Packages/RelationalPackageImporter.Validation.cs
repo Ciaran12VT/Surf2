@@ -12,6 +12,11 @@ public sealed partial class RelationalPackageImporter
     private async Task ValidateStoredTableAsync(SqlConnection connection, SqlTransaction transaction, KnownTable table,
         RelationalPackageTableStream stream, PackageInput package, RelationalPackageImportOptions options, CancellationToken ct)
     {
+        if (table.Spec.Name == "FullTableData")
+        {
+            await ValidateFullTableDataAsync(connection, transaction, stream, package, ct);
+            return;
+        }
         await using (var count = Command(connection, transaction, "SELECT COUNT_BIG(*) FROM " + table.Spec.Qualified + ";"))
         {
             using var cancel = RelationalSession.CancelCommand(count, ct);
@@ -96,7 +101,7 @@ public sealed partial class RelationalPackageImporter
         }
     }
 
-    private async Task<long> ValidateCaptureModelsAsync(SqlConnection connection, IReadOnlyList<KnownTable> captures,
+    private async Task<long> ValidateCaptureModelsAsync(SqlConnection connection,
         Guid import, byte[] fingerprint, Guid database, CancellationToken ct)
     {
         await RequireImportAsync(connection, null, import, fingerprint, database, ct);
@@ -120,7 +125,6 @@ FROM surf.DataSet WHERE DataSetKey>@After ORDER BY DataSetKey;
                 if (key <= 0 || actual < 0 || reader.IsDBNull(3) || reader.GetInt64(3) != actual || reader.GetString(4) != "Ready" || reader.GetInt32(5) != 1)
                     throw PackageRowDecoding.Bad("Incomplete captured dataset flags/counts");
             }
-            if (!captures.Any(t => t.Spec.CaptureLayoutKey == layout)) throw PackageRowDecoding.Bad("A dataset has no generated capture stream");
             long rows = 0;
             await foreach (var row in capture.StreamRowsAsync(key, cancellationToken: ct).ConfigureAwait(false))
             {
@@ -198,7 +202,7 @@ UPDATE surf.MigrationRun SET Status='Complete',FinishedAtUtc=SYSDATETIMEOFFSET()
 WHERE MigrationIdentity=@Import AND SourceFingerprint=@Hash AND ConverterVersion=1 AND Status='Converting';
 IF @@ROWCOUNT<>1 THROW 51108,'The pinned import run changed before publication.',1;
 UPDATE surf.StorageFormatInfo SET State='Ready',CompletedMigrationIdentity=@Import
-WHERE Singleton=1 AND State='Migrating' AND DatabaseIdentity=@Database AND SchemaVersion=1;
+WHERE Singleton=1 AND State='Migrating' AND DatabaseIdentity=@Database AND SchemaVersion=2;
 IF @@ROWCOUNT<>1 THROW 51109,'The pinned format marker changed before publication.',1;
 """, ct, RelationalSession.Parameter("@Import", SqlDbType.UniqueIdentifier, import),
         RelationalSession.Parameter("@Schema", SqlDbType.Int, package.Manifest.DatabaseSchemaVersion),

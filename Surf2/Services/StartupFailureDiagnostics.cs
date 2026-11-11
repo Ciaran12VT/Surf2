@@ -8,7 +8,7 @@ namespace Surf2.Services;
 
 internal enum StartupStage
 {
-    DatabaseFormat, DatabaseReadiness, Preferences, Workspace, ScopeSelection, WorkbenchList,
+    DatabaseFormat, DatabaseUpgrade, DatabaseReadiness, Preferences, Workspace, ScopeSelection, WorkbenchList,
     Appearance, StartupWorkbench, WorkbenchState, WorkbenchScope, ScopeLookup, ScopeState,
     ScopeMetadata, ScopeRoots, Diagram, Documents, Viewport, LegacyDocuments
 }
@@ -81,6 +81,7 @@ internal sealed class StartupFailureDiagnostics(string? directory = null)
     private static string Describe(StartupStage stage) => stage switch
     {
         StartupStage.DatabaseFormat => "checking database format",
+        StartupStage.DatabaseUpgrade => "migrating captured table data to JSON storage",
         StartupStage.DatabaseReadiness => "checking database readiness",
         StartupStage.Preferences => "loading startup preferences",
         StartupStage.Workspace => "loading saved workspace",

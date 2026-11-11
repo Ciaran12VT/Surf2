@@ -69,128 +69,42 @@ public sealed partial class RelationalCaptureStore
     private async IAsyncEnumerable<CaptureRow> StreamFilteredAsync(CaptureDataSetDescriptor descriptor,
         FrozenCaptureQuery query, long afterOrdinal, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        var layout = new CaptureLayout(descriptor.Columns);
-        long after = afterOrdinal;
-        while (true)
-        {
-            var batch = await ReadBatchAsync(descriptor, layout, after, cancellationToken);
-            if (batch.Count == 0) yield break;
-            foreach (var row in batch)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                after = row.RowOrdinal;
-                if (query.Matches(row.Value, descriptor.Columns)) yield return row;
-            }
-        }
+        await foreach (var row in StreamJsonRowsAsync(descriptor, cancellationToken).ConfigureAwait(false))
+            if (row.RowOrdinal > afterOrdinal && query.Matches(row.Value, descriptor.Columns))
+                yield return row;
     }
 
-    private async Task<List<CaptureRow>> ReadBatchAsync(CaptureDataSetDescriptor descriptor, CaptureLayout layout,
-        long afterOrdinal, CancellationToken cancellationToken, int? requestedRows = null, long? requestedBytes = null)
+    private async IAsyncEnumerable<CaptureRow> StreamJsonRowsAsync(CaptureDataSetDescriptor descriptor,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        int rowBudget = Math.Min(requestedRows ?? _limits.ReadBatchRows, _limits.ReadBatchRows);
-        long byteBudget = Math.Min(requestedBytes ?? _limits.ReadBatchBytes, _limits.ReadBatchBytes);
-        long dataSetKey = descriptor.Summary.DataSetKey;
-        string table = CaptureLayout.QualifiedTable(descriptor.Summary.LayoutKey);
-        string columns = string.Concat(Enumerable.Range(0, layout.Columns.Length).Select(i => ", r.[" + CaptureLayout.ColumnName(i) + "]"));
-        var encodedRows = new List<(long Ordinal, EncodedCaptureRow Row)>();
-        var minimumEstimates = new Dictionary<long, long>();
-        var tokenBytesByRow = new Dictionary<long, long>();
-        var storedEstimates = new Dictionary<long, long>();
         await using var connection = await _session.OpenAsync(cancellationToken);
-        // Bound metadata candidates first, then fetch LOB columns for the byte-
-        // bounded range. No OFFSET or SQL collation can omit a .NET match.
-        await using (var command = Command(connection, null, $"""
-WITH Candidates AS (
-    SELECT TOP (@Take) RowOrdinal, EstimatedBytes FROM {table}
-    WHERE DataSetKey = @DataSet AND RowOrdinal > @After ORDER BY RowOrdinal
-), Budgeted AS (
-    SELECT RowOrdinal, SUM(EstimatedBytes) OVER (ORDER BY RowOrdinal ROWS UNBOUNDED PRECEDING) AS BytesSoFar,
-           ROW_NUMBER() OVER (ORDER BY RowOrdinal) AS Position FROM Candidates
-)
-SELECT r.RowOrdinal, r.RowKind, r.EstimatedBytes, r.PropertyOrder{columns}
-FROM {table} AS r INNER JOIN Budgeted AS b ON r.RowOrdinal = b.RowOrdinal
-WHERE r.DataSetKey = @DataSet AND (b.Position = 1 OR b.BytesSoFar <= @Budget)
-ORDER BY r.RowOrdinal;
-""", RelationalSession.Parameter("@Take", SqlDbType.Int, rowBudget),
-            Key("@DataSet", dataSetKey), Key("@After", afterOrdinal), Key("@Budget", byteBudget)))
+        await using var command = Command(connection, null,
+            "SELECT CONVERT(varbinary(max), JsonPayload) FROM surf.FullTableData WHERE DataSetKey = @DataSet;",
+            Key("@DataSet", descriptor.Summary.DataSetKey));
+        using var cancellation = RelationalSession.CancelCommand(command, cancellationToken);
+        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new InvalidDataException("Captured JSON payload is missing.");
+        await using var sqlStream = reader.GetStream(0);
+        await using var utf8 = Encoding.CreateTranscodingStream(sqlStream, Encoding.Unicode,
+            new UTF8Encoding(false, true), leaveOpen: true);
+        var layout = new CaptureLayout(descriptor.Columns);
+        long ordinal = 0;
+        await foreach (var value in CaptureJsonArray.ReadAsync(utf8, _limits.MaxRowUtf8Bytes, cancellationToken).ConfigureAwait(false))
         {
-            using var cancellation = RelationalSession.CancelCommand(command, cancellationToken);
-            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-            long bytes = 0;
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                long ordinal = reader.GetInt64(0);
-                var kind = (JsonValueKind)reader.GetByte(1);
-                long estimate = reader.GetInt64(2);
-                if (kind is < JsonValueKind.Object or > JsonValueKind.Null || ordinal <= afterOrdinal ||
-                    estimate is <= 0 or > CaptureLimits.MaximumEstimatedRowBytes ||
-                    bytes + estimate > byteBudget || encodedRows.Count >= rowBudget)
-                    throw new CaptureLimitException("Stored rows exceed the bounded read contract.");
-                var shape = await reader.GetFieldValueAsync<byte[]>(3, cancellationToken);
-                if (shape.Length > CaptureLimits.MaximumShapeBytes) throw new InvalidDataException("Oversized property descriptor.");
-                var tokens = new string?[layout.Columns.Length];
-                long minimumEstimate = shape.Length * 4L + 4096 + tokens.Length * 256L;
-                long tokenBytes = 0;
-                for (int i = 0; i < tokens.Length; i++)
-                    if (!await reader.IsDBNullAsync(i + 4, cancellationToken))
-                    {
-                        tokens[i] = await reader.GetFieldValueAsync<string>(i + 4, cancellationToken);
-                        tokenBytes += Encoding.UTF8.GetByteCount(tokens[i]!);
-                        minimumEstimate += tokens[i]!.Length * 8L;
-                        if (tokenBytes > CaptureLimits.MaximumRowUtf8Bytes || minimumEstimate > estimate)
-                            throw new CaptureLimitException("Stored scalar payload exceeds its validated row budget.");
-                    }
-                if (minimumEstimate > estimate) throw new CaptureLimitException("Stored descriptor exceeds its validated row budget.");
-                minimumEstimates.Add(ordinal, minimumEstimate);
-                tokenBytesByRow.Add(ordinal, tokenBytes);
-                storedEstimates.Add(ordinal, estimate);
-                encodedRows.Add((ordinal, new(kind, shape, tokens, [], estimate)));
-                bytes += estimate;
-                afterOrdinal = ordinal;
-            }
+            var encoded = CaptureRowCodec.Encode(layout, value, _limits);
+            if (encoded.EstimatedBytes > _limits.ReadBatchBytes)
+                throw new CaptureLimitException("One row exceeds the read memory budget.");
+            if (ordinal >= descriptor.Summary.ActualRowCount)
+                throw new InvalidDataException("Captured JSON contains more rows than its recorded count.");
+            yield return new(ordinal++, value, encoded.EstimatedBytes);
         }
-        if (encodedRows.Count == 0) return [];
-        var exceptions = new Dictionary<long, List<CaptureValueException>>();
-        var exceptionBytes = new Dictionary<long, long>();
-        await using (var command = Command(connection, null, """
-SELECT RowOrdinal, PropertyOrdinal, ValueKind, RawToken FROM surf.DataValueException
-WHERE DataSetKey = @DataSet AND RowOrdinal BETWEEN @First AND @Last ORDER BY RowOrdinal, PropertyOrdinal;
-""", Key("@DataSet", dataSetKey), Key("@First", encodedRows[0].Ordinal), Key("@Last", encodedRows[^1].Ordinal)))
-        {
-            using var cancellation = RelationalSession.CancelCommand(command, cancellationToken);
-            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                long ordinal = reader.GetInt64(0);
-                int propertyOrdinal = reader.GetInt32(1);
-                var kind = (JsonValueKind)reader.GetByte(2);
-                string token = await reader.GetFieldValueAsync<string>(3, cancellationToken);
-                if (!exceptions.TryGetValue(ordinal, out var values)) exceptions[ordinal] = values = [];
-                long bytes = exceptionBytes.GetValueOrDefault(ordinal) + Encoding.UTF8.GetByteCount(token);
-                if (values.Count >= CaptureLimits.MaximumExceptionsPerRow || bytes > CaptureLimits.MaximumRowUtf8Bytes)
-                    throw new CaptureLimitException("Stored exception values exceed the per-row budget.");
-                if (!minimumEstimates.TryGetValue(ordinal, out long minimumEstimate))
-                    throw new InvalidDataException("An exceptional value has no captured row in its ordinal range.");
-                minimumEstimate += token.Length * 8L;
-                if (bytes + tokenBytesByRow[ordinal] > CaptureLimits.MaximumRowUtf8Bytes || minimumEstimate > storedEstimates[ordinal])
-                    throw new CaptureLimitException("Stored exception payload exceeds its validated row budget.");
-                minimumEstimates[ordinal] = minimumEstimate;
-                exceptionBytes[ordinal] = bytes;
-                values.Add(new(propertyOrdinal, kind, token));
-            }
-        }
-        var result = new List<CaptureRow>(encodedRows.Count);
-        foreach (var encoded in encodedRows)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var row = encoded.Row with { Exceptions = exceptions.GetValueOrDefault(encoded.Ordinal)?.ToArray() ?? [] };
-            result.Add(new(encoded.Ordinal, CaptureRowCodec.Decode(layout, row), row.EstimatedBytes));
-        }
-        return result;
+        if (ordinal != descriptor.Summary.ActualRowCount)
+            throw new InvalidDataException("Captured JSON count differs from its recorded count.");
     }
 
     // Sorted cursors use a verified position in a freshly built immutable exact
-    // result. Unsorted cursors seek RowOrdinal. No cursor means position zero.
+    // result. Unsorted cursors skip preceding ordinals. No cursor means position zero.
     // This deliberately bounded fallback may rescan/re-sort on each page; a UI
     // can retain its own operation-owned result index rather than repeat work.
     public async Task<CapturePage> ReadPageAsync(long dataSetKey, CaptureQuery? query = null,
@@ -211,17 +125,6 @@ WHERE DataSetKey = @DataSet AND RowOrdinal BETWEEN @First AND @Last ORDER BY Row
         long offset = cursor?.NextOffset ?? 0;
         long skip = frozen.Sorts.Length == 0 ? 0 : offset;
         long after = frozen.Sorts.Length == 0 ? cursor?.AfterRowOrdinal ?? -1 : -1;
-        if (frozen.Sorts.Length == 0 && frozen.EffectiveFilters.Length == 0)
-        {
-            var batch = await ReadBatchAsync(descriptor, new CaptureLayout(descriptor.Columns), after,
-                cancellationToken, rowLimit, byteLimit);
-            if (batch.Count == 0 && after + 1 < descriptor.Summary.ActualRowCount)
-                throw new InvalidDataException("Published dataset has a missing ordinal range.");
-            long batchBytes = batch.Sum(row => row.EstimatedBytes);
-            bool more = batch.Count > 0 && batch[^1].RowOrdinal < descriptor.Summary.ActualRowCount - 1;
-            return new(batch.AsReadOnly(), more ? new(_session.Epoch, dataSetKey, frozen.Fingerprint,
-                checked(offset + batch.Count), batch[^1].RowOrdinal) : null, batchBytes);
-        }
         var rows = new List<CaptureRow>();
         long bytes = 0;
         bool hasMore = false;

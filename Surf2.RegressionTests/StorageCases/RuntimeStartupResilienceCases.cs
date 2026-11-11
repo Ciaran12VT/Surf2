@@ -37,25 +37,20 @@ public static partial class StorageRegressionSuite
 
         var selection = Required(await state.ReadScopeSelectionAsync(), "startup resilience selection");
         await state.SaveScopeSelectionAsync(selection.Value with { LastActiveScopeId = "query-scope" }, selection.Token, Guid.NewGuid());
-        var runtime = new RelationalRuntime(SqlServerConnectionOptions.FromConnectionString(connection));
-        var scope = await runtime.Explorer.OpenScopeAsync(seeded.ScopeToken.Key);
-        var indexed = await new RelationalScopeIndexRefresher(runtime.Session, runtime.Index, runtime.Snapshots)
-            .RefreshAsync(scope, ExplorerIndexLanguagePolicy.Capture(new CodeWindowSettings()));
-        check(indexed.FullyPublished, "Owned startup fixture establishes durable reference checkpoints before blocking metadata");
-
-        // A blocked derived catalogue must not be confused with failure to load authoritative saved state.
+        // Table fields are loaded by the current in-memory reference worker after
+        // the name catalogue. Blocking this query must leave startup responsive.
         await using (var blocker = await session.OpenAsync())
         await using (var transaction = (SqlTransaction)await blocker.BeginTransactionAsync(IsolationLevel.Serializable))
         {
             await using var lockCommand = blocker.CreateCommand();
             lockCommand.Transaction = transaction;
-            lockCommand.CommandText = "SELECT COUNT_BIG(*) FROM surf.SymbolDefinition WITH (TABLOCKX,HOLDLOCK);";
+            lockCommand.CommandText = "SELECT COUNT_BIG(*) FROM surf.TableColumnRevision WITH (TABLOCKX,HOLDLOCK);";
             await lockCommand.ExecuteScalarAsync();
             var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var main = new Surf2.MainWindow(SqlServerConnectionOptions.FromConnectionString(connection));
             using var trace = new StateAccessSqlTrace(connection, command =>
             {
-                if (StateAccessSql(command.CommandText).Contains("SURF.SYMBOLDEFINITION", StringComparison.Ordinal))
+                if (StateAccessSql(command.CommandText).Contains("SURF.TABLECOLUMNREVISION", StringComparison.Ordinal))
                     entered.TrySetResult(true);
             });
             try
@@ -66,13 +61,14 @@ public static partial class StorageRegressionSuite
                     "Ready startup displays the selected scope and hydrates saving while reference SQL remains locked");
                 await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
                 check(!RuntimeWpfField<Task>(main, "_relationalIndexRefreshTask").IsCompleted &&
-                    RuntimeWpfOptionalField<ReferenceCatalogue>(main, "_relationalReferenceCatalogue") == null,
-                    "Blocked catalogue assembly belongs solely to the tracked background job; no empty readiness proof is installed");
+                    RuntimeWpfField<object>(main, "_relationalFileReferencesReady") is false,
+                    "Blocked reference field loading belongs to the tracked background job and keeps reference readiness pending");
                 check(!InternalLogService.IsEnabled,
                     "Relational startup applies the persisted logging opt-out before subsequent state reads");
                 await transaction.RollbackAsync();
                 await RuntimeWpfDrainReferenceRefreshAsync(main);
-                check(RuntimeWpfField<ReferenceCatalogue>(main, "_relationalReferenceCatalogue").Coverage.FullyPublished &&
+                check(RuntimeWpfField<ExplorerIndexRefreshProgress>(main, "_relationalIndexProgress").FullyPublished &&
+                    RuntimeWpfField<object>(main, "_relationalFileReferencesReady") is true &&
                     RuntimeWpfField<object>(main, "_isPersistenceHydrated") is true,
                     "After releasing the index lock, background publication restores reference coverage without another startup");
             }

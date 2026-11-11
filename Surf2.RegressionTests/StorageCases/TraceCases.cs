@@ -44,18 +44,22 @@ public static partial class StorageRegressionSuite
         try { await session.RequireReadyAsync(); }
         catch (InvalidOperationException) { stateRejected = true; }
         check(stateRejected, "Pinned Ready checks reject a same-identity database moved back to Migrating");
-        await fixture.DestinationSqlAsync("UPDATE surf.StorageFormatInfo SET State='Ready',MinimumReaderVersion=2;");
+        await fixture.DestinationSqlAsync("UPDATE surf.StorageFormatInfo SET State='Ready',MinimumReaderVersion=@Version;",
+            RelationalSession.Parameter("@Version", System.Data.SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion + 1));
         bool versionRejected = false;
         try { await session.RequireReadyAsync(); }
         catch (InvalidOperationException) { versionRejected = true; }
         check(versionRejected, "Pinned Ready checks reject a reader-version change after initial validation");
-        await fixture.DestinationSqlAsync("UPDATE surf.StorageFormatInfo SET MinimumReaderVersion=1;");
-        await fixture.DestinationSqlAsync("UPDATE surf.SchemaMigration SET ScriptChecksum=HASHBYTES('SHA2_256',N'fixture changed checksum') WHERE SchemaVersion=1;");
+        await fixture.DestinationSqlAsync("UPDATE surf.StorageFormatInfo SET MinimumReaderVersion=@Version;",
+            RelationalSession.Parameter("@Version", System.Data.SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion));
+        await fixture.DestinationSqlAsync("UPDATE surf.SchemaMigration SET ScriptChecksum=HASHBYTES('SHA2_256',N'fixture changed checksum') WHERE SchemaVersion=@Version;",
+            RelationalSession.Parameter("@Version", System.Data.SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion));
         bool checksumRejected = false;
         try { await session.RequireReadyAsync(); }
         catch (InvalidOperationException) { checksumRejected = true; }
         check(checksumRejected, "Pinned Ready checks reject a schema-checksum change after initial validation");
-        await fixture.DestinationSqlAsync("UPDATE surf.SchemaMigration SET ScriptChecksum=@Checksum WHERE SchemaVersion=1;",
+        await fixture.DestinationSqlAsync("UPDATE surf.SchemaMigration SET ScriptChecksum=@Checksum WHERE SchemaVersion=@Version;",
+            RelationalSession.Parameter("@Version", System.Data.SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion),
             RelationalSession.Parameter("@Checksum", System.Data.SqlDbType.Binary,
                 RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts()), 32));
         await session.RequireReadyAsync();

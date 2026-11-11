@@ -15,7 +15,7 @@ optional `local-files/<approved relative path>`. The exact identifiers are:
 - `ExporterVersion`: 1
 - `RowEncodingVersion`: 1
 - `DatabaseFormatIdentifier`: `Surf2.RelationalV2`
-- `DatabaseSchemaVersion`: 1
+- `DatabaseSchemaVersion`: 2. Imports also accept schema 1 packages and convert their captures before publication.
 - `Consistency`: `SqlSnapshot-v1`, or explicitly selected `SqlSerializableBlocking-v1`
 - `LocalFilePolicy`: `ExplicitCallerSelection-v1`
 
@@ -33,9 +33,9 @@ User-authored content is preserved, not scrubbed or logged.
 
 ## Table whitelist and selection
 
-The fixed whitelist is `PackageTableCatalogue.Authoritative`. No discovery of
-arbitrary user tables is allowed. Capture names are generated only from positive
-`DataLayout.LayoutKey` values, never from captured source schema/table names.
+The fixed whitelist is `PackageTableCatalogue.Authoritative`. Captured table
+payloads are exported through `surf.FullTableData`. Schema 1 imports recognize
+the previous generated capture tables and validate them before conversion.
 
 Published snapshots, sealed revisions, and their Ready datasets are included.
 Unpublished snapshots, unsealed revision payloads, Writing datasets, and unused
@@ -53,10 +53,9 @@ invalidation heads. ScopeCatalogueState is retained without its rowversion.
 FK closure is checked against these exact selection predicates. A published row
 referencing omitted/incomplete data aborts export instead of silently producing
 a broken package. Sealed table-data revisions require Ready datasets; actual row
-counts and contiguous zero-based RowOrdinal ranges are verified in the same SQL
-snapshot. Generated capture streams retain raw scalar-token columns, binary
-property descriptors, and separate DataValueException records without decoding
-or normalizing JSON values.
+counts are verified in the same SQL snapshot. Each captured revision retains its
+JSON array in exact UTF-16 chunks. Import validates the stored bytes and decoded
+row counts before publishing the destination.
 
 ## Schema and restore rules
 
@@ -128,6 +127,12 @@ entry/package uncompressed bytes, entries, tables, columns and manifest size are
 bounded by RelationalPackageLimits. Scalar row accounting reserves 256 bytes per
 cell; chunked row accounting uses actual source-byte lengths, not base64 lengths.
 Entry/package budgets independently bound actual encoded output.
+
+`FullTableData.JsonPayload` uses a dedicated streaming import and validation path.
+It supports the SQL `nvarchar(max)` size limit with bounded chunks, bypassing the
+generic per-cell and row allocation budgets. The entry and package size budgets
+still apply. Package restoration holds the destination in Migrating state until
+all payloads and their owning datasets have passed validation.
 
 ## Consistency, cancellation, local files
 
