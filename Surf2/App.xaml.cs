@@ -163,20 +163,20 @@ public partial class App : Application
 
     private void ShowMainWindowWithSplash(ExternalOpenRequest? externalOpenRequest)
     {
+        var mainWindow = new MainWindow();
+        MainWindow = mainWindow;
+
         StartupSplashWindow? splashWindow = null;
         try
         {
-            splashWindow = new StartupSplashWindow();
+            splashWindow = new StartupSplashWindow(mainWindow);
             splashWindow.Show();
-            splashWindow.CenterOnPrimaryWorkArea();
         }
         catch (Exception ex)
         {
             InternalLogService.Error(ex, "Failed to show startup splash window.");
         }
 
-        var mainWindow = new MainWindow();
-        MainWindow = mainWindow;
         StartExternalOpenPipeServers(mainWindow);
 
         bool splashClosed = false;
