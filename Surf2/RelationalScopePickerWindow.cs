@@ -419,7 +419,8 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         var scope = StateCopies.Scope(_model, new(new StateLimits()));
         int ordinal = scope.Resources.Count;
         scope.Resources.Add(new() { Kind = ResourceKind.DatabaseSnapshot, Path = selected.SnapshotId,
-            DisplayNameOverride = selected.DisplayName, DetailsOverride = selected.DatabaseName });
+            DisplayNameOverride = selected.DisplayName,
+            DetailsOverride = string.IsNullOrWhiteSpace(selected.DatabaseName) ? selected.DisplayName : selected.DatabaseName });
         var expectedTarget = new SnapshotRuntimeToken(_runtime.Snapshots.Epoch, selected.SnapshotKey, selected.RowVersion);
         var token = await _runtime.StateStore.SaveScopeWithSnapshotTargetAsync(scope, _edit.ExpectedToken, ordinal, expectedTarget, Guid.NewGuid(), Lifetime);
         ChangedScopeKeys.Add(token.Key); await ReloadScopeOwnerAsync(token, scope);
@@ -449,12 +450,39 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
 
     private async Task ReloadScopeOwnerAsync(StateToken expected, Scope model)
     {
-        var loaded = Require(await _runtime.State.LoadScopeAsync(new ScopeSummary(expected, 0, model.ScopeId, model.Name), Lifetime));
+        var (loaded, displayModel) = await ReadScopeForGridAsync(new(expected, 0, model.ScopeId, model.Name), Lifetime);
         if (IsLogicallyClosed || Lifetime.IsCancellationRequested) { await loaded.DisposeAsync(); Lifetime.ThrowIfCancellationRequested(); return; }
-        var old = _edit; _edit = loaded; _model = loaded.Snapshot();
+        var old = _edit; _edit = loaded; _model = displayModel;
         if (old != null) await old.DisposeAsync();
         ReplaceSelectedSummary(new(expected, SelectedSummary?.SortOrdinal ?? 0, _model.ScopeId, _model.Name));
         _name.Text = _model.Name; _description.Text = _model.Description; _resources.ItemsSource = _model.Resources;
+    }
+
+    private async Task<(StateEditSession<Scope> Edit, Scope Model)> ReadScopeForGridAsync(ScopeSummary selected, CancellationToken ct)
+    {
+        var edit = Require(await _runtime.State.LoadScopeAsync(selected, ct));
+        try
+        {
+            var model = edit.Snapshot();
+            if (model.Resources.Any(resource => resource.Kind == ResourceKind.DatabaseSnapshot))
+            {
+                var labels = await _runtime.StateStore.ReadScopeSnapshotLabelsAsync(edit.ExpectedToken, ct);
+                // Keep the linked names on the grid's copy. The stored overrides remain editable aliases.
+                foreach (var (resourceIndex, displayName, databaseName) in labels)
+                {
+                    var resource = model.Resources[resourceIndex];
+                    resource.SnapshotDisplayName = !string.IsNullOrWhiteSpace(displayName) ? displayName :
+                        !string.IsNullOrWhiteSpace(databaseName) ? databaseName : "Database";
+                    resource.SnapshotDetails = string.IsNullOrWhiteSpace(databaseName) ? resource.SnapshotDisplayName : databaseName;
+                }
+            }
+            return (edit, model);
+        }
+        catch
+        {
+            await edit.DisposeAsync();
+            throw;
+        }
     }
 
     private void AddDetail(UIElement control, int row) { Grid.SetRow(control, row); _detailContent.Children.Add(control); }
@@ -481,9 +509,9 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         Details.IsEnabled = _save.IsEnabled = _delete.IsEnabled = false;
         _name.Text = _description.Text = string.Empty; _resources.ItemsSource = null;
         if (selected == null) return;
-        var edit = Require(await _runtime.State.LoadScopeAsync(selected, ct));
+        var (edit, model) = await ReadScopeForGridAsync(selected, ct);
         if (IsLogicallyClosed || ct.IsCancellationRequested) { await edit.DisposeAsync(); ct.ThrowIfCancellationRequested(); return; }
-        _edit = edit; _model = edit.Snapshot(); _name.Text = _model.Name; _description.Text = _model.Description;
+        _edit = edit; _model = model; _name.Text = _model.Name; _description.Text = _model.Description;
         _resources.ItemsSource = _model.Resources; Details.IsEnabled = _save.IsEnabled = _delete.IsEnabled = true;
     }
 

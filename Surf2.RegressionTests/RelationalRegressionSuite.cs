@@ -17,6 +17,13 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--diagram-open", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
+        Path.Combine(AppContext.BaseDirectory, "diagram-open-checks"), diagramOpenOnly: true);
+    Console.WriteLine($"Passed {passed} Explorer diagram open checks.");
+    return;
+}
 if (args.Contains("--json-capture-startup", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
@@ -122,6 +129,12 @@ if (args.Contains("--scope-ui", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunScopePickerUiChecksAsync(Check);
     if (args.Length == 1) { Console.WriteLine($"Passed {passed} scope UI scenarios."); return; }
+}
+if (args.Contains("--scope-snapshot-labels", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunScopePickerUiChecksAsync(Check, snapshotLabelsOnly: true);
+    Console.WriteLine($"Passed {passed} scope snapshot label checks.");
+    return;
 }
 if (args.Contains("--comparison-ui", StringComparer.Ordinal))
 {

@@ -732,15 +732,6 @@ public partial class MainWindow
         }), DispatcherPriority.ContextIdle);
     }
 
-    private async Task LoadRelationalDiagramAsync(string id)
-    {
-        using var operation = BeginRelationalStateOperation();
-        using var request = BeginRelationalSelection(operation.Token);
-        var (generation, ct) = request;
-        string raw = DiagramDocumentService.IsDiagramDocumentPath(id) ? DiagramDocumentService.GetDiagramId(id) : id;
-        var chosen = await FindRelationalDiagramAsync(raw, ct) ?? throw new KeyNotFoundException("The selected diagram is missing; the canvas was not replaced.");
-        await LoadRelationalDiagramCoreAsync(chosen, generation, ct);
-    }
     private async Task LoadRelationalDiagramAsync(DiagramSummary chosen, CancellationToken cancellationToken = default)
     {
         Dispatcher.VerifyAccess();
@@ -749,26 +740,40 @@ public partial class MainWindow
         var (generation, ct) = request;
         await LoadRelationalDiagramCoreAsync(chosen, generation, ct);
     }
-    private async Task LoadRelationalDiagramCoreAsync(DiagramSummary chosen, long generation, CancellationToken ct)
+    private async Task<bool> LoadRelationalDiagramCoreAsync(DiagramSummary chosen, long generation, CancellationToken ct,
+        Action<string>? enterPhase = null)
     {
+        enterPhase?.Invoke("Wait for selected owner");
         await WaitRelationalSelectedOwnerIdleAsync(ct);
         RequireRelationalSelection(generation, ct);
-        if (_isPersistenceHydrated && !await ConfirmRelationalStateSwitchAsync(ct)) return;
+        enterPhase?.Invoke("Confirm workspace changes");
+        if (_isPersistenceHydrated && !await ConfirmRelationalStateSwitchAsync(ct)) return false;
         RequireRelationalSelection(generation, ct);
+        enterPhase?.Invoke("Wait for diagram read");
         await _relationalOwnerCommands.WaitAsync(ct);
         try
         {
-        RequireRelationalSelection(generation, ct);
-        var edit = RequireRelationalLoad(await RelationalStateRuntime.State.LoadDiagramAsync(chosen, ct), "diagram");
-        try
-        {
-            var prepared = await PrepareRelationalDiagramAsync(edit.Snapshot(), ct); RequireRelationalSelection(generation, ct);
-            ApplyRelationalDiagram(prepared); var previous = _relationalDiagramEdit; _relationalDiagramEdit = edit;
-            _relationalSavedDiagram = StateCopies.Diagram(prepared.State.Document, new(RelationalRuntimeStateLimits));
-            _relationalActiveDiagramRevisionKey = chosen.RevisionKey;
-            if (previous != null) await previous.DisposeAsync(); StatusText = "Loaded diagram '" + chosen.Name + "'.";
-        }
-        catch { if (!ReferenceEquals(_relationalDiagramEdit, edit)) await edit.DisposeAsync(); throw; }
+            RequireRelationalSelection(generation, ct);
+            enterPhase?.Invoke("Read diagram revision");
+            StatusText = "Opening diagram '" + chosen.Name + "'...";
+            var edit = RequireRelationalLoad(await RelationalStateRuntime.State.LoadDiagramAsync(chosen, ct), "diagram");
+            try
+            {
+                enterPhase?.Invoke("Prepare diagram images");
+                var prepared = await PrepareRelationalDiagramAsync(edit.Snapshot(), ct);
+                RequireRelationalSelection(generation, ct);
+                enterPhase?.Invoke("Apply diagram to canvas");
+                ApplyRelationalDiagram(prepared);
+                var previous = _relationalDiagramEdit;
+                _relationalDiagramEdit = edit;
+                _relationalSavedDiagram = StateCopies.Diagram(prepared.State.Document, new(RelationalRuntimeStateLimits));
+                _relationalActiveDiagramRevisionKey = chosen.RevisionKey;
+                if (previous != null) await previous.DisposeAsync();
+                RequireRelationalSelection(generation, ct);
+                StatusText = "Loaded diagram '" + chosen.Name + "'.";
+                return true;
+            }
+            catch { if (!ReferenceEquals(_relationalDiagramEdit, edit)) await edit.DisposeAsync(); throw; }
         }
         finally { _relationalOwnerCommands.Release(); }
     }

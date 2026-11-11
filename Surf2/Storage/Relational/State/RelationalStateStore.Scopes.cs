@@ -203,6 +203,39 @@ DELETE FROM surf.VirtualFolder WHERE VirtualFolderKey=@Key;
             return selected;
         }, cancellationToken);
 
+    internal Task<IReadOnlyList<(int ResourceIndex, string DisplayName, string DatabaseName)>> ReadScopeSnapshotLabelsAsync(
+        StateToken expected, CancellationToken ct) => ReadyAsync<IReadOnlyList<(int, string, string)>>(async (connection, transaction) =>
+    {
+        var owner = await TokenAsync(connection, transaction, "Scope", "ScopeKey", expected.Key, ct);
+        if (!SameRuntimeToken(owner, expected)) throw new StateConflictException("scope snapshot labels");
+
+        await using var command = Command(connection, transaction, """
+WITH Members AS (
+    SELECT Kind, SnapshotKey, ROW_NUMBER() OVER (ORDER BY SortOrdinal, ScopeResourceKey) - 1 AS ResourceIndex
+    FROM surf.ScopeResource WHERE ScopeKey=@Key
+)
+SELECT TOP (@Limit) r.ResourceIndex,
+    CONVERT(bigint, DATALENGTH(d.DisplayName)), d.DisplayName,
+    CONVERT(bigint, DATALENGTH(d.DatabaseName)), d.DatabaseName
+FROM Members r
+JOIN surf.DatabaseSnapshot d ON d.SnapshotKey=r.SnapshotKey AND d.IsPublished=1
+WHERE r.Kind=2;
+""", Key(expected.Key), Key((long)_limits.MaximumRows + 1, "@Limit"));
+        using var cancel = RelationalSession.CancelCommand(command, ct);
+        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+        var budget = new StateBudget(_limits);
+        var labels = new List<(int, string, string)>();
+        while (await reader.ReadAsync(ct))
+        {
+            budget.Row();
+            int resourceIndex = checked((int)reader.GetInt64(0));
+            string displayName = (await StringAsync(reader, 1, budget, ct))!;
+            string databaseName = (await StringAsync(reader, 3, budget, ct))!;
+            labels.Add((resourceIndex, displayName, databaseName));
+        }
+        return labels.AsReadOnly();
+    }, ct);
+
     /// <summary>Explicit second-pass target resolution. Original paths and contextual IDs are never replaced.</summary>
     public async Task<StateToken> ResolveScopeResourceTargetsAsync(SqlConnection connection, SqlTransaction transaction,
         StateToken expected, IReadOnlyList<ScopeResourceTarget> targets, Guid publicationId, CancellationToken cancellationToken = default)

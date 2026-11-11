@@ -27,6 +27,10 @@ public static partial class StorageRegressionSuite
             var result = await service.CaptureAsync(new(fixture.SourceConnectionString, "Capture " + selection,
                 [table with { RowSelection = selection }], scope, token, AllowSerializableFallback: true));
             check(result.CapturedRows == expectedRows, "V2 captures exactly the selected rows for " + selection);
+            var persistedScope = Required(await runtime.StateStore.ReadScopeAsync(token.Key), "captured database scope");
+            var membership = persistedScope.Value.Resources.Single(resource => resource.Path == result.Snapshot.SnapshotId);
+            check(membership.DisplayName == "Capture " + selection && membership.Details == result.Snapshot.DatabaseName,
+                "A direct capture persists the snapshot title and database name separately from its scope path");
             scope = result.UpdatedScope;
             token = result.UpdatedScopeToken;
         }

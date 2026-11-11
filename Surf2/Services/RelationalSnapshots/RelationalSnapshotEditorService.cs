@@ -170,8 +170,22 @@ public sealed class RelationalSnapshotEditorService(RelationalRuntime runtime)
         }
         foreach (string selection in edited.FullDataTableNames) { budget.Add(selection); plan.FullDataSelections.Add(selection); }
         PreserveUnchangedResourceOrder(plan);
-        if (plan.IsNew) scope.Value.Resources.Add(new() { ResourceId = Guid.NewGuid().ToString("N"), Kind = ResourceKind.DatabaseSnapshot,
-            Path = plan.Header.SnapshotId, AddedAtUtc = plan.Header.ImportedAtUtc, IncludeChildren = true });
+        if (plan.IsNew)
+        {
+            string displayName = plan.Header.DisplayName;
+            string databaseName = plan.Header.DatabaseName;
+            if (string.IsNullOrWhiteSpace(displayName))
+                displayName = string.IsNullOrWhiteSpace(databaseName) ? "Database" : databaseName;
+            scope.Value.Resources.Add(new()
+            {
+                Kind = ResourceKind.DatabaseSnapshot,
+                Path = plan.Header.SnapshotId,
+                DisplayNameOverride = displayName,
+                DetailsOverride = string.IsNullOrWhiteSpace(databaseName) ? displayName : databaseName,
+                AddedAtUtc = plan.Header.ImportedAtUtc,
+                IncludeChildren = true
+            });
+        }
         var published = await runtime.Snapshots.PublishRuntimeStageAsync(plan, scope.Value, expectedScope, Guid.NewGuid(), null, ct).ConfigureAwait(false);
         return new(published.Snapshot, published.ScopeToken!, scope.Value, rows, published.VersionKey);
     }

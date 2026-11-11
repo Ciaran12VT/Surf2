@@ -219,6 +219,8 @@ WHERE DiagramKey=@Key AND ProfileKey=1 AND Version=@Version;
         }
         var objects = await ChildrenAsync(connection, transaction, StateMaps.Object, "DiagramRevisionKey", revision, budget, ct);
         var images = await ReadDiagramAssetsAsync(connection, transaction, revision, budget, ct);
+        var objectQueries = await ReadRevisionChildrenAsync(connection, transaction, StateMaps.Query,
+            StateMaps.Object.Table, StateMaps.Object.Key, revision, budget, ct);
         var pasted = new Dictionary<int, byte[]>();
         var fallbacks = new Dictionary<int, PastedImageFallback>();
         for (int i = 0; i < objects.Count; i++)
@@ -252,21 +254,64 @@ WHERE DiagramKey=@Key AND ProfileKey=1 AND Version=@Version;
             }
             else if (!string.IsNullOrWhiteSpace(value.PastedImageFileName) || resolution != PastedImageResolution.None)
                 throw new InvalidDataException($"Unresolved pasted image at ordinal {i}.");
-            value.Metadata.Queries = (await ChildrenAsync(connection, transaction, StateMaps.Query, "DiagramObjectKey", key, budget, ct))
-                .Select(q => q.Value).ToList();
+            value.Metadata.Queries = objectQueries.TryGetValue(key, out var queries)
+                ? queries.Select(query => query.Value).ToList() : [];
             diagram.Objects.Add(value);
         }
-        foreach (var (key, value) in await ChildrenAsync(connection, transaction, StateMaps.Workflow, "DiagramRevisionKey", revision, budget, ct))
+        var workflows = await ChildrenAsync(connection, transaction, StateMaps.Workflow, "DiagramRevisionKey", revision, budget, ct);
+        var workflowItems = await ReadRevisionChildrenAsync(connection, transaction, StateMaps.Item,
+            StateMaps.Workflow.Table, StateMaps.Workflow.Key, revision, budget, ct);
+        var workflowQueries = await ReadRevisionChildrenAsync(connection, transaction, StateMaps.Query,
+            StateMaps.Item.Table, StateMaps.Item.Key, revision, budget, ct);
+        foreach (var (key, value) in workflows)
         {
-            foreach (var (itemKey, item) in await ChildrenAsync(connection, transaction, StateMaps.Item, "WorkflowKey", key, budget, ct))
+            if (workflowItems.TryGetValue(key, out var items))
             {
-                item.Queries = (await ChildrenAsync(connection, transaction, StateMaps.Query, "WorkflowItemKey", itemKey, budget, ct))
-                    .Select(q => q.Value).ToList();
-                value.Items.Add(item);
+                foreach (var (itemKey, _, item) in items)
+                {
+                    item.Queries = workflowQueries.TryGetValue(itemKey, out var queries)
+                        ? queries.Select(query => query.Value).ToList() : [];
+                    value.Items.Add(item);
+                }
             }
             diagram.Workflows.Add(value);
         }
         return new(diagram, pasted, fallbacks);
+    }
+
+    private async Task<Dictionary<long, List<(long Key, long Ordinal, T Value)>>> ReadRevisionChildrenAsync<T>(
+        SqlConnection connection, SqlTransaction transaction, StateRowMap<T> map, string parentTable,
+        string parentKey, long revision, StateBudget budget, CancellationToken ct) where T : new()
+    {
+        // The revision indexes select parents and the owner indexes select each parent's children.
+        // Sort the bounded groups in memory so SQL can stream the text projections without a sort.
+        await using var command = Command(connection, transaction, $"""
+SELECT TOP (@Limit) s.[{parentKey}],s.[{map.Key}],s.SortOrdinal,{map.Projection()}
+FROM surf.[{parentTable}] p WITH (FORCESEEK)
+JOIN surf.[{map.Table}] s WITH (FORCESEEK) ON s.[{parentKey}]=p.[{parentKey}]
+WHERE p.DiagramRevisionKey=@Revision AND s.[{parentKey}] IS NOT NULL
+OPTION (LOOP JOIN, FORCE ORDER);
+""", Key(revision, "@Revision"), RelationalSession.Parameter("@Limit", SqlDbType.BigInt, (long)_limits.MaximumRows + 1));
+        using var cancel = RelationalSession.CancelCommand(command, ct);
+        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+        var groups = new Dictionary<long, List<(long Key, long Ordinal, T Value)>>();
+        while (await reader.ReadAsync(ct))
+        {
+            long owner = reader.GetInt64(0), key = reader.GetInt64(1), ordinal = reader.GetInt64(2);
+            var value = await map.ReadAsync(reader, 3, budget, ct);
+            if (!groups.TryGetValue(owner, out var rows)) groups.Add(owner, rows = []);
+            rows.Add((key, ordinal, value));
+        }
+        foreach (var rows in groups.Values)
+        {
+            ct.ThrowIfCancellationRequested();
+            rows.Sort(static (left, right) =>
+            {
+                int order = left.Ordinal.CompareTo(right.Ordinal);
+                return order != 0 ? order : left.Key.CompareTo(right.Key);
+            });
+        }
+        return groups;
     }
 
     private sealed record DiagramImageBinding(long? Inline, long? Pasted, PastedImageResolution Resolution, long? Fallback);

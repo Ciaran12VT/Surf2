@@ -1302,6 +1302,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task OpenObjectExplorerDiagramNodeAsync(FileSystemNode node)
     {
+        if (_relational != null)
+        {
+            long? diagramKey = null;
+            if (_relationalExplorerNodes.TryGetValue(node, out var summary) && summary.ScopeResourceKey is long resourceKey)
+                diagramKey = _relationalExplorerScope?.Resources.FirstOrDefault(resource => resource.ScopeResourceKey == resourceKey)?.DiagramKey;
+            await OpenRelationalDiagramFromUiAsync(node.FullPath, diagramKey);
+            return;
+        }
+
         InternalLogService.Info(
             "Opening Object Explorer diagram node.",
             ("NodeName", node.Name),

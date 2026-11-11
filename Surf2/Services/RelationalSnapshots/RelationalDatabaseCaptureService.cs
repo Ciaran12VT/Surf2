@@ -112,8 +112,16 @@ public sealed class RelationalDatabaseCaptureService
         }
         if (foundSelections.Count != selected.Count) throw new InvalidOperationException("A selected source table disappeared or is not visible.");
         await source.CompleteAsync(ct).ConfigureAwait(false);
-        if (plan.IsNew) scope.Value.Resources.Add(new() { ResourceId = Guid.NewGuid().ToString("N"), Kind = ResourceKind.DatabaseSnapshot,
-            Path = plan.Header.SnapshotId, AddedAtUtc = plan.Header.ImportedAtUtc, IncludeChildren = true });
+        if (plan.IsNew)
+            scope.Value.Resources.Add(new()
+            {
+                Kind = ResourceKind.DatabaseSnapshot,
+                Path = plan.Header.SnapshotId,
+                DisplayNameOverride = plan.Header.DisplayName,
+                DetailsOverride = plan.Header.DatabaseName,
+                AddedAtUtc = plan.Header.ImportedAtUtc,
+                IncludeChildren = true
+            });
         progress?.Report(new("Publishing", budget.Units, capturedRows));
         var result = await _runtime.Snapshots.PublishRuntimeStageAsync(plan, scope.Value, request.ExpectedScope, Guid.NewGuid(), request.VersionName, ct).ConfigureAwait(false);
         return new(result.Snapshot, result.ScopeToken!, scope.Value, capturedRows, result.VersionKey) { SourceIsolation = sourceIsolation };

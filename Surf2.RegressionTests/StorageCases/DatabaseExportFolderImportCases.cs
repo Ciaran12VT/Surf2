@@ -145,6 +145,10 @@ public static partial class StorageRegressionSuite
                 long scopeKey = Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT ScopeKey FROM surf.Scope WHERE ScopeId=N'migration-scope';"));
                 var scope = (await runtime.StateStore.ReadScopeAsync(scopeKey))!;
                 var saved = await new RelationalSnapshotEditorService(runtime).SaveAsync(result.Snapshot, scope.Value, scope.Token, null);
+                var persistedScope = Required(await runtime.StateStore.ReadScopeAsync(scopeKey), "imported database scope");
+                var membership = persistedScope.Value.Resources.Single(resource => resource.Path == saved.Snapshot.SnapshotId);
+                check(saved.Snapshot.DatabaseName.Length == 0 && membership.DisplayName == label && membership.Details == label,
+                    "An export-folder snapshot without a database name displays its folder title in both scope columns");
                 var reopened = await new RelationalSnapshotEditorService(runtime).ReadAsync(saved.Snapshot);
                 check(reopened.Objects.Count == 4 && reopened.GetTableDataSet("dbo", "Blank")!.Rows.Count == 1 && saved.Snapshot.SnapshotKey != summary.SnapshotKey,
                     "Imported display export can be published as a distinct SQL snapshot with blank rows intact");

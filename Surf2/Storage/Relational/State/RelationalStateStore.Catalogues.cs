@@ -24,17 +24,44 @@ ORDER BY s.SortOrdinal, s.ScopeKey;
         CancellationToken cancellationToken = default) => ReadyAsync(async (connection, transaction) =>
     {
         var generation = await CatalogueGenerationAsync(connection, transaction, 1, pageSize, after, cancellationToken);
-        return await PageAsync(connection, transaction, """
-SELECT TOP (@Take) s.DiagramKey, s.SortOrdinal, s.Version, s.PublicationId,
-       CONVERT(bigint, DATALENGTH(s.DiagramId)), s.DiagramId, CONVERT(bigint, DATALENGTH(s.Name)), s.Name,
-       r.DiagramRevisionKey, r.CreatedAtUtc, r.UpdatedAtUtc
-FROM surf.Diagram s LEFT JOIN surf.DiagramRevision r ON r.DiagramRevisionKey=s.CurrentRevisionKey AND r.DiagramKey=s.DiagramKey
+        return await PageAsync(connection, transaction, $"""
+SELECT TOP (@Take) {DiagramSummaryProjection}
+{DiagramSummarySource}
 WHERE s.ProfileKey=1 AND (s.SortOrdinal>@Ordinal OR (s.SortOrdinal=@Ordinal AND s.DiagramKey>@Key))
 ORDER BY s.SortOrdinal, s.DiagramKey;
-""", pageSize, after, generation, async (r, token, ordinal, budget, ct) =>
-            new DiagramSummary(token, ordinal, (await StringAsync(r,4,budget,ct))!, (await StringAsync(r,6,budget,ct))!,
-                r.GetInt64(8), r.GetFieldValue<DateTimeOffset>(9), r.GetFieldValue<DateTimeOffset>(10)), cancellationToken);
+""", pageSize, after, generation, ReadDiagramSummaryRowAsync, cancellationToken);
     }, cancellationToken);
+
+    internal Task<DiagramSummary?> ReadDiagramSummaryAsync(long diagramKey, CancellationToken ct) =>
+        ReadyAsync(async (connection, transaction) =>
+        {
+            await using var command = Command(connection, transaction, $"""
+SELECT {DiagramSummaryProjection}
+{DiagramSummarySource}
+WHERE s.ProfileKey=1 AND s.DiagramKey=@Key;
+""", Key(diagramKey));
+            using var cancel = RelationalSession.CancelCommand(command, ct);
+            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+            if (!await reader.ReadAsync(ct)) return null;
+            long key = reader.GetInt64(0), ordinal = reader.GetInt64(1);
+            var token = new StateToken(key, _session.Epoch, reader.GetFieldValue<byte[]>(2), reader.GetGuid(3));
+            return await ReadDiagramSummaryRowAsync(reader, token, ordinal, new StateBudget(_limits), ct);
+        }, ct);
+
+    private const string DiagramSummaryProjection = """
+s.DiagramKey, s.SortOrdinal, s.Version, s.PublicationId,
+       CONVERT(bigint, DATALENGTH(s.DiagramId)), s.DiagramId, CONVERT(bigint, DATALENGTH(s.Name)), s.Name,
+       r.DiagramRevisionKey, r.CreatedAtUtc, r.UpdatedAtUtc
+""";
+
+    private const string DiagramSummarySource = """
+FROM surf.Diagram s LEFT JOIN surf.DiagramRevision r ON r.DiagramRevisionKey=s.CurrentRevisionKey AND r.DiagramKey=s.DiagramKey
+""";
+
+    private static async Task<DiagramSummary> ReadDiagramSummaryRowAsync(SqlDataReader reader, StateToken token,
+        long ordinal, StateBudget budget, CancellationToken ct) =>
+        new(token, ordinal, (await StringAsync(reader, 4, budget, ct))!, (await StringAsync(reader, 6, budget, ct))!,
+            reader.GetInt64(8), reader.GetFieldValue<DateTimeOffset>(9), reader.GetFieldValue<DateTimeOffset>(10));
 
     public Task<StatePage<WorkbenchSummary>> ListWorkbenchesAsync(int pageSize = 100, StateCursor? after = null,
         CancellationToken cancellationToken = default) => ReadyAsync(async (connection, transaction) =>

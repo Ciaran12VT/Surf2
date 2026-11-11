@@ -435,6 +435,9 @@ WHERE DiagramImageDefinitionKey=@Key;
             var revisions = StateAccessReads(commands, "DiagramRevision");
             check(revisions.Count == 1 && revisions[0].Number("@Key") == diagrams.Items[0].RevisionKey,
                 "Selected diagram hydrates only its explicitly selected immutable revision");
+            var queries = StateAccessReads(commands, "QueryItem");
+            check(queries.Count == 2 && queries.All(command => command.Number("@Revision") == diagrams.Items[0].RevisionKey),
+                "Selected diagram batches object and workflow queries by revision instead of querying each parent");
             StateAccessNoReads(commands, check, "Selected diagram", "Workbench", "WorkspaceSession", "ApplicationPreference", "DiagramImageDefinition");
         }, check, "selected diagram aggregate");
         await using var diagramEdit = StateAccessEdit(diagramLoad, check, "selected diagram");

@@ -14,6 +14,9 @@ public sealed class ScopedResource
 
     public string DetailsOverride { get; set; } = string.Empty;
 
+    internal string? SnapshotDisplayName { get; set; }
+    internal string? SnapshotDetails { get; set; }
+
     public DateTimeOffset AddedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
     public bool IncludeChildren { get; set; } = true;
@@ -37,7 +40,7 @@ public sealed class ScopedResource
 
             if (Kind == ResourceKind.DatabaseSnapshot)
             {
-                return string.IsNullOrWhiteSpace(Path) ? "Database" : Path;
+                return SnapshotDisplayName ?? (string.IsNullOrWhiteSpace(Path) ? "Database" : Path);
             }
 
             if (Kind == ResourceKind.Diagram)
@@ -67,6 +70,7 @@ public sealed class ScopedResource
     public string Details => Kind switch
     {
         ResourceKind.DatabaseSnapshot when !string.IsNullOrWhiteSpace(DetailsOverride) => DetailsOverride,
+        ResourceKind.DatabaseSnapshot => SnapshotDetails ?? Path,
         ResourceKind.Diagram when !string.IsNullOrWhiteSpace(DetailsOverride) => DetailsOverride,
         _ => Path
     };

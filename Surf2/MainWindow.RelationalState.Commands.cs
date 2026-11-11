@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using Surf2.Models;
@@ -37,11 +38,47 @@ public partial class MainWindow
         catch (Exception error) { ReportRelationalStateFailure(error, "save diagram"); return false; }
     }
 
-    private async Task OpenRelationalDiagramFromUiAsync(string path)
+    private async Task OpenRelationalDiagramFromUiAsync(string path, long? diagramKey = null)
     {
-        try { using var operation = BeginRelationalStateOperation(); await LoadRelationalDiagramAsync(path); if (_relationalStateClosing) return; EnsureDiagramViewVisible(); SetActiveWorkspaceView(WorkspaceViewKind.Diagram); }
-        catch (OperationCanceledException) { }
+        long started = Stopwatch.GetTimestamp();
+        long? requestGeneration = null;
+        string phase = "Resolve diagram";
+        string outcome = "Failed";
+        try
+        {
+            using var operation = BeginRelationalStateOperation();
+            using var request = BeginRelationalSelection(operation.Token);
+            var (generation, ct) = request;
+            requestGeneration = generation;
+            EnterPhase(phase);
+            var chosen = diagramKey is long key
+                ? await RelationalStateRuntime.StateStore.ReadDiagramSummaryAsync(key, ct)
+                : await FindRelationalDiagramAsync(DiagramDocumentService.IsDiagramDocumentPath(path)
+                    ? DiagramDocumentService.GetDiagramId(path) : path, ct);
+            if (chosen == null) throw new KeyNotFoundException("The selected diagram is missing.");
+            if (!await LoadRelationalDiagramCoreAsync(chosen, generation, ct, EnterPhase))
+            {
+                outcome = "Declined";
+                return;
+            }
+            RequireRelationalSelection(generation, ct);
+            EnsureDiagramViewVisible();
+            SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
+            outcome = "Opened";
+        }
+        catch (OperationCanceledException) { outcome = "Cancelled"; }
         catch (Exception error) { ReportRelationalStateFailure(error, "open diagram"); }
+        finally
+        {
+            InternalLogService.Info("Relational diagram open ended.", ("Path", path), ("Request", requestGeneration),
+                ("Phase", phase), ("Outcome", outcome), ("Milliseconds", Stopwatch.GetElapsedTime(started).TotalMilliseconds));
+        }
+
+        void EnterPhase(string next)
+        {
+            phase = next;
+            InternalLogService.Info("Relational diagram open phase.", ("Path", path), ("Request", requestGeneration), ("Phase", phase));
+        }
     }
 
     private async Task DeleteRelationalDiagramFromUiAsync()
