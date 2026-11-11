@@ -96,11 +96,7 @@ public partial class MainWindow
                 SetActiveCodeWindow(null, syncOpenTabsSelection: false);
                 BringToFront(window);
             };
-            if (sourceWindow != null)
-            {
-                Point placement = FindReferenceWindowPlacement(sourceWindow, window.Width, window.Height);
-                state.Left = placement.X; state.Top = placement.Y;
-            }
+            PlaceReferenceWindowOnCanvas(state, window, sourceWindow);
             _openSpreadsheetWindows.Add(state.FilePath, window);
             registered = true;
             AddOpenTab(state); AddWindowToCodeView(window, state, select: true);

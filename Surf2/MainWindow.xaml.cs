@@ -1312,7 +1312,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             await OpenDiagramAsync(node.FullPath);
             InternalLogService.Info(
-                "Opened Object Explorer diagram node.",
+                "Finished Object Explorer diagram open attempt.",
                 ("NodeName", node.Name),
                 ("Path", node.FullPath),
                 ("NodeKey", node.NodeKey));
@@ -8525,11 +8525,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             window.FitToLineRange(targetReference.LineNumber, targetReference.EndLineNumber);
         }
 
-        if (sourceWindow != null && existingState == null)
+        if (existingState == null)
         {
-            Point placement = FindReferenceWindowPlacement(sourceWindow, window.Width, window.Height);
-            state.Left = placement.X;
-            state.Top = placement.Y;
+            PlaceReferenceWindowOnCanvas(state, window, sourceWindow);
         }
 
         _openWindows[documentPath] = window;
@@ -8589,11 +8587,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             BringToFront(window);
         };
 
-        if (sourceWindow != null && existingState == null)
+        if (existingState == null)
         {
-            Point placement = FindReferenceWindowPlacement(sourceWindow, window.Width, window.Height);
-            state.Left = placement.X;
-            state.Top = placement.Y;
+            PlaceReferenceWindowOnCanvas(state, window, sourceWindow);
         }
 
         _openSpreadsheetWindows[documentPath] = window;
@@ -17634,6 +17630,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         WorkspaceScrollViewer.ScrollToHorizontalOffset(targetHorizontalOffset);
         WorkspaceScrollViewer.ScrollToVerticalOffset(targetVerticalOffset);
         CaptureViewportState();
+    }
+
+    private void PlaceReferenceWindowOnCanvas(OpenDocumentState state, FrameworkElement window, FloatingCodeWindow? sourceWindow)
+    {
+        // A docked tab uses Auto dimensions (NaN). It has no position on the canvas.
+        if (_codeViewMode != CodeViewMode.Canvas || sourceWindow == null || sourceWindow.Parent != WorkspaceCanvas)
+        {
+            return;
+        }
+
+        Point placement = FindReferenceWindowPlacement(sourceWindow, window.Width, window.Height);
+        state.Left = placement.X;
+        state.Top = placement.Y;
     }
 
     private Point FindReferenceWindowPlacement(FloatingCodeWindow sourceWindow, double width, double height)

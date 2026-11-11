@@ -42,6 +42,11 @@ internal static class MasterRegressionSuite
                 Run("JSON code highlighting, lossless display formatting and language overrides", JsonCodeRenderingTests.Run);
                 return _failures == 0 ? 0 : 1;
             }
+            if (args is ["--document-layout"])
+            {
+                Run("References opened from a docked tab retain finite workbench bounds", DocumentLayoutTests.Run);
+                return _failures == 0 ? 0 : 1;
+            }
 
             Run("Opening a search selects the first match and navigation updates the counter", SearchNavigation);
             Run("Search options and counters use the same matches", SearchOptions);
@@ -52,6 +57,7 @@ internal static class MasterRegressionSuite
             Run("Docking and search preserve visible, draggable editor scrollbar thumbs", DockedScrollbarThumbs);
             Run("Closing and reopening search removes and restores scrollbar markers", SearchLifecycle);
             Run("The search counter and copy icon fit a 320 pixel code window", NarrowSearchLayout);
+            Run("References opened from a docked tab retain finite workbench bounds", DocumentLayoutTests.Run);
             Run("Diagram search reference navigation and compatibility", SearchReferenceNavigationTests.Run);
             Run("Diagram image picker, upload, cancel, persistence and undo", DiagramImageEditingTests.Run);
             Run("Pending references and ready reference styling", V2ReferencePresentationTests.Run);
@@ -65,7 +71,7 @@ internal static class MasterRegressionSuite
             }
             else if (args.Length != 0)
             {
-                Console.Error.WriteLine("Usage: Surf2.RegressionTests [--preview <absolute PNG path> | --json]");
+                Console.Error.WriteLine("Usage: Surf2.RegressionTests [--preview <absolute PNG path> | --json | --document-layout]");
                 _failures++;
             }
         }
