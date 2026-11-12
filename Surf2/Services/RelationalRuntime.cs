@@ -11,13 +11,14 @@ using Surf2.Storage.Relational.State;
 namespace Surf2.Services;
 
 /// <summary>One explicitly selected database and connection epoch; never initializes or migrates it.</summary>
-public sealed class RelationalRuntime
+public sealed partial class RelationalRuntime
 {
     public RelationalRuntime(SqlServerConnectionOptions options)
     {
         Options = options ?? throw new ArgumentNullException(nameof(options));
         Session = new(options.ConnectionString);
         Session.Metrics.Enable();
+        HistoryCounts = new(Session);
         var content = new RelationalContentStore();
         StateStore = new(Session, content);
         State = new(Session);
@@ -42,4 +43,5 @@ public sealed class RelationalRuntime
     public RelationalExplorerService Explorer { get; }
     public RelationalReferenceService References { get; }
     public RelationalExplorerSearchSources SearchSources { get; }
+    internal RelationalSnapshots.HistoryCountStore HistoryCounts { get; }
 }

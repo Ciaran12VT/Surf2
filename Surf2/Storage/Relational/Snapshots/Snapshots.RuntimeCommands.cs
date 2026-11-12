@@ -208,7 +208,8 @@ namespace Surf2.Storage.Relational.Snapshots
                 }
                 var unchanged = previous with { DisplayName = plan.Header.DisplayName, DatabaseName = plan.Header.DatabaseName,
                     ImportedAtUtc = plan.Header.ImportedAtUtc, SortOrdinal = plan.Header.SortOrdinal, RowVersion = currentVersion };
-                await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false);
+                try { await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false); }
+                finally { session.SnapshotMemory.Invalidate(plan.SnapshotKey); }
                 return new(unchanged, expectedScope, previous.CurrentVersionKey ?? 0);
             }
             long history; byte[] historyVersion; int next; long versionOrdinal;
@@ -334,7 +335,8 @@ namespace Surf2.Storage.Relational.Snapshots
             }
             var summary = new SnapshotSummary(plan.SnapshotKey, publicId, plan.Header.SnapshotId, plan.Header.DisplayName,
                 plan.Header.DatabaseName, plan.Header.ImportedAtUtc, ordinal, version, publishedVersion);
-            await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false);
+            try { await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false); }
+            finally { session.SnapshotMemory.Invalidate(plan.SnapshotKey); }
             return new(summary, scopeToken, version);
         }
 

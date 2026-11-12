@@ -120,6 +120,8 @@ public static partial class StorageRegressionSuite
                 check, "Captured SQL names are navigable from metadata while background definitions are blocked");
             RuntimeWpfAssert(index.Resolve("Recalculate").Count == 0 && selector.SelectedIndex == 0 && !selector.IsEnabled && footer.Visibility == Visibility.Visible,
                 check, "Name search is the locked default and a discreet loading footer is visible before definitions arrive");
+            RuntimeWpfAssert(!(bool)RuntimeWpfField<object>(main, "_relationalSnapshotMemoryStarted"), check,
+                "Snapshot history preload waits until the scope's definition and content-search load finishes");
             RuntimeWpfAssert(RuntimeWpfNamed<FrameworkElement>(main, "ObjectExplorerLoadingOverlay").Visibility == Visibility.Collapsed &&
                 RuntimeWpfNamed<FrameworkElement>(main, "MainCanvasLoadingOverlay").Visibility == Visibility.Collapsed,
                 check, "Background definition loading leaves the workspace unobstructed");
@@ -146,8 +148,10 @@ public static partial class StorageRegressionSuite
 
             gate.TrySetResult(true);
             await RuntimeWpfField<Task>(main, "_relationalIndexRefreshTask").WaitAsync(TimeSpan.FromSeconds(60));
-            RuntimeWpfAssert(selector.IsEnabled && selector.SelectedIndex == 0 && footer.Visibility == Visibility.Collapsed,
+            RuntimeWpfAssert(selector.IsEnabled && selector.SelectedIndex == 0,
                 check, "Completing the in-memory definition index unlocks Content search without changing Name selection");
+            RuntimeWpfAssert((bool)RuntimeWpfField<object>(main, "_relationalSnapshotMemoryStarted"), check,
+                "History and comparison preload begins automatically after the definition index completes");
             index = RuntimeWpfField<ScopeReferenceIndex>(main, "_referenceIndex");
             RuntimeWpfAssert(index.Resolve("Recalculate").Any(reference => reference.FilePath == targetPath && reference.LineNumber == 3) &&
                 index.Resolve("current-a1").Any(reference => reference.Kind == ReferenceEntityKind.Field),
@@ -174,6 +178,14 @@ public static partial class StorageRegressionSuite
             StateAccessNoReads(trace.Commands, check, "V2 navigation and search avoid persisted definition-index reads", "SymbolDefinition", "SymbolOccurrence");
             RuntimeWpfAssert(trace.Commands.All(command => !command.Text.Contains("INSERT INTO SURF.INDEXDOCUMENT", StringComparison.Ordinal)),
                 check, "V2 startup builds no per-file SQL index documents");
+            await RuntimeWpfInvokeTaskAsync(main, "EnsureRelationalSnapshotMemoryReadyAsync", CancellationToken.None);
+            var runtime = RuntimeWpfField<RelationalRuntime>(main, "_relational");
+            RuntimeWpfAssert(runtime.IsSnapshotMemoryReady(scope) && selector.IsEnabled && footer.Visibility == Visibility.Collapsed,
+                check, "Completed history preload keeps content search available and removes the loading footer");
+            int beforeWarmHistoryGate = trace.Commands.Count;
+            await RuntimeWpfInvokeTaskAsync(main, "EnsureRelationalSnapshotMemoryReadyAsync", CancellationToken.None);
+            RuntimeWpfAssert(trace.Commands.Count == beforeWarmHistoryGate, check,
+                "Opening already loaded history does not revalidate or read the database");
             RuntimeWpfArrange(root, 1280, 820); await RuntimeWpfIdleAsync();
             RuntimeWpfSaveRender(root, outputDir, "v2-workspace-ready", 1280, 820, check);
             await VerifyV2HistoryUiParityAsync(main, scope, models.Snapshots, outputDir, check);

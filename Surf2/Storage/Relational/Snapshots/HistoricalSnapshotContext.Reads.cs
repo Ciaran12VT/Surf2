@@ -63,6 +63,16 @@ public sealed partial class HistoricalSnapshotContext
 
     public async Task<HistoricalSnapshotEntry?> FindResourceAsync(long resourceKey, CancellationToken ct = default)
     {
+        if (_memory != null)
+        {
+            await ValidateAsync(ct).ConfigureAwait(false);
+            var resource = _memory.LogicalResources?.GetValueOrDefault(resourceKey);
+            if (resource == null) return null;
+            var collection = resource.Kind == DatabaseVersionedResourceKind.TableMetadata ? HistoricalCollection.Tables :
+                resource.Kind == DatabaseVersionedResourceKind.TableData ? HistoricalCollection.TableDataSets : HistoricalCollection.Objects;
+            return (await FindEntriesAsync(collection, resource.SchemaName, resource.ObjectName, ct).ConfigureAwait(false))
+                .FirstOrDefault(entry => collection != HistoricalCollection.Objects || EntryResourceKind(entry) == resource.Kind);
+        }
         string schema, name; DatabaseVersionedResourceKind? kind;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -136,6 +146,18 @@ public sealed partial class HistoricalSnapshotContext
         {
             ObjectDisposedException.ThrowIf(_disposed, this); await ValidateHead(ct).ConfigureAwait(false);
             if (entries.Count == 0) return new Dictionary<long, SnapshotResourceSummary>();
+            if (_memory != null)
+            {
+                var result = new Dictionary<long, SnapshotResourceSummary>();
+                foreach (var entry in entries)
+                {
+                    if (!_cachedEntryKeys!.TryGetValue(entry.EntryKey, out var stored) || !SameEntry(stored, entry) ||
+                        !_memory.Resources.TryGetValue(entry.EntryKey, out var resource))
+                        throw new ArgumentException("An entry belongs to another historical projection.", nameof(entries));
+                    result[entry.EntryKey] = resource with { SortOrdinal = entry.SortOrdinal, RowVersion = resource.RowVersion.ToArray() };
+                }
+                return result;
+            }
             var requested = entries.GroupBy(entry => entry.EntryKey).ToDictionary(group => group.Key, group => group.ToArray());
             var resolved = new Dictionary<long, SnapshotResourceSummary>();
             await using var command = Command(_connection, null, """
@@ -170,6 +192,8 @@ public sealed partial class HistoricalSnapshotContext
     {
         if (entries.Any(entry => entry.Collection != HistoricalCollection.Objects)) throw new ArgumentException("Select projected object entries.", nameof(entries));
         var resources = await ResourceSummariesAsync(entries, ct).ConfigureAwait(false);
+        if (_memory != null)
+            return resources.ToDictionary(pair => pair.Key, pair => _memory.Objects[pair.Key] with { Resource = pair.Value });
         var result = new Dictionary<long, ObjectSummary>(); var budget = new SnapshotMetadataBudget();
         foreach (var entry in entries) budget.Add(512 + 4L * (entry.SchemaName.Length + (long)entry.Name.Length));
         if (entries.Count == 0) return result;
@@ -203,6 +227,7 @@ public sealed partial class HistoricalSnapshotContext
             throw new ArgumentException("A projected table entry is required.", nameof(requested));
         var table = await FindEntryAsync(requested.EntryKey, ct).ConfigureAwait(false);
         if (table == null || !SameEntry(table, requested)) throw new ArgumentException("Table belongs to another projection.", nameof(requested));
+        if (_memory != null) return CopyDetails(_memory.Tables[table.EntryKey]);
         var budget = new SnapshotMetadataBudget();
         budget.Add(256 + 2L * (table.SchemaName.Length + (long)table.Name.Length));
         var columns = await MatchedChildrenAsync(HistoricalCollection.Columns, table.SchemaName, table.Name, ct).ConfigureAwait(false);

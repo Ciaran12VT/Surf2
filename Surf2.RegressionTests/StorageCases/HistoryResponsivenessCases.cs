@@ -9,6 +9,29 @@ public static partial class StorageRegressionSuite
     private static async Task VerifyHistoryActionsDuringCountsAsync(RelationalSnapshotHistoryWindow window,
         RelationalRuntime runtime, object version, Action<bool, string> check)
     {
+        var selectedVersion = ((RelationalSnapshotHistoryWindow.HistoryVersionRow)version).Version;
+        if (runtime.IsSnapshotMemoryReady([selectedVersion.SnapshotKey]))
+        {
+            using var memoryTrace = new StateAccessSqlTrace(runtime.Options.ConnectionString);
+            RelationalComparisonTarget? memoryOpened = null;
+            EventHandler<RelationalHistoryOpenEventArgs> memoryHandler = (_, e) => memoryOpened = e.Target;
+            window.OpenRequested += memoryHandler;
+            try
+            {
+                await RuntimeWpfInvokeTaskAsync(window, "ToggleRowAsync", version);
+                await RuntimeWpfField<Task>(window, "_countsTask").WaitAsync(TimeSpan.FromSeconds(30));
+                var file = ((RelationalSnapshotHistoryWindow.HistoryVersionRow)version).Children
+                    .First(row => row.ResourceTypeColumn == "Stored Procedure");
+                var memoryMenu = (ContextMenu)RuntimeWpfInvoke(window, "CreateFileContextMenu", file)!;
+                ((MenuItem)memoryMenu.Items[0]).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                await RuntimeWpfWaitAsync(() => memoryOpened != null, "view preloaded history");
+                RuntimeWpfAssert(file.CountsLoaded && memoryOpened?.ResourceKey == file.File.ResourceKey && memoryTrace.Commands.Count == 0,
+                    check, "Preloaded history expands, displays counts, and resolves View entirely in memory");
+            }
+            finally { window.OpenRequested -= memoryHandler; }
+            await RuntimeWpfInvokeTaskAsync(window, "ToggleRowAsync", version);
+            return;
+        }
         using var release = new ManualResetEventSlim();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         int held = 0;

@@ -19,6 +19,13 @@ public sealed partial class RelationalSnapshotStore
         long[] requested = ObjectBatchKeys(revisionKeys, ct);
         var result = new Dictionary<long, SnapshotObjectTextIdentity>();
         if (requested.Length == 0) return result;
+        var memories = session.SnapshotMemory.All();
+        foreach (long revision in requested)
+            foreach (var memory in memories)
+                if (memory.ObjectIdentities.TryGetValue(revision, out var identity))
+                { result.Add(revision, identity with { ContentHash = identity.ContentHash.ToArray() }); break; }
+        if (result.Count == requested.Length) return result;
+        result.Clear();
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT o.RevisionKey,o.DefinitionContentKey,c.ByteCount,c.ContentHash
@@ -49,6 +56,18 @@ public sealed partial class RelationalSnapshotStore
         long[] requested = ObjectBatchKeys(revisionKeys, ct);
         var result = new Dictionary<long, SqlDatabaseObject>();
         if (requested.Length == 0) return result;
+        var memories = session.SnapshotMemory.All(); long cachedBytes = 0;
+        foreach (long revision in requested)
+            foreach (var memory in memories)
+                if (memory.Objects.TryGetValue(revision, out var value))
+                {
+                    long bytes = value.Definition.Length * 2L;
+                    SnapshotReadGuard.RequireBytes(bytes, _readLimits.SelectedDefinitionBytes);
+                    SnapshotReadGuard.RequireBytes(bytes, MaximumDefinitionBatchBytes - cachedBytes);
+                    cachedBytes += bytes; result.Add(revision, SnapshotMemoryCache.Clone(value)); break;
+                }
+        if (result.Count == requested.Length) return result;
+        result.Clear();
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT o.RevisionKey,

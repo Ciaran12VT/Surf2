@@ -12,7 +12,7 @@ internal readonly record struct HistoryLineCountKey(long ResourceKey, int Kind, 
 internal readonly record struct StoredHistoryLineCount(long ResourceKey, int Kind, string InputHash, int Added, int Removed);
 
 /// <summary>Optional derived counts. A user with read access can still calculate history without the extension.</summary>
-internal sealed class HistoryCountStore(RelationalSession session)
+internal sealed partial class HistoryCountStore(RelationalSession session)
 {
     private const int Available = 1, Unavailable = 2;
     private readonly SemaphoreSlim _installGate = new(1, 1);
@@ -77,6 +77,8 @@ internal sealed class HistoryCountStore(RelationalSession session)
     public async Task<IReadOnlyDictionary<HistoryLineCountKey, (int Added, int Removed)>> ReadLinesAsync(
         SnapshotVersionSummary version, IReadOnlyList<HistoryLineCountKey> keys, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (TryReadMemoryLines(version, keys, out var memory)) return memory;
         var result = new Dictionary<HistoryLineCountKey, (int Added, int Removed)>();
         if (version.VersionKey <= 0 || keys.Count == 0 || !await EnsureAvailableAsync(ct).ConfigureAwait(false)) return result;
         try
@@ -98,7 +100,13 @@ internal sealed class HistoryCountStore(RelationalSession session)
         return result;
     }
 
-    public Task WriteLinesAsync(SnapshotVersionSummary version, byte[] head, IReadOnlyList<StoredHistoryLineCount> rows, CancellationToken ct) =>
+    public Task WriteLinesAsync(SnapshotVersionSummary version, byte[] head, IReadOnlyList<StoredHistoryLineCount> rows, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return StoreMemoryLines(version, head, rows) ? Task.CompletedTask : PersistLinesAsync(version, head, rows, ct);
+    }
+
+    private Task PersistLinesAsync(SnapshotVersionSummary version, byte[] head, IReadOnlyList<StoredHistoryLineCount> rows, CancellationToken ct) =>
         rows.Count == 0 ? Task.CompletedTask : WriteAsync(version, head, """
             INSERT surf.HistoryFileLineCount(VersionKey,SnapshotKey,ResourceKey,Kind,InputHash,AddedLines,RemovedLines)
             SELECT @Version,@Snapshot,f.ResourceKey,f.Kind,CONVERT(binary(32),f.InputHash,2),f.Added,f.Removed
@@ -109,6 +117,8 @@ internal sealed class HistoryCountStore(RelationalSession session)
 
     public async Task<long?> ReadInitialAsync(SnapshotVersionSummary version, byte[] dependency, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (TryReadMemoryInitial(version, dependency, out var memory)) return memory;
         if (version.VersionKey <= 0 || !await EnsureAvailableAsync(ct).ConfigureAwait(false)) return null;
         try
         {
@@ -121,7 +131,13 @@ internal sealed class HistoryCountStore(RelationalSession session)
         catch (SqlException error) when (!ct.IsCancellationRequested) { Disable(error); return null; }
     }
 
-    public Task WriteInitialAsync(SnapshotVersionSummary version, byte[] head, byte[] dependency, long count, CancellationToken ct) =>
+    public Task WriteInitialAsync(SnapshotVersionSummary version, byte[] head, byte[] dependency, long count, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return StoreMemoryInitial(version, head, dependency, count) ? Task.CompletedTask : PersistInitialAsync(version, head, dependency, count, ct);
+    }
+
+    private Task PersistInitialAsync(SnapshotVersionSummary version, byte[] head, byte[] dependency, long count, CancellationToken ct) =>
         WriteAsync(version, head, """
             INSERT surf.HistoryInitialFileCount(VersionKey,SnapshotKey,ProjectionHash,FileCount)
             SELECT @Version,@Snapshot,@Projection,@Count

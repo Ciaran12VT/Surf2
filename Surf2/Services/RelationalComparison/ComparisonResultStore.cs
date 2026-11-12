@@ -20,8 +20,9 @@ public sealed class ComparisonResultStore : IAsyncDisposable
     internal ComparisonResultStore(ComparisonScratch scratch, string path, long count,
         IReadOnlyDictionary<string, long> counts, ComparisonTableLayout? tableLayout)
     { _scratch = scratch; _path = path; _limits = scratch.Limits; Count = count; StatusCounts = counts; TableLayout = tableLayout; }
-    private ComparisonResultStore(ComparisonResultRow[] rows, ComparisonLimits limits, IReadOnlyDictionary<string, long> counts)
-    { _memory = rows; _limits = limits; Count = rows.Length; StatusCounts = counts; }
+    private ComparisonResultStore(ComparisonResultRow[] rows, ComparisonLimits limits, IReadOnlyDictionary<string, long> counts,
+        ComparisonTableLayout? tableLayout)
+    { _memory = rows; _limits = limits; Count = rows.Length; StatusCounts = counts; TableLayout = tableLayout; }
     public long Count { get; }
     public IReadOnlyDictionary<string, long> StatusCounts { get; }
     public ComparisonTableLayout? TableLayout { get; }
@@ -222,7 +223,8 @@ public sealed class ComparisonResultStore : IAsyncDisposable
     internal static ComparisonResultStore Complete(ComparisonScratch scratch, string path,
         long count, Dictionary<string, long> counts, ComparisonTableLayout? tableLayout = null) => new(scratch, path, count,
         new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(counts), tableLayout);
-    internal static ComparisonResultStore FromMemory(ComparisonResultRow[] rows, ComparisonLimits limits) => new(rows, limits,
+    internal static ComparisonResultStore FromMemory(ComparisonResultRow[] rows, ComparisonLimits limits,
+        ComparisonTableLayout? tableLayout = null) => new(rows, limits,
         new System.Collections.ObjectModel.ReadOnlyDictionary<string, long>(rows.GroupBy(row => row.Status, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.LongCount(), StringComparer.Ordinal)));
+            .ToDictionary(group => group.Key, group => group.LongCount(), StringComparer.Ordinal)), tableLayout);
 }

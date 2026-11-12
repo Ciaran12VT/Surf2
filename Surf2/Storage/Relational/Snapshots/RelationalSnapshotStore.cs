@@ -38,6 +38,8 @@ public sealed partial class RelationalSnapshotStore
 
     public async Task<SnapshotSummary?> GetSnapshotAsync(long snapshotKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (session.SnapshotMemory.TryGetSnapshot(snapshotKey, out var cached)) return cached;
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT CONVERT(bigint,256)+DATALENGTH(OriginalSnapshotId)+DATALENGTH(DisplayName)+DATALENGTH(DatabaseName),
@@ -84,6 +86,19 @@ public sealed partial class RelationalSnapshotStore
 
     public async Task<SnapshotResourceSummary?> ResolveResourceAsync(long resourceKey, long? versionKey = null, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        foreach (var memory in session.SnapshotMemory.All())
+            if (memory.ResourceIdentities.ContainsKey(resourceKey))
+            {
+                if (!versionKey.HasValue)
+                {
+                    var cached = memory.Resources.FirstOrDefault(r => r.ResourceKey == resourceKey);
+                    return cached == null ? null : cached with { RowVersion = cached.RowVersion.ToArray() };
+                }
+                await using var historicalMemory = await OpenHistoricalSnapshotAsync(memory.Header.SnapshotKey, versionKey.Value, ct).ConfigureAwait(false);
+                var entryMemory = await historicalMemory.FindResourceAsync(resourceKey, ct).ConfigureAwait(false);
+                return entryMemory == null ? null : await historicalMemory.ResourceSummary(entryMemory, ct).ConfigureAwait(false);
+            }
         await using var connection = await Open(ct).ConfigureAwait(false);
         if (versionKey.HasValue)
         {
@@ -109,6 +124,13 @@ public sealed partial class RelationalSnapshotStore
     // ambiguous legacy key is never silently bound to the first resource.
     public async Task<IReadOnlyList<long>> FindResourceKeysAsync(long snapshotKey, string originalResourceKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (session.SnapshotMemory.Find(snapshotKey) is { } memory)
+        {
+            var keys = memory.ResourceIdentities.Where(pair => StringComparer.Ordinal.Equals(pair.Value, originalResourceKey)).Select(pair => pair.Key).Order().ToArray();
+            if (keys.Length > 1000) throw new InvalidOperationException("Legacy identity is excessively ambiguous; resolve by migration identity mapping.");
+            return keys;
+        }
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT r.ResourceKey FROM surf.SnapshotResource r JOIN surf.DatabaseSnapshot s ON s.SnapshotKey=r.SnapshotKey
@@ -130,6 +152,13 @@ public sealed partial class RelationalSnapshotStore
 
     public async Task<SqlDatabaseObject> ReadObjectAsync(long revisionKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        foreach (var memory in session.SnapshotMemory.All())
+            if (memory.Objects.TryGetValue(revisionKey, out var cached))
+            {
+                SnapshotReadGuard.RequireBytes(cached.Definition.Length * 2L, _readLimits.SelectedDefinitionBytes);
+                return SnapshotMemoryCache.Clone(cached);
+            }
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT CONVERT(bigint,256)+DATALENGTH(o.SchemaName)+DATALENGTH(o.ObjectName)+DATALENGTH(o.TypeDescription)
@@ -156,6 +185,9 @@ public sealed partial class RelationalSnapshotStore
 
     public async Task<TableMetadataDetails> ReadTableMetadataAsync(long revisionKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        foreach (var memory in session.SnapshotMemory.All())
+            if (memory.Tables.TryGetValue(revisionKey, out var cached)) return SnapshotMemoryCache.Clone(cached);
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT CONVERT(bigint,256)+DATALENGTH(t.SchemaName)+DATALENGTH(t.TableName),
@@ -188,6 +220,10 @@ public sealed partial class RelationalSnapshotStore
 
     public async Task<TableDataMetadata> ReadTableDataMetadataAsync(long revisionKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        foreach (var memory in session.SnapshotMemory.All())
+            if (memory.DataMetadata.TryGetValue(revisionKey, out var cached))
+                return cached with { Table = cached.Table == null ? null : SnapshotMemoryCache.Clone(cached.Table) };
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT CONVERT(bigint,256)+COALESCE(DATALENGTH(d.SchemaName),0)+COALESCE(DATALENGTH(d.TableName),0)
@@ -276,6 +312,8 @@ public sealed partial class RelationalSnapshotStore
         if (pageSize is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(pageSize));
         if (cursor != null && (cursor.OwnerKey != ownerKey || cursor.VersionKey != versionKey || cursor.Query != query ||
             cursor.Kind != kind || cursor.Epoch != Epoch)) throw new ArgumentException("Cursor belongs to another request or database epoch.");
+        if (!catalogue && MemoryPage(ownerKey, versionKey, query, kind, pageSize, cursor, position, historyKey, ct) is { } memoryPage)
+            return memoryPage;
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
         byte[] token = await Head(connection, transaction, ownerKey, versionKey, catalogue, ct, historyKey).ConfigureAwait(false);

@@ -24,6 +24,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
 {
     private readonly RelationalRuntime _runtime;
     private readonly RelationalSnapshotHistoryService _service;
+    private readonly bool _usesSnapshotMemory;
     private SnapshotSummary _snapshot;
     private readonly List<HistoryVersionRow> _versionRows = [];
     private readonly ObservableCollection<HistoryRow> _visibleRows = [];
@@ -45,6 +46,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     public bool RequiresReload { get; private set; }
     public Exception? CleanupFailure { get; private set; }
     public Action? VerifyWriteAccess { get; set; }
+    public Func<CancellationToken, Task>? RefreshSnapshotMemoryAsync { get; set; }
     public Task CloseCompletion => _closeCompletion.Task;
     public Task Initialization => _initialization ?? Task.CompletedTask;
     public Task CurrentOperation { get; private set; } = Task.CompletedTask;
@@ -59,6 +61,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
         _service = new(runtime);
+        _usesSnapshotMemory = runtime.IsSnapshotMemoryReady([snapshot.SnapshotKey]);
         InitializeComponent();
         Title = "History - " + snapshot.DisplayName;
         HeaderTextBlock.Text = "Database History: " + snapshot.DisplayName;
@@ -87,6 +90,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     private async Task InitializeCoreAsync() { await RunAsync(ReadVersionsAsync); await _countsTask; }
     public Task ReloadRowsAsync() => RunAsync(async () =>
     {
+        await PrepareSnapshotMemoryAsync(RequiresReload);
         _snapshot = await _runtime.Snapshots.GetSnapshotAsync(_snapshot.SnapshotKey, Token) ?? throw new SnapshotConcurrencyException();
         RequiresReload = false; await ReadVersionsAsync();
     });
@@ -337,7 +341,29 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
     private async Task AdoptRestoredSnapshotAsync(RelationalHistoryRestoreResult restored)
     {
         _snapshot = restored.Snapshot; UpdatedSnapshot = restored.Snapshot;
-        SnapshotChanged?.Invoke(restored.Snapshot); await ReadVersionsAsync();
+        SnapshotChanged?.Invoke(restored.Snapshot);
+        await PrepareSnapshotMemoryAsync();
+        if (_usesSnapshotMemory && (!_runtime.Session.SnapshotMemory.TryGetSnapshot(_snapshot.SnapshotKey, out var cached) ||
+            !cached.RowVersion.AsSpan().SequenceEqual(_snapshot.RowVersion))) throw new SnapshotConcurrencyException();
+        await ReadVersionsAsync();
+    }
+    private async Task PrepareSnapshotMemoryAsync(bool forceReload = false)
+    {
+        if (!_usesSnapshotMemory && RefreshSnapshotMemoryAsync == null) return;
+        if (!forceReload && _runtime.IsSnapshotMemoryReady([_snapshot.SnapshotKey])) return;
+        await StopBackgroundCountsAsync();
+        StatusTextBlock.Text = "Loading updated snapshot history…";
+        if (RefreshSnapshotMemoryAsync != null) await RefreshSnapshotMemoryAsync(Token);
+        else
+        {
+            var keys = _runtime.Session.SnapshotMemory.All().Select(memory => memory.Header.SnapshotKey)
+                .Append(_snapshot.SnapshotKey).Distinct().ToArray();
+            if (forceReload) _runtime.InvalidateSnapshotMemory();
+            var token = Token;
+            await Task.Run(() => _runtime.PreloadSnapshotMemoryAsync(keys, ct: token), token);
+        }
+        if (!_runtime.IsSnapshotMemoryReady([_snapshot.SnapshotKey]))
+            throw new InvalidOperationException("Updated snapshot history could not finish loading. Retry loading the scope before continuing.");
     }
     private Task RunAsync(Func<Task> action)
     {

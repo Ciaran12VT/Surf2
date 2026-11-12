@@ -7,6 +7,10 @@ public sealed partial class RelationalSnapshotStore
     /// <summary>Replay all later changes in legacy order into a bounded metadata/identity work plan; dispose after the operation.</summary>
     public async Task<HistoricalSnapshotContext> OpenHistoricalSnapshotAsync(long snapshotKey, long versionKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (session.SnapshotMemory.Find(snapshotKey) is { } memory)
+            return memory.Versions.TryGetValue(versionKey, out var cached) ? HistoricalSnapshotContext.FromMemory(cached, Epoch, () => ReferenceEquals(session.SnapshotMemory.Find(snapshotKey), memory))
+                : throw new KeyNotFoundException("Published snapshot/version not found.");
         var connection = await Open(ct).ConfigureAwait(false);
         if (versionKey == 0)
             return await HistoricalSnapshotContext.BuildInitialCurrentAsync(connection, Epoch, snapshotKey, ct).ConfigureAwait(false);

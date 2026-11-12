@@ -120,6 +120,8 @@ public sealed partial class RelationalSnapshotHistoryService
 
     private async Task<long?> PreviousFileVersionAsync(SnapshotVersionSummary selected, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (_runtime.Session.SnapshotMemory.TryGetPreviousVersion(selected, out var previous)) return previous;
         await using var connection = await _runtime.Session.OpenAsync(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT v.VersionNumber,v.IsInitial,
@@ -138,6 +140,7 @@ public sealed partial class RelationalSnapshotHistoryService
     public async Task<(int Added, int Removed)> CountFileLinesAsync(RelationalHistoryFileSummary file, CancellationToken ct = default)
     {
         await RequireFileHeadAsync(file, ct).ConfigureAwait(false);
+        if (_historyCounts.ReadMemoryError(file.Version, file.CountCacheKey) is { } error) throw new InvalidOperationException(error);
         if (file.CountCacheKey is { } key)
         {
             var saved = await _historyCounts.ReadLinesAsync(file.Version, [key], ct).ConfigureAwait(false);
@@ -173,7 +176,8 @@ public sealed partial class RelationalSnapshotHistoryService
                 await RequireFileHeadAsync(selected, ct).ConfigureAwait(false);
                 var keys = candidates.Select(file => file.CountCacheKey).OfType<HistoryLineCountKey>().Distinct().ToArray();
                 var cached = await _historyCounts.ReadLinesAsync(selected.Version, keys, ct).ConfigureAwait(false);
-                bool IsCached(RelationalHistoryFileSummary file) => file.CountCacheKey is { } key && cached.ContainsKey(key);
+                bool IsCached(RelationalHistoryFileSummary file) => file.CountCacheKey is { } key && cached.ContainsKey(key) ||
+                    _historyCounts.ReadMemoryError(file.Version, file.CountCacheKey) != null;
                 var revisions = candidates.Where(file => !IsCached(file)).SelectMany(ObjectRevisions).Distinct().ToArray();
                 var identities = await _selectedReads.ReadObjectTextIdentitiesAsync(revisions, ct).ConfigureAwait(false);
                 int offset = 0;
@@ -196,6 +200,11 @@ public sealed partial class RelationalSnapshotHistoryService
                     foreach (var file in group)
                     {
                         ct.ThrowIfCancellationRequested();
+                        if (_historyCounts.ReadMemoryError(file.Version, file.CountCacheKey) is { } savedError)
+                        {
+                            completed.Add(new(file, 0, 0, savedError));
+                            continue;
+                        }
                         if (file.CountCacheKey is { } key && cached.TryGetValue(key, out var saved))
                         {
                             completed.Add(new(file, saved.Added, saved.Removed));
@@ -212,7 +221,10 @@ public sealed partial class RelationalSnapshotHistoryService
                         }
                         catch (Exception error) when (error is not SnapshotConcurrencyException and not RelationalSessionChangedException &&
                             error is InvalidOperationException or IOException)
-                        { completed.Add(new(file, 0, 0, error.Message)); }
+                        {
+                            _historyCounts.StoreMemoryError(file.Version, file.CountCacheKey, error.Message);
+                            completed.Add(new(file, 0, 0, error.Message));
+                        }
                     }
                     await RequireFileHeadAsync(selected, ct).ConfigureAwait(false);
                     if (stored.Count != 0)
@@ -374,6 +386,12 @@ public sealed partial class RelationalSnapshotHistoryService
         foreach (var column in await context.FindEntriesAsync(HistoricalCollection.Columns, data.SchemaName, data.Name, ct).ConfigureAwait(false))
         { budget.Add(32); children.Add(column.ChildKey!.Value); }
         if (children.Count == 0) return [];
+        if (context.IsMemoryResident)
+        {
+            return children.Select(key => _runtime.Session.SnapshotMemory.TryGetColumn(key, out var column)
+                    ? column.Column : throw new SnapshotConcurrencyException())
+                .OrderBy(column => column.Ordinal).Select(column => column.ColumnName).ToList();
+        }
         var values = new Dictionary<long, (string Name, int Ordinal)>();
         await using var connection = await _runtime.Session.OpenAsync(ct).ConfigureAwait(false);
         foreach (long[] batch in children.Distinct().Chunk(128))

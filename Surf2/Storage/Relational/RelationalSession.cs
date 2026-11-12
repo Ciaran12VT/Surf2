@@ -18,12 +18,19 @@ public sealed class RelationalSession
     {
         _connectionString = SqlServerConnectionOptions.FromConnectionString(connectionString).ConnectionString;
         Metrics = new(Epoch);
+        SnapshotMemory = new(this);
     }
 
     public Guid Epoch { get; } = Guid.NewGuid();
     public RelationalSqlMetrics Metrics { get; }
+    public Snapshots.SnapshotMemoryCache SnapshotMemory { get; }
     public Guid? DatabaseIdentity { get { lock (_identityGate) return _databaseIdentity; } }
     internal bool IsMigrationValidation => _validationMigration.HasValue;
+    internal void RequireCurrentIdentity()
+    {
+        lock (_identityGate)
+            if (_identityChanged) throw new RelationalSessionChangedException();
+    }
     internal void RejectValidationWrite()
     {
         if (IsMigrationValidation) throw new InvalidOperationException("A migration validation session cannot publish application changes.");

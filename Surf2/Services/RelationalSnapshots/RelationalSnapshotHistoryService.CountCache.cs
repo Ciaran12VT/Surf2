@@ -14,7 +14,8 @@ public sealed partial class RelationalSnapshotHistoryService
     private static HistoryLineCountKey? LineCountKey(RelationalHistoryFileSummary file, HistoricalSnapshotContext current,
         HistoricalSnapshotContext? previous, CancellationToken ct)
     {
-        if (file.Version.VersionKey <= 0) return null;
+        // Synthetic V1 rows use the same in-memory count identities; the persistence store
+        // still excludes version zero because it has no saved database version row.
         var signature = new StringBuilder(256);
         Append(LineCountPolicy);
         Append(CultureInfo.CurrentCulture.Name);
@@ -70,6 +71,17 @@ public sealed partial class RelationalSnapshotHistoryService
     {
         if (version.SnapshotKey != snapshot.SnapshotKey) throw new ArgumentException("Select a version of this snapshot.", nameof(version));
         if (!version.IsInitial) return version.ChangeCount;
+        if (_runtime.Session.SnapshotMemory.ContainsSnapshot(snapshot.SnapshotKey))
+        {
+            await using var memory = await OpenVersionAsync(snapshot.SnapshotKey, version.VersionKey, ct).ConfigureAwait(false);
+            if (!memory.Header.RowVersion.AsSpan().SequenceEqual(snapshot.RowVersion)) throw new SnapshotConcurrencyException();
+            var identity = SnapshotIdentity.Hash("Surf2.InitialHistoryFileCount.v1:" + (memory.ReplayBaselineVersionKey is long key
+                ? "baseline:" + key.ToString(CultureInfo.InvariantCulture) : "head:" + Convert.ToHexString(snapshot.RowVersion)));
+            if (await _historyCounts.ReadInitialAsync(version, identity, ct).ConfigureAwait(false) is long saved) return saved;
+            long total = await memory.CountResourcesAsync(ct).ConfigureAwait(false);
+            await _historyCounts.WriteInitialAsync(version, snapshot.RowVersion, identity, total, ct).ConfigureAwait(false);
+            return total;
+        }
         byte[]? dependency = null;
         if (version.VersionKey > 0)
         {

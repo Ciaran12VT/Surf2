@@ -52,20 +52,21 @@ public static partial class StorageRegressionSuite
                 table.Kind == DatabaseVersionedResourceKind.TableMetadata && table.FileNameDisplay == "dbo.A" && !choose.IsEnabled,
                 check, "History file Find searches trimmed case-insensitive resource paths and clears the previous selection");
             filter.Clear();
-            // The second change supersedes the first while its SQL work is pending.
+            // The second change supersedes the first while its background work is pending.
             versions.SelectedItem = choices[1];
             versions.SelectedItem = choices[^1];
             await picker.CurrentOperation.WaitAsync(TimeSpan.FromSeconds(60));
             RuntimeWpfAssert(ReferenceEquals(versions.SelectedItem, choices[^1]) && files.Items.Count > 0 &&
                 files.Items.Cast<RelationalHistoryFilePickerWindow.FileChoice>().All(file => file.Version.Version.VersionKey == choices[^1].Version.VersionKey), check,
                 "Rapid version changes cancel stale picker loads and publish only the final version's file identities");
-            RuntimeWpfAssert(trace.Commands.Count > 0, check, "History file picker fixture exercises real SQL metadata reads");
+            RuntimeWpfAssert(runtime.IsSnapshotMemoryReady([snapshot.SnapshotKey]) ? trace.Commands.Count == 0 : trace.Commands.Count > 0,
+                check, "History file picker uses preloaded memory when available and SQL only for cold standalone fixtures");
             StateAccessNoReads(trace.Commands, check, "History file picker browsing reads no file bodies or captured rows",
                 "TextContent", "TextContentChunk", "CapturedRow", "CaptureRow", "CapturedDataRow", "Asset");
             versions.SelectedItem = choices[0];
             await picker.CloseAndDrainAsync().WaitAsync(TimeSpan.FromSeconds(60));
             RuntimeWpfAssert(picker.CurrentOperation.IsCompleted && picker.CloseCompletion.IsCompletedSuccessfully && picker.SelectedTarget == null,
-                check, "Closing a loading history file picker drains its SQL work and returns no accidental selection");
+                check, "Closing a loading history file picker drains its work and returns no accidental selection");
         }
         finally
         {

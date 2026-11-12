@@ -22,7 +22,7 @@ public sealed partial class RelationalSnapshotHistoryService
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime)); _limits = limits ?? new(); _limits.Validate();
         _capture = new(runtime.Session, _limits.Capture);
         _selectedReads = new(runtime.Session, new RelationalContentStore(), new() { SelectedDefinitionBytes = _limits.MaximumDefinitionBytes });
-        _historyCounts = new(runtime.Session);
+        _historyCounts = runtime.HistoryCounts;
     }
     public Task<SnapshotPage<SnapshotHistorySummary>> ListHistoriesAsync(long snapshotKey, int size = 50,
         SnapshotCursor? cursor = null, CancellationToken ct = default) => _runtime.Snapshots.ListHistoriesAsync(snapshotKey, size, cursor, ct);

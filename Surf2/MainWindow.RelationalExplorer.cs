@@ -85,7 +85,16 @@ public partial class MainWindow
         _relationalContentSearchReady = false;
         _relationalFileReferencesReady = false;
         _relationalIndexWorkerFinished = false;
-        if (_relational == null || _relationalExplorerScope == null) { RetireRelationalNameCatalogue(); return; }
+        _relationalSnapshotMemoryStarted = false;
+        _relationalSnapshotMemoryProgress = null;
+        _relationalSnapshotMemoryFailure = null;
+        if (_relational == null || _relationalExplorerScope == null)
+        {
+            RetireRelationalNameCatalogue();
+            if (_relational is { } retiringRuntime)
+                _relationalExplorerRetirement = ClearRetiredSnapshotMemoryAsync(_relationalExplorerRetirement, retiringRuntime);
+            return;
+        }
         ObjectExplorerSearchTargetComboBox.SelectedIndex = 0;
         ObjectExplorerSearchTargetComboBox.IsEnabled = false;
         var runtime = _relational; var scope = _relationalExplorerScope;
@@ -207,6 +216,7 @@ public partial class MainWindow
         var searchOwner = _relationalSearchOwner; searchOwner?.Dispose(); _relationalSearchOwner = null;
         var previousRetirement = _relationalExplorerRetirement;
         var refresh = _relationalIndexRefreshTask; var search = _relationalExplorerSearchTask;
+        var snapshotMemory = _relationalSnapshotMemoryTask;
         var highlight = _relationalHighlightTask; _relationalHighlightGeneration++;
         var preparation = _relationalReferencePreparationTask;
         var focus = _relationalExplorerFocusTask; _relationalExplorerFocusGeneration++;
@@ -218,7 +228,7 @@ public partial class MainWindow
             {
                 await Task.WhenAll(previousRetirement, cancellationCallbacks, searchCallbacks,
                     searchOwner?.DisposeAsync().AsTask() ?? Task.CompletedTask,
-                    children?.DisposeAsync().AsTask() ?? Task.CompletedTask, refresh, search, highlight, preparation, focus, pickerDrains).ConfigureAwait(false);
+                    children?.DisposeAsync().AsTask() ?? Task.CompletedTask, refresh, search, highlight, preparation, focus, pickerDrains, snapshotMemory).ConfigureAwait(false);
             }
             catch (Exception ex) { InternalLogService.Error(ex, "Relational explorer request retirement failed."); }
             finally
@@ -461,6 +471,7 @@ public partial class MainWindow
         RelationalIndexFooter.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
         RelationalIndexSpinner.Visibility = failed ? Visibility.Collapsed : Visibility.Visible;
         RelationalIndexRetryButton.Visibility = failed ? Visibility.Visible : Visibility.Collapsed;
+        RelationalIndexRetryButton.ToolTip = "Retry loading definitions and searchable content";
         if (progress == null)
             RelationalIndexProgressText.Text = "Loading definitions…";
         else
@@ -478,6 +489,7 @@ public partial class MainWindow
             var timed = progress with { Elapsed = _relationalIndexElapsed?.Elapsed ?? progress.Elapsed };
             RelationalIndexProgressText.ToolTip = RelationalActiveIndexStatus(timed);
         }
+        UpdateRelationalSnapshotMemoryUi(ready);
         if (referencesChanged)
         {
             ApplyReferenceHighlightsToOpenWindows();
@@ -486,7 +498,11 @@ public partial class MainWindow
         }
     }
 
-    private void RelationalIndexRetryButton_Click(object sender, RoutedEventArgs e) => RequestRelationalReferenceRefresh();
+    private void RelationalIndexRetryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_relationalSnapshotMemoryFailure != null && _relationalContentSearchReady) RetryRelationalSnapshotMemoryLoad();
+        else RequestRelationalReferenceRefresh();
+    }
 
     private string RelationalActiveIndexStatus(ExplorerIndexRefreshProgress progress)
     {

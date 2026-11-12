@@ -9,34 +9,15 @@ namespace Surf2;
 
 public partial class MainWindow
 {
-    private async Task<IReadOnlyList<SnapshotSummary>> ReadRelationalHistoryScopeSnapshotsAsync(
+    private Task<IReadOnlyList<SnapshotSummary>> ReadRelationalHistoryScopeSnapshotsAsync(
         SnapshotWorkflow work, bool useAliases = true)
     {
-        if (work.Scope == null) return [];
-        var memberships = work.Scope.Snapshot().Resources.Where(resource => resource.Kind == ResourceKind.DatabaseSnapshot).ToArray();
-        var ids = memberships.Select(resource => resource.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var snapshots = new Dictionary<string, SnapshotSummary>(StringComparer.OrdinalIgnoreCase);
-        SnapshotCursor? cursor = null;
-        int units = 0; long bytes = 0;
-        do
-        {
-            var page = await work.Runtime.Snapshots.ListSnapshotsAsync(pageSize: 128, cursor: cursor, ct: work.Token);
-            foreach (var snapshot in page.Items)
-            {
-                bytes = checked(bytes + 256 + 2L * (snapshot.SnapshotId.Length + snapshot.DisplayName.Length + snapshot.DatabaseName.Length));
-                if (++units > 100_000 || bytes > 32L * 1024 * 1024)
-                    throw new InvalidDataException("The database picker exceeds its metadata budget.");
-                if (ids.Contains(snapshot.SnapshotId)) snapshots.TryAdd(snapshot.SnapshotId, snapshot);
-            }
-            cursor = page.Next;
-        } while (cursor != null);
         RequireRelationalSnapshotContext(work);
-        return memberships.Where(resource => snapshots.ContainsKey(resource.Path)).Select(resource =>
-        {
-            var snapshot = snapshots[resource.Path];
-            return useAliases && !string.IsNullOrWhiteSpace(resource.DisplayNameOverride)
-                ? snapshot with { DisplayName = resource.DisplayNameOverride } : snapshot;
-        }).ToArray();
+        if (work.Scope == null || _relationalExplorerScope == null) return Task.FromResult<IReadOnlyList<SnapshotSummary>>([]);
+        return Task.FromResult<IReadOnlyList<SnapshotSummary>>(_relationalExplorerScope.Resources
+            .Where(resource => resource.IsLoaded && resource.Snapshot != null).Select(resource =>
+                useAliases && !string.IsNullOrWhiteSpace(resource.Alias)
+                    ? resource.Snapshot! with { DisplayName = resource.Alias } : resource.Snapshot!).ToArray());
     }
 
     private async Task CompareRelationalHistoryWithAsync(SnapshotWorkflow work, RelationalComparisonTarget source)

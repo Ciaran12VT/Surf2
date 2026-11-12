@@ -7,7 +7,7 @@ using static Surf2.Storage.Relational.Snapshots.SnapshotSql;
 
 namespace Surf2.Storage.Relational.Snapshots;
 
-/// <summary>Disposable, SQL-temp-backed selected-version identity plan. No definitions or data rows are staged.</summary>
+/// <summary>Selected-version identity plan, backed by SQL during preload or a disconnected immutable cache.</summary>
 public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHistoricalSnapshotState
 {
     private readonly SqlConnection _connection;
@@ -222,6 +222,7 @@ public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHisto
 
     internal async Task<ObjectSummary> ObjectSummary(HistoricalSnapshotEntry entry, CancellationToken ct, SnapshotMetadataBudget? budget = null)
     {
+        if (_memory != null) return (await ObjectSummariesAsync([entry], ct).ConfigureAwait(false))[entry.EntryKey];
         budget ??= new SnapshotMetadataBudget();
         var resource = await ResourceSummary(entry, ct, budget).ConfigureAwait(false);
         await _gate.WaitAsync(ct).ConfigureAwait(false);
@@ -376,6 +377,12 @@ public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHisto
     }
     private async Task ValidateHead(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (_memory != null)
+        {
+            if (_memoryIsCurrent?.Invoke() == false) throw new SnapshotConcurrencyException();
+            return;
+        }
         object? token = await ScalarAsync(_connection, null, "SELECT RowVersion FROM surf.DatabaseSnapshot WHERE SnapshotKey=@Snapshot AND IsPublished=1;",
             ct, Key("@Snapshot", Header.SnapshotKey)).ConfigureAwait(false);
         if (token is not byte[] actual || !actual.AsSpan().SequenceEqual(_headToken)) throw new SnapshotConcurrencyException();
@@ -410,6 +417,7 @@ public sealed partial class HistoricalSnapshotContext : IAsyncDisposable, IHisto
             {
                 _disposed=true;
                 _cachedEntries=null; _cachedEntryKeys=null; _cachedNames=null;
+                if (_memory != null) { _memory = null; _memoryIsCurrent = null; return; }
                 try
                 {
                     if (_connection.State==ConnectionState.Open)

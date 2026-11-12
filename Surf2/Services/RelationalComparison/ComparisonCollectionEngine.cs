@@ -14,6 +14,27 @@ public static class ComparisonCollectionEngine
         ComparisonCodecs.WriteTarget(w, x.Target);
     }, r => new(SpoolBinary.ReadString(r), r.ReadBoolean(), SpoolBinary.ReadString(r), ComparisonCodecs.ReadTarget(r)!));
 
+    /// <summary>Compares resident snapshot data without creating scratch files, regardless of the streaming sort budget.</summary>
+    public static async Task<ComparisonResultStore> BuildInMemoryAsync(IAsyncEnumerable<ComparisonCollectionEntry> left,
+        IAsyncEnumerable<ComparisonCollectionEntry> right, ComparisonLimits? limits = null, CancellationToken ct = default)
+    {
+        limits ??= new(); limits.Validate(); ct.ThrowIfCancellationRequested();
+        var a = new List<ComparisonCollectionEntry>(); var b = new List<ComparisonCollectionEntry>();
+        await ReadAsync(left, a).ConfigureAwait(false);
+        await ReadAsync(right, b).ConfigureAwait(false);
+        return BuildMemory(a, b, limits, ct);
+
+        async Task ReadAsync(IAsyncEnumerable<ComparisonCollectionEntry> source, List<ComparisonCollectionEntry> target)
+        {
+            await foreach (var entry in source.WithCancellation(ct).ConfigureAwait(false))
+            {
+                ct.ThrowIfCancellationRequested();
+                _ = SpoolBinary.Encode(entry, EntryCodec, limits.MaximumRecordBytes);
+                target.Add(entry);
+            }
+        }
+    }
+
     public static async Task<ComparisonResultStore> BuildAsync(IAsyncEnumerable<ComparisonCollectionEntry> left,
         IAsyncEnumerable<ComparisonCollectionEntry> right, ComparisonLimits? limits = null, CancellationToken ct = default)
     {

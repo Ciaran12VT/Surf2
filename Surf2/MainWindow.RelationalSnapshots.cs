@@ -38,14 +38,14 @@ public partial class MainWindow
             throw new InvalidOperationException("Drain the previous snapshot workflow context before initializing a runtime.");
         if (_relationalSnapshotCleanupFailures != 0) throw new IOException("The previous snapshot workflow context did not retire cleanly.");
         _relationalSnapshotsStopping = false; ++_relationalSnapshotGeneration;
-        RelationalDatabaseHistoryHandler = (node, ct) => RunRelationalSnapshotWorkflowAsync(work => OpenRelationalHistoryAsync(work, node), ct);
+        RelationalDatabaseHistoryHandler = (node, ct) => RunRelationalSnapshotWorkflowAsync(work => OpenRelationalHistoryAsync(work, node), ct, readFromMemory: true);
         RelationalDatabaseExportHandler = (node, ct) => RunRelationalSnapshotWorkflowAsync(work => ExportRelationalSnapshotAsync(work, node), ct);
         RelationalDatabaseCaptureHandler = (node, ct) => RunRelationalSnapshotWorkflowAsync(work => CaptureRelationalSnapshotAsync(work, node), ct);
         RelationalDatabaseEditHandler = (node, ct) => RunRelationalSnapshotWorkflowAsync(work => EditRelationalSnapshotAsync(work, node), ct);
     }
 
     private Task RunRelationalSnapshotWorkflowAsync(Func<SnapshotWorkflow, Task> action,
-        CancellationToken parentToken = default, Window? source = null)
+        CancellationToken parentToken = default, Window? source = null, bool readFromMemory = false)
     {
         Dispatcher.VerifyAccess();
         if (_relationalSnapshotsStopping) return Task.CompletedTask;
@@ -62,7 +62,9 @@ public partial class MainWindow
             try
             {
                 RequireRelationalSnapshotContext(work);
-                await work.Runtime.Session.RequireReadyAsync(work.Token);
+                if (readFromMemory) await EnsureRelationalSnapshotMemoryReadyAsync(work.Token);
+                else await work.Runtime.Session.RequireReadyAsync(work.Token);
+                RequireRelationalSnapshotContext(work);
                 await action(work);
             }
             catch (OperationCanceledException) { }
@@ -101,10 +103,14 @@ public partial class MainWindow
     {
         var snapshot = await RequireRelationalSnapshotNodeAsync(work, node);
         var window = new RelationalSnapshotHistoryWindow(work.Runtime, snapshot) { Owner = this, VerifyWriteAccess = RequireRelationalWrite };
-        window.OpenRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => OpenRelationalHistoricalResourceAsync(w, e.Target), window);
-        window.CompareWithRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CompareRelationalHistoryWithAsync(w, e.Target), window);
+        window.OpenRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => OpenRelationalHistoricalResourceAsync(w, e.Target), window, readFromMemory: true);
+        window.CompareWithRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CompareRelationalHistoryWithAsync(w, e.Target), window, readFromMemory: true);
         window.CopyRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CopyRelationalHistoricalResourceAsync(w, e.Target), window);
-        window.SnapshotChanged += _ => QueueRelationalSnapshotWorkflow(RefreshRelationalSnapshotRootsAsync);
+        window.RefreshSnapshotMemoryAsync = async ct =>
+        {
+            await RunRelationalSnapshotWorkflowAsync(RefreshRelationalSnapshotRootsAsync, ct, window);
+            await EnsureRelationalSnapshotMemoryReadyAsync(ct);
+        };
         OwnRelationalSnapshotWindow(work, window, window.CloseAndDrainAsync);
         ShowRelationalSnapshotWindow(window); StatusText = window.Title + ".";
     }
@@ -288,6 +294,9 @@ public partial class MainWindow
     private async Task RefreshRelationalSnapshotRootsAsync(SnapshotWorkflow work)
     {
         if (work.Scope == null) return;
+        RetireRelationalExplorerContext();
+        await _relationalExplorerRetirement;
+        RequireRelationalSnapshotContext(work);
         var names = await ReadRelationalNameCatalogueAsync(work.Runtime, work.Scope.SubjectKey,
             GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, work.Token);
         RequireRelationalSnapshotContext(work);
@@ -298,9 +307,9 @@ public partial class MainWindow
         BeginRelationalExplorerContext(); InvalidateRelationalDocumentContext();
     }
 
-    private void QueueRelationalSnapshotWorkflow(Func<SnapshotWorkflow, Task> action, Window? source = null)
+    private void QueueRelationalSnapshotWorkflow(Func<SnapshotWorkflow, Task> action, Window? source = null, bool readFromMemory = false)
     {
-        try { _ = RunRelationalSnapshotWorkflowAsync(action, source: source); }
+        try { _ = RunRelationalSnapshotWorkflowAsync(action, source: source, readFromMemory: readFromMemory); }
         catch (Exception error) { if (!_relationalSnapshotsStopping) StatusText = "Snapshot operation failed: " + error.Message; }
     }
     private void OwnRelationalSnapshotWindow(SnapshotWorkflow work, Window window, Func<Task> close)

@@ -74,7 +74,9 @@ public sealed partial class RelationalComparisonService
             // A same-content shortcut applies to one matched path only. Duplicate
             // paths preserve the engine's first-entry-wins semantics.
             await a.ValidateAsync(ct).ConfigureAwait(false); await b.ValidateAsync(ct).ConfigureAwait(false);
-            var result = await ComparisonCollectionEngine.BuildAsync(Entries(a), Entries(b), Limits, ct).ConfigureAwait(false);
+            var result = _runtime.Session.SnapshotMemory.ContainsSnapshots([left.SnapshotKey!.Value, right.SnapshotKey!.Value])
+                ? await ComparisonCollectionEngine.BuildInMemoryAsync(Entries(a), Entries(b), Limits, ct).ConfigureAwait(false)
+                : await ComparisonCollectionEngine.BuildAsync(Entries(a), Entries(b), Limits, ct).ConfigureAwait(false);
             try { await a.ValidateAsync(ct).ConfigureAwait(false); await b.ValidateAsync(ct).ConfigureAwait(false); return result; }
             catch { await result.DisposeAsync().ConfigureAwait(false); throw; }
         }

@@ -13,6 +13,8 @@ public sealed partial class RelationalCaptureStore
         CancellationToken cancellationToken = default)
     {
         if (dataSetKey <= 0) throw new ArgumentOutOfRangeException(nameof(dataSetKey));
+        cancellationToken.ThrowIfCancellationRequested();
+        if (FindMemory(dataSetKey) is { } memory) return memory.Descriptor;
         await _session.RequireReadyAsync(cancellationToken);
         await using var connection = await _session.OpenAsync(cancellationToken);
         return await ReadDescriptorAsync(connection, dataSetKey, cancellationToken);
@@ -23,6 +25,13 @@ public sealed partial class RelationalCaptureStore
         CancellationToken cancellationToken = default)
     {
         if (revisionKey <= 0) throw new ArgumentOutOfRangeException(nameof(revisionKey));
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var memory in _session.SnapshotMemory.All())
+        {
+            var captured = memory.Captures.Values.FirstOrDefault(c => c.Descriptor.Summary.RevisionKey == revisionKey);
+            if (captured != null) return captured.Descriptor;
+            if (memory.DataMetadata.ContainsKey(revisionKey)) return null;
+        }
         await _session.RequireReadyAsync(cancellationToken);
         await using var connection = await _session.OpenAsync(cancellationToken);
         await using var command = Command(connection, null,
@@ -62,6 +71,8 @@ public sealed partial class RelationalCaptureStore
     private IAsyncEnumerable<CaptureRow> StreamQueryAsync(CaptureDataSetDescriptor descriptor, FrozenCaptureQuery query,
         long afterOrdinal, CancellationToken cancellationToken)
     {
+        if (FindMemory(descriptor.Summary.DataSetKey) is { } memory)
+            return StreamMemoryAsync(memory, query, afterOrdinal, cancellationToken);
         var source = StreamFilteredAsync(descriptor, query, afterOrdinal, cancellationToken);
         return query.Sorts.Length == 0 ? source : CaptureExternalSort.SortAsync(source, query, descriptor.Columns, _limits, cancellationToken);
     }
@@ -77,6 +88,11 @@ public sealed partial class RelationalCaptureStore
     private async IAsyncEnumerable<CaptureRow> StreamJsonRowsAsync(CaptureDataSetDescriptor descriptor,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        if (FindMemory(descriptor.Summary.DataSetKey) is { } memory)
+        {
+            foreach (var row in CheckedMemoryRows(memory, cancellationToken)) yield return row;
+            yield break;
+        }
         await using var connection = await _session.OpenAsync(cancellationToken);
         await using var command = Command(connection, null,
             "SELECT CONVERT(varbinary(max), JsonPayload) FROM surf.FullTableData WHERE DataSetKey = @DataSet;",

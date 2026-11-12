@@ -80,10 +80,8 @@ public partial class MainWindow
         if (resource.IsCollection) throw new InvalidOperationException("Select an identity-bound collection from Object Explorer or History.");
         if (!DatabaseDocumentService.IsDatabaseDocumentPath(resource.Path)) return new(resource, _relational.Session.Epoch);
         if (_relationalDocuments == null) throw new InvalidOperationException("Document access is unavailable.");
-        var address = await _relationalDocuments.ResolveAsync(resource.Path, _relationalExplorerScope, ct: ct);
-        if (address.Resource == null) throw new KeyNotFoundException("The comparison target is not a database resource.");
-        var selected = await _relational.Snapshots.ResolveResourceAsync(address.Resource.ResourceKey, ct: ct)
-            ?? throw new KeyNotFoundException("The comparison resource was removed.");
+        var selected = await _relationalDocuments.ResolveComparisonResourceAsync(resource.Path,
+            _relationalExplorerScope ?? throw new InvalidOperationException("Open a scope before comparing its database resources."), ct);
         return RelationalComparisonService.FromResource(selected, _relational.Session.Epoch);
     }
 
@@ -115,8 +113,8 @@ public partial class MainWindow
         {
             ComparisonTableInput? a = left == null ? null : await service.DescribeTableAsync(left, ct);
             ComparisonTableInput? b = right == null ? null : await service.DescribeTableAsync(right, ct);
-            a ??= new(b!.Headers, b.PreferredKeys, 0, EmptyComparisonRows());
-            b ??= new(a.Headers, a.PreferredKeys, 0, EmptyComparisonRows());
+            a ??= new(b!.Headers, b.PreferredKeys, 0, EmptyComparisonRows(), IsMemoryResident: b.IsMemoryResident);
+            b ??= new(a.Headers, a.PreferredKeys, 0, EmptyComparisonRows(), IsMemoryResident: a.IsMemoryResident);
             string[] keys = a.PreferredKeys.Where(k => b.Headers.Contains(k, StringComparer.OrdinalIgnoreCase)).ToArray();
             if (keys.Length != a.PreferredKeys.Count) keys = [];
             if (!await CanPublishRelationalComparisonAsync(service, scope, generation, ct)) return;
@@ -188,6 +186,8 @@ public partial class MainWindow
                 owner.Token.ThrowIfCancellationRequested();
                 if (_relationalComparisonsStopping || generation != _relationalComparisonGeneration) return;
                 if (runtime == null) throw new InvalidOperationException("Relational storage is not selected.");
+                await EnsureRelationalSnapshotMemoryReadyAsync(owner.Token);
+                if (_relationalComparisonsStopping || generation != _relationalComparisonGeneration || !ReferenceEquals(scope, _relationalExplorerScope)) return;
                 StatusText = "Preparing comparison...";
                 await action(new(runtime), scope, generation, owner.Token);
             }

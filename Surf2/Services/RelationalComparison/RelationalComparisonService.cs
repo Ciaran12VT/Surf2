@@ -55,7 +55,7 @@ public sealed partial class RelationalComparisonService
     public async Task<ComparisonCandidates> GetCandidatesAsync(RelationalComparisonTarget source, ExplorerScope scope, CancellationToken ct = default)
     {
         RequireEpoch(source);
-        if (source.ResourceKey.HasValue && scope.DatabaseCatalogue != null)
+        if (source.SnapshotKey.HasValue && scope.DatabaseCatalogue != null)
             return await GetDatabaseCandidatesAsync(source, scope, ct).ConfigureAwait(false);
         var items = new List<RelationalComparisonTarget>(); long bytes = 0;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -200,6 +200,8 @@ public sealed partial class RelationalComparisonService
     public Task RequireScopeAsync(ExplorerScope? scope, CancellationToken ct = default) => RequireScopeCoreAsync(scope, ct);
     private async Task RequireScopeCoreAsync(ExplorerScope? scope, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        if (scope == null ? _runtime.HasSnapshotMemory : _runtime.HasSnapshotMemory && _runtime.IsSnapshotMemoryReady(scope)) return;
         await _runtime.Session.RequireReadyAsync(ct).ConfigureAwait(false);
         if (scope != null && !await new RelationalExplorerMetadataQueries(_runtime.Session, _runtime.Index).IsDomainCurrentAsync(scope.Context, ct).ConfigureAwait(false))
             throw new IndexGenerationChangedException();

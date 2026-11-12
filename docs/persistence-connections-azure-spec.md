@@ -1,4 +1,4 @@
-# Persistence connection management and Azure SQL implementation specification
+# Persistence connections and remote folders implementation specification
 
 Status: proposed implementation specification. Date: 11 November 2026.
 
@@ -6,11 +6,13 @@ Baseline: `relationalDb_V2`, commit `91409844647b969f1797f762e0e093faa6f26e1f` (
 
 Replace the single connection editor in Settings > Persistence with a local connection catalogue, separate Local and Azure grids, a read-only current-connection label, and connection-to-connection transfer. A user must be able to work against an existing Azure SQL Database using the same relational persistence services as local SQL Server.
 
+Scope folders must also support Azure Blob Storage and Git repositories alongside local filesystem folders. These folder sources must work with either local or Azure SQL persistence; choosing where Surf2 stores its application data does not determine where its source files live.
+
 The supplied mock-up and accompanying request define the layout and required actions. This specification adds the lifecycle, compatibility, failure, and migration rules needed to implement them against the branch. It specifies application changes; it does not perform them.
 
 ## 1. Scope and decisions
 
-The release includes connection editing and local storage, a single default across both grids, read-only database testing, switching the running workspace, selected-connection package export/import, and transfers between local SQL Server and Azure SQL Database in either direction. Local-to-local and Azure-to-Azure transfers use the same path.
+The release includes connection editing and local storage, a single default across both grids, read-only database testing, switching the running workspace, selected-connection package export/import, and transfers between local SQL Server and Azure SQL Database in either direction. Local-to-local and Azure-to-Azure transfers use the same path. Azure Blob Storage and Git repository folder providers are also required, with shared browsing, opening, search, references and comparison behavior defined in section 10.
 
 The following choices define the behavior. Replacement of an existing target after confirmation and a recovery export is confirmed by the user; the other details complete the implementation design.
 
@@ -23,6 +25,7 @@ The following choices define the behavior. Replacement of an existing target aft
 | Existing target data | **Replace the target's Surf2 contents after explicit confirmation and a verified recovery export.** Empty and supported Ready V2 targets are eligible. Source remains unchanged. Replacement is required for this release; merging is outside scope. See section 9 for publication and recovery rules. |
 | Azure provisioning | Connect to a database provisioned outside Surf2. Surf2 may initialize its schema after explicit user confirmation, but does not provision Azure servers, databases, networking or accounts. |
 | Legacy formats | Recognize legacy Surf2 storage and explain migration requirements. Only a supported Ready relational V2 database can become current directly. Preserve the existing separate legacy migration workflow. |
+| Remote folders | Support Azure Blob Storage containers/prefixes and Git repositories/subfolders as scope resources. Configure them in the folder resource editor; the Persistence grids and FROM/TO controls continue to select SQL databases. |
 
 Automatic database synchronization, Azure resource management, portable connection-profile export, and changes to database snapshot capture are outside this change.
 
@@ -40,7 +43,7 @@ Automatic database synchronization, Azure resource management, portable connecti
 | `RelationalPersistenceTransfer` | Imports a package into a new database on the current server. | Accept independent source and destination connection records; do not derive destination credentials/server from current. |
 | `RelationalPackageExporter` / `RelationalPackageImporter` | Consistent streaming export and validated fresh-empty-target import. Import batches commit before final Ready publication. | Retain the empty-target path; reuse codecs/contracts and refactor validators for a new transactional replacement service. Do not remove the existing importer's Empty guard. |
 
-The current database format is `Surf2.RelationalV2`, **schema version 1**. The relational package identifier is `Surf2.RelationalV2.Package`, package version 2. Product V2, database schema version and package version are separate values.
+At the baseline commit, the database format is `Surf2.RelationalV2`, **schema version 1**. The relational package identifier is `Surf2.RelationalV2.Package`, package version 2. Product V2, database schema version and package version are separate values.
 
 Replacement adds a versioned maintenance/operation contract and therefore requires an explicit schema upgrade from this baseline, updated compatibility checks and package handling as specified in section 9. The baseline version numbers above do not imply that this feature needs no schema migration.
 
@@ -197,7 +200,7 @@ Every command acts on the row under the context menu, regardless of keyboard sel
 | Import Database | Choose a supported package and import it into the selected connection using its full options. A V2 package may replace a supported Ready target using the same confirmation, recovery export and transactional replacement path as Transfer. An empty target uses the existing importer. Preview package type/destination before changes; do not ask for a new same-server database name. |
 | Remove Connection | Remove the local catalogue record only. Never drop the database or delete its contents. |
 
-Export includes authoritative Surf2 application state, snapshots, captured rows, history, diagrams, workbenches, preferences and SQL-stored assets according to the existing package contract. Exclude connection profiles, credentials, default/current selection, caches and logs. Referenced physical files remain references unless an existing explicit file-inclusion workflow is invoked; ordinary database transfer does not copy arbitrary local folders.
+Export includes authoritative Surf2 application state, snapshots, captured rows, history, diagrams, workbenches, preferences and SQL-stored assets according to the existing package contract. Include credential-free remote folder definitions and typed saved document/reference bindings. Exclude connection profiles, credentials, default/current selection, caches and logs. Referenced local and remote files remain references unless an explicit content-capture workflow is invoked; ordinary database transfer does not copy arbitrary folders, Blob contents or Git repositories.
 
 Preserve V2 package limits, hashes/counts, schema checks, data fidelity, independent destination identity and regenerated rowversion tokens. Never execute stored SQL definitions or package-provided DDL. Keep the existing safe legacy package conversion path available for import into an empty destination; do not reuse the old broad-AppData export behavior in `PersistencePackageService`. A legacy package must first be converted in an empty database before its V2 contents can replace an existing target. Reject unsupported package versions and detectable ZIP/manifest structural errors before destination mutation. For an empty target, streamed row/content/checksum failures can leave a non-Ready database. Replacement additionally requires full package prevalidation and transactional rollback, as described in section 9. Legacy database migration remains a separate workflow, not implicit activation of an orange row.
 
@@ -269,7 +272,71 @@ When the target is current, suspend its workspace, resolve unsaved work and clos
 
 Persist intent before mutation and commit completion evidence with the new contents. A maintenance record left unresolved after a crash must prevent ordinary activation/writes until a recovery coordinator establishes committed success or completed rollback; recovery is available independently of a working main workspace. Re-probe and reconcile before retrying. Do not treat a recovery ZIP as proof that a failed replacement was rolled back, and do not automatically restore it over a target whose commit outcome remains unknown.
 
-## 10. Service boundaries and implementation sequence
+## 10. Remote folder sources
+
+### Folder configuration and user behavior
+
+Extend the scope resource editor's **Add > New > Folder** flow with **Local folder**, **Azure Blob Storage** and **Git repository** choices. New registers an existing source; it does not create a container, repository or remote directory. **Add > Existing > Folder** reuses registered sources across scopes. Retain folder aliases, IncludeChildren, loaded/unloaded state, virtual-folder organization and removal of scope membership without deleting source content.
+
+| Provider | Required configuration | Optional configuration |
+| --- | --- | --- |
+| Local filesystem | Existing folder path | Existing local options, unchanged. |
+| Azure Blob Storage | HTTPS service endpoint and container | Blob-name prefix restricting the root; local authentication binding. An empty prefix exposes the container root. |
+| Git repository | Repository clone URL and branch, tag or commit selection | Repository-relative subfolder; local authentication binding. Resolve a default-branch choice visibly rather than assuming `main` or `master`. |
+
+The Blob implementation targets Azure Blob Storage. The provider boundary may accommodate other object stores later; support for S3 or other services is not implied. Git support must work through ordinary HTTPS/SSH repository access, including Azure Repos, GitHub, GitLab and compatible servers, without requiring one hosting vendor's API.
+
+Provide **Test access**, **Browse**, **Refresh**, **Edit source** and **Reconnect** in the folder editor or resource context menu. Test checks access to the configured root/ref and lists a bounded sample without writing remote content. Show provider, root and selected revision in resource details. Distinguish authentication required, inaccessible, missing, loading, stale/offline and partially indexed states. A folder-access failure belongs to that resource and must not change a healthy SQL connection's tested format status.
+
+The initial editing assumption is read-only remote content: users can browse, open, search, follow references, compare and save a local copy. Remote windows clearly display their provider/revision and read-only status; ordinary Save must never silently save into a cache while suggesting that the remote file changed. Remote upload/delete and Git commit/push require an explicit write-back contract if added. This assumption does not reduce the requirement to deliver both remote providers.
+
+### Provider contracts and stored identity
+
+Retain `ResourceKind.Folder` for all three providers. Add a separate source descriptor/provider discriminator instead of changing Folder's existing numeric value or embedding a URL in a field assumed to be a Windows path. Existing virtual-folder relationships and schema constraints depend on Folder semantics.
+
+Persist a versioned, credential-free source definition with a stable public source ID, provider, endpoint/repository identity, container/prefix or ref/subfolder selector, and source configuration revision. Scope memberships refer to that definition and retain their own alias/load options. Existing folder records migrate to `LocalFileSystem` without changing their paths or identity. Deduplicate/reuse sources using provider-specific identity rules, not display names.
+
+Add a folder-source interface for capabilities, access probing, bounded/paged child listing, revision resolution, stream reads and refresh. Supply LocalFileSystem, AzureBlob and Git implementations. Route discovery, document opening, name/content search, reference parsing, comparison and saved-workspace restoration through it. Preserve the existing Local provider's behavior.
+
+A typed remote document locator contains source ID, provider-relative item identity and a revision token. It must identify remote content independently of any local cache filename. Persist these locators in saved windows, workbenches and reference links, together with the relevant source revision. Extend the current non-database `External` binding path rather than treating remote documents as physical files. A saved pinned revision that is unavailable must show that fact; do not silently substitute the latest file.
+
+Use provider-specific path comparison and encoding. Preserve Blob names and Git paths exactly, including case; apply URI host normalization only to the appropriate URI components. Do not apply Windows `Path.GetFullPath`, backslash replacement, case folding or local path equality to remote item identities. Folder/file names that collide on Windows must remain distinct in the UI and cache. Generate safe cache filenames instead of interpreting remote names as disk paths.
+
+### Azure Blob folder behavior
+
+Use `Azure.Storage.Blobs` and an explicit authentication integration. Browse lazily with prefix/delimiter listing and continuation tokens; a Blob prefix can represent the displayed folder hierarchy without being a physical directory. Handle an empty root, nested prefixes, a blob and prefix with the same display name, and directory entries where the account exposes them. Prefix boundaries must be exact: selecting `src/` must not include `src-old/`. [Azure Blob listing](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-list)
+
+Support Microsoft Entra interactive access and scoped SAS credentials, plus anonymous read access where the container permits it. Store SAS material separately from the sanitized endpoint. Listing and reading need their respective permissions; possession of an Azure SQL login does not establish Blob access. Report expired SAS, forbidden listing/read, missing container and private-network failures distinctly. Do not acquire broader permissions or create resources during Test.
+
+Pin a file read to its Blob version/snapshot when available; otherwise use the observed ETag with a conditional read and verify the returned identity. If it changed, mark the item stale and offer refresh. Build a source-generation manifest from item names and observed revision tokens, but do not claim that listing an entire prefix is an atomic snapshot. If content changes during discovery/indexing, retry that generation within bounded limits or publish an explicit incomplete/stale result. ETags identify versions for conditional operations. [Blob concurrency](https://learn.microsoft.com/en-us/azure/storage/blobs/concurrency-manage)
+
+### Git folder behavior
+
+Resolve the chosen branch/tag to a commit before enumeration; every tree listing, content read, reference index and comparison within that generation uses the same commit. A commit selection remains pinned. Refresh may advance a branch or tag selection, but existing open documents retain their pinned content until deliberately reloaded. Show the symbolic ref and resolved commit in source details. [Git revision resolution](https://git-scm.com/docs/git-rev-parse)
+
+Use a private, per-user repository/object cache with a maintained Git implementation. A bare/object-store approach can enumerate committed trees without materializing a working checkout; do not assume downloading only a selected subfolder avoids all repository transfer. Bound fetched storage and display progress/cancellation. When invoking Git, pass arguments structurally, validate refs/paths as data, and keep credentials out of arguments/logs. [Git tree listing](https://git-scm.com/docs/git-ls-tree)
+
+Handle HTTPS credentials through a credential manager and SSH through the user's configured key/agent with host verification. Missing credentials, an unknown host key, an inaccessible repository and a missing ref are separate user-visible outcomes. Do not execute repository hooks, builds or configured content filters merely to attach, browse or index a source.
+
+Expose symlink entries, submodule boundaries and Git LFS pointers explicitly. Do not follow symlinks outside the root, recurse into additional repositories or present an LFS pointer as the actual file silently. First-release browsing may show these entries as unsupported/not fetched with an explanation; fetching their content requires the applicable provider capability and separate access validation. Never modify the user's existing checkout as part of browsing a remote repository.
+
+### Refresh, indexing and local cache
+
+Browse children and fetch bodies on demand; do not load every remote body merely to expand a folder. Apply IncludeChildren consistently. Reuse the existing parsers with provider streams/logical locators, and retain bounded source size/count limits (the baseline reference scan allows 32 MiB per file and 100,000 files per scope). Apply explicit network-byte, fetch-concurrency, cache-size and operation-time budgets; show omitted/incomplete results when a limit is reached rather than claiming complete search coverage.
+
+Use explicit Refresh initially; add periodic refresh only as a user-selected option. Refresh builds a new generation, atomically publishes a completed catalogue/index, and invalidates affected provider caches. Cancellation, authentication loss or a partial listing retains the previous usable generation with a stale/incomplete indicator. Generation and workspace-owner checks must reject late results after a source edit, scope switch or database replacement. Local filesystem watchers remain local-provider behavior.
+
+Cache keys include source identity/configuration revision, exact relative item identity, content revision and local user/credential partition. Use atomic writes and bounded eviction; pin content needed by open documents. Offline mode may display previously fetched content with its revision and offline status; an unavailable listing must never appear as a verified empty folder. Disconnecting an account invalidates its live handles and private cache access. Cache deletion must not delete a user's checkout or remote data.
+
+### Credentials and package behavior
+
+Keep tokens, SAS query strings, account keys, Git passwords/PATs, private keys and credential-manager handles out of SQL source definitions, document locators, diagnostic logs and packages. Split credential-bearing pasted URLs into a sanitized descriptor plus protected local authentication binding. Bind credentials locally by source identity and user; never infer that SQL and remote-folder authentication are interchangeable.
+
+Database export, import, replacement and recovery must preserve the source definitions, scope memberships, ref/prefix choices and typed saved locators. Add their authoritative tables to package whitelists, foreign-key closure, schema validation and replacement/reset plans. Coordinate this schema change with the maintenance upgrade in section 9; update package compatibility explicitly. Preserve existing local-folder bindings on upgrade.
+
+Transfers copy these references, not the contents of a Blob container, a Git repository or the local cache. They must not upload, delete, commit or push remote data. Restored sources remain visible and ask for local credential binding when needed. Database recovery restores the saved references; access to exact historic remote bytes depends on retained remote versions/commits. A future content-capture/export option must explicitly include those bytes and cannot be inferred from a database recovery package.
+
+## 11. Service boundaries and implementation sequence
 
 Keep SQL and catalogue rules in services; WPF event handlers bind state, request choices and display results. Suggested new types are illustrative names, not an obligation to introduce a framework.
 
@@ -282,12 +349,14 @@ Keep SQL and catalogue rules in services; WPF event handlers bind state, request
 | 5. Selected-connection operations | Refactor `SettingsWindow.RelationalPersistence` and `RelationalPersistenceTransfer`; add selected-target import and source-to-target orchestration while reusing package services. Preserve legacy migration entry points. |
 | 6. Maintenance and compatibility | Implement versioned schema upgrade, shared operation admission, exclusive maintenance, durable operation journal and old-client exclusion. Update probes, checksum/version rules and baseline package import/export compatibility together. |
 | 7. Replacement and recovery | Add a transactional replacement service, transaction-aware loaders/validators, full input/recovery-package verification, retained recovery exports and commit/rollback reconciliation. Verify current-target reopening and preservation of old application state on rollback. |
-| 8. Azure qualification | Exercise target-only initialization, both authentication modes, endpoint identity, permissions, snapshot export, empty import, populated-target replacement and remote failures against explicitly owned Azure test databases. |
-| 9. Release | Run the acceptance matrix, document setup and recovery, and update existing persistence documentation/menu help to remove obsolete single-connection/restart-only guidance. |
+| 8. Folder provider foundation | Add source definitions, typed remote locators, local credential bindings and provider-based discovery/read/index contracts. Migrate existing folders to LocalFileSystem and extend saved bindings/package compatibility. |
+| 9. Blob and Git folders | Implement both remote providers and source-editor choices, bounded browsing/reads, revision-pinned documents, refresh, cache and clear authentication/offline states. Route search/reference/compare through the providers. |
+| 10. Remote qualification | Exercise Azure SQL initialization/authentication/import/replacement and Blob/Git source access, refresh, revision changes, package round-trips and network failures against explicitly owned fixtures. |
+| 11. Release | Run the acceptance matrix, document setup and recovery, and update existing persistence documentation/menu help to cover connections and remote folders. |
 
 One application-level operation coordinator must serialize conflicting switch/import/transfer/remove actions. Keep immutable operation contexts containing captured record IDs/revisions, endpoint options and verified database identities. Persist no decrypted options or secrets in progress/error records. Preserve bounded streams and the branch's session-epoch/stale-result protections.
 
-## 11. Acceptance and regression criteria
+## 12. Acceptance and regression criteria
 
 | Area | Required acceptance cases |
 | --- | --- |
@@ -306,14 +375,19 @@ One application-level operation coordinator must serialize conflicting switch/im
 | Transactional replacement | Interrupted bulk batch, constraint/model failure, cancellation and capacity/time-limit failures roll back prior application data; all validators see the same transaction; new identity/operation receipt publish atomically; stale sessions are invalidated; no per-batch commits occur. |
 | Failure and recovery | Cancel in every phase; crash before/after commit; lost acknowledgement reconciled without replay; unresolved outcomes block normal use; empty-import partial target remains non-Ready; replacement rollback restores the previous usable contents; reopen failure after commit reports committed success accurately. |
 | Bootstrap and protection | Old single-string migration is idempotent; missing versus corrupt/locked files distinguished; undecryptable payloads recover visibly; environment overrides honored; no plaintext secrets in JSON, package metadata, logs or previews. |
+| Remote folder registration | Local/Blob/Git choices; valid root/ref/subfolder selection; source reuse across scopes; aliases and IncludeChildren; provider-specific Test results; a failed folder leaves SQL status unchanged. |
+| Blob folders | Nested/paged enumeration and exact prefix boundaries; empty container; blob/prefix name collision; Entra/SAS/anonymous access as permitted; expired credentials; item changes between listing/read; unavailable historic version; offline cached content marked accurately. |
+| Git folders | HTTPS and SSH private/public access; branch/tag/commit/subfolder; moved refs with open documents pinned; deleted ref/unavailable commit; path case preserved; symlink/submodule/LFS limitations explicit; no hooks/builds/checkout mutation. |
+| Remote search and identity | Browse/open/name/content search/reference/compare use provider locators; Windows-invalid and case-colliding names remain distinct; no path traversal; limits/cancellation/partial listings do not produce false complete indexes; stale callbacks cannot publish. |
+| Remote source transfer | Local/Azure SQL package round-trips preserve source definitions and document bindings without SAS/tokens/cache paths; authentication rebinding is visible; recovery restores references without implying a remote-content backup; remote data stays unchanged. |
 
-Extend `StorageCases/BootstrapCases.cs`, `TransferCases.cs`, `PackageExportCases.cs`, `PackageImportCases.cs`, `NewDatabaseCases.cs`, legacy-package cases and the existing WPF runtime/settings fixtures. Add focused replacement, maintenance/upgrade, recovery and current-target reload fixtures. Reuse the repository's regression runner and `tools/verify-relational-v2.ps1`.
+Extend `StorageCases/BootstrapCases.cs`, `TransferCases.cs`, `PackageExportCases.cs`, `PackageImportCases.cs`, `NewDatabaseCases.cs`, legacy-package cases and the existing WPF runtime/settings fixtures. Add focused replacement, maintenance/upgrade, recovery, current-target reload and remote-provider fixtures. Use deterministic provider fakes for paging/failure/revision races, plus owned Blob/Git integration sources. Reuse the repository's regression runner and `tools/verify-relational-v2.ps1`.
 
 Azure integration tests need their own explicitly owned, disposable, preprovisioned fixtures. Do not reuse LocalDB create/drop assumptions or run destructive tests against saved user connections. Unit tests cover state/invariants; SQL integration tests prove recognition and data preservation; WPF tests prove lifecycle and user-visible command behavior.
 
-Completion requires the new workflow and the existing relational regression suites to pass, plus Azure transfers that verify actual data/history in both empty and populated destinations. Populated-target replacement, verified retained recovery exports, maintenance isolation and crash/rollback reconciliation are required release criteria. Empty-target transfer alone does not complete this specification.
+Completion requires the new workflow and the existing relational regression suites to pass, plus Azure transfers that verify actual data/history in both empty and populated destinations. Populated-target replacement, verified retained recovery exports, maintenance isolation and crash/rollback reconciliation are required release criteria. Both Blob and Git folder providers must also pass browsing/search/reference/refresh and portable-binding tests with local and Azure SQL persistence. Empty-target transfer alone or only one remote-folder provider does not complete this specification.
 
-## 12. Repository reference map
+## 13. Repository reference map
 
 Paths below are relative to the repository root at the baseline commit.
 
@@ -322,4 +396,6 @@ Paths below are relative to the repository root at the baseline commit.
 - Runtime ownership: `Surf2/App.xaml.cs`, `Surf2/MainWindow.xaml.cs`, `Surf2/MainWindow.RelationalPersistence.cs`, `Surf2/MainWindow.RelationalState.Commands.cs`, `Surf2/Storage/Relational/RelationalApplicationConnection.cs`, `Surf2/Storage/Relational/RelationalSession.cs`.
 - Database recognition/provisioning: `Surf2/Storage/Relational/PersistenceFormatProbe.cs`, `Surf2/Storage/Relational/RelationalSchemaInstaller.cs`.
 - Transfer/packages: `Surf2/Services/RelationalPersistenceTransfer.cs`, `Surf2/Storage/Relational/Packages/RelationalPackageExporter.cs`, `Surf2/Storage/Relational/Packages/RelationalPackageImporter.cs`, `Surf2/Storage/Relational/Packages/README.md`, `Surf2/Services/RelationalDocuments/LegacyPersistenceExport.cs`.
+- Folder resources and discovery: `Surf2/Models/ScopedResource.cs`, `Surf2/Models/ResourceKind.cs`, `Surf2/Services/RelationalExplorer/ExplorerContracts.cs`, `Surf2/Services/RelationalExplorer/PhysicalExplorerQueries.cs`, `Surf2/Services/RelationalExplorer/ExplorerResourceCatalogue.cs`, `Surf2/Services/RelationalExplorer/RelationalExplorerService.cs`.
+- Remote read/index/binding integration: `Surf2/Services/RelationalExplorer/MemoryReferenceIndex.cs`, `Surf2/Services/RelationalExplorer/PhysicalReferenceWatch.cs`, `Surf2/Services/RelationalDocuments/DocumentContracts.cs`, `Surf2/Services/RelationalDocuments/RelationalDocumentService.cs`, `Surf2/Storage/Relational/State/RelationalStateStore.DocumentBindings.cs`, `Surf2/Storage/Relational/Schema/001.State.sql`, `Surf2/Storage/Relational/Packages/PackageTableCatalogue.cs`.
 - Baseline architecture: `docs/relational-v2.md` and existing relational persistence/query implementation plans.

@@ -9,6 +9,10 @@ public sealed partial class RelationalSnapshotStore
 {
     public async Task<SnapshotHistorySummary?> GetHistoryByKeyAsync(long historyKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        foreach (var memory in session.SnapshotMemory.All())
+            if (memory.Histories.FirstOrDefault(h => h.HistoryKey == historyKey) is { } cached)
+                return cached with { RowVersion = cached.RowVersion.ToArray() };
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT CONVERT(bigint,256)+DATALENGTH(h.OriginalSnapshotId),
@@ -35,6 +39,12 @@ public sealed partial class RelationalSnapshotStore
 
     public async Task<SnapshotHistorySummary?> GetHistoryAsync(long snapshotKey, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (session.SnapshotMemory.Find(snapshotKey) is { } memory)
+        {
+            var cached = memory.Histories.FirstOrDefault();
+            return cached == null ? null : cached with { RowVersion = cached.RowVersion.ToArray() };
+        }
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var command = Command(connection, null, """
             SELECT TOP (1) CONVERT(bigint,256)+DATALENGTH(h.OriginalSnapshotId),
@@ -82,6 +92,9 @@ public sealed partial class RelationalSnapshotStore
     public async Task<long?> ResolveVersionKeyAsync(long snapshotKey, string originalVersionId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(originalVersionId);
+        ct.ThrowIfCancellationRequested();
+        if (session.SnapshotMemory.TryGetVersions(snapshotKey, out var versions))
+            return versions.FirstOrDefault(v => string.Equals(v.VersionId, originalVersionId, StringComparison.OrdinalIgnoreCase))?.VersionKey;
         await using var connection = await Open(ct).ConfigureAwait(false);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
         await Head(connection, transaction, snapshotKey, null, false, ct).ConfigureAwait(false);
@@ -168,7 +181,8 @@ public sealed partial class RelationalSnapshotStore
         byte[] token = (byte[])(await ScalarAsync(connection, transaction,
             "SELECT RowVersion FROM surf.DatabaseSnapshot WHERE SnapshotKey=@Snapshot;", ct, Key("@Snapshot", snapshotKey)).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("Snapshot not found."));
-        await transaction.CommitAsync(ct).ConfigureAwait(false);
+        try { await transaction.CommitAsync(ct).ConfigureAwait(false); }
+        finally { session.SnapshotMemory.Invalidate(snapshotKey); }
         return token;
     }
 }

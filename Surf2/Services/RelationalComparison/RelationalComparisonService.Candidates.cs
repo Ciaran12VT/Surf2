@@ -15,6 +15,23 @@ public sealed partial class RelationalComparisonService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); bool complete = true;
         foreach (var membership in scope.Resources.Where(resource => resource.IsLoaded && resource.Kind == ResourceKind.DatabaseSnapshot && resource.Snapshot != null))
         {
+            if (source.Resource.IsCollection)
+            {
+                ct.ThrowIfCancellationRequested();
+                var snapshot = membership.Snapshot!;
+                if (snapshot.SnapshotKey == source.SnapshotKey && source.VersionKey == null) continue;
+                string name = string.IsNullOrWhiteSpace(membership.Alias) ? snapshot.DisplayName : membership.Alias;
+                string path = "db://" + snapshot.SnapshotId;
+                if (source.Category.HasValue) { name += " / " + ExplorerCompatibility.CategoryName(source.Category.Value); path += "/" + source.Category; }
+                var resource = source.Resource with { DisplayName = name, Path = path, SnapshotId = snapshot.SnapshotId,
+                    IdentityKey = $"snapshot:{snapshot.SnapshotKey}:category:{source.Category}" };
+                var target = new RelationalComparisonTarget(resource, source.Epoch, snapshot.SnapshotKey, Category: source.Category);
+                if (!seen.Add(TargetKey(target))) continue;
+                long size = 512 + 2L * (name.Length + path.Length + resource.IdentityKey.Length);
+                if (items.Count == Limits.MaximumCandidates || size > Limits.MaximumCandidateBytes - bytes) { complete = false; break; }
+                items.Add(target); bytes += size;
+                continue;
+            }
             if (!scope.DatabaseCatalogue!.TryGetValue(membership.Snapshot!.SnapshotKey, out var catalogue)) continue;
             var fullData = source.Resource.IsTableData
                 ? catalogue.Where(item => item.Resource.Kind == DatabaseVersionedResourceKind.TableMetadata && item.HasFullData)

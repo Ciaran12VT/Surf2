@@ -23,7 +23,10 @@ public sealed partial class RelationalComparisonService
                 catch { await selected.DisposeAsync().ConfigureAwait(false); throw; }
             }
         }
-        var result = await ComparisonCollectionEngine.BuildAsync(Collection(left, scope, options, ct), Collection(right, scope, options, ct), Limits, ct).ConfigureAwait(false);
+        var result = IsSnapshotCollection(left) && IsSnapshotCollection(right) &&
+            _runtime.Session.SnapshotMemory.ContainsSnapshots([left.SnapshotKey!.Value, right.SnapshotKey!.Value])
+            ? await ComparisonCollectionEngine.BuildInMemoryAsync(Collection(left, scope, options, ct), Collection(right, scope, options, ct), Limits, ct).ConfigureAwait(false)
+            : await ComparisonCollectionEngine.BuildAsync(Collection(left, scope, options, ct), Collection(right, scope, options, ct), Limits, ct).ConfigureAwait(false);
         try { await RequireScopeAsync(scope, ct).ConfigureAwait(false); return result; }
         catch { await result.DisposeAsync().ConfigureAwait(false); throw; }
     }, ct);

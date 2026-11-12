@@ -17,6 +17,13 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--snapshot-memory", StringComparer.Ordinal))
+{
+    foreach (string name in await Surf2.Services.RelationalComparison.ComparisonContractChecks.RunAsync()) Check(true, name);
+    await StorageRegressionSuite.RunSnapshotMemoryChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} snapshot memory checks.");
+    return;
+}
 if (args.Contains("--diagram-open", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,

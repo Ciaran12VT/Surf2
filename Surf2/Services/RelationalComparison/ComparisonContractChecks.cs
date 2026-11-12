@@ -55,6 +55,23 @@ public static class ComparisonContractChecks
                 Check(File.ReadAllText(existing) == "original", "Canceled export preserves existing output"); File.Delete(existing);
             }
             Check(!Directory.EnumerateDirectories(root).Any(), "Table spools cleaned on disposal");
+            string blockedScratch = Path.Combine(root, "not-a-directory");
+            File.WriteAllText(blockedScratch, "In-memory comparisons must not create scratch files.");
+            var memoryLimits = limits with { StagingDirectory = blockedScratch, MaximumDiskBytes = 1024, SortBufferBytes = 1024 };
+            await using (var result = await ComparisonTableEngine.BuildInMemoryAsync(Input(left), Input(right), ["Id"], memoryLimits, ct))
+            {
+                var actual = await All(result);
+                Check(actual.Select(x => (x.Key, x.Status, x.ChangedColumns, x.LeftPreview, x.RightPreview))
+                    .SequenceEqual(expected.Rows.Select(x => (x.Key, x.Status.ToString(), x.ChangedColumns, x.LeftPreview, x.RightPreview))),
+                    "In-memory table comparison preserves duplicate suffixes, blank keys, casing and legacy results without scratch access");
+                Check(result.TableLayout?.KeyColumns.SequenceEqual(new[] { "Id" }) == true,
+                    "In-memory table comparison retains paired-grid metadata");
+                string export = Path.Combine(root, "memory.csv");
+                await result.ExportAsync(export, ct: ct);
+                Check(CsvGridParser.Parse(File.ReadAllText(export)).Rows.Count == expected.Rows.Count,
+                    "In-memory table export includes all pages without scratch storage");
+                File.Delete(export);
+            }
             string longValue = new string('a', 1000) + "tail marker";
             string[] beforeColumns = ["Id", "Same", "Edit", "Old"];
             string[] afterColumns = ["Id", "Same", "Edit", "New"];
@@ -77,6 +94,15 @@ public static class ComparisonContractChecks
                     "Removed and added table rows color every cell");
                 var found = await diff.ReadPageAsync(search: "tail marker", ct: ct);
                 Check(found.Rows.Single().Key == "1", "Find searches the full cell values beyond the CSV preview");
+                await using var memory = await ComparisonTableEngine.BuildInMemoryAsync(Input(beforeRows) with { Headers = beforeColumns },
+                    Input(afterRows) with { Headers = afterColumns }, ["Id"], memoryLimits, ct);
+                var memoryRows = await All(memory);
+                Check(memoryRows.Count == rows.Count && memoryRows.Zip(rows).All(pair =>
+                    pair.First.Key == pair.Second.Key && pair.First.Status == pair.Second.Status &&
+                    pair.First.TableCells!.SequenceEqual(pair.Second.TableCells!)),
+                    "Memory and disk table comparisons retain identical full cells and added/deleted row and column colors");
+                Check((await memory.ReadPageAsync(search: "tail marker", ct: ct)).Rows.Single().Key == "1",
+                    "In-memory table search includes full cell values");
             }
             var pageRows = Enumerable.Range(0, 1001).Select(i => new ComparisonResultRow(i.ToString(), "Identical", "", "", "")).ToArray();
             await using (var result = ComparisonResultStore.FromMemory(pageRows, new ComparisonLimits()))
@@ -104,11 +130,28 @@ public static class ComparisonContractChecks
                 var actual = await All(diff);
                 Check(actual.Select(x => (x.Key, x.Status, x.ChangedColumns, x.LeftPreview, x.RightPreview))
                     .SequenceEqual(old.Rows.Select(x => (x.Key, x.Status.ToString(), x.ChangedColumns, x.LeftPreview, x.RightPreview))), "Random duplicate parity " + test);
+                await using var memory = await ComparisonTableEngine.BuildInMemoryAsync(Input(one), Input(two), ["Id"], memoryLimits, ct);
+                var memoryRows = await All(memory);
+                Check(memoryRows.Select(x => (x.Key, x.Status, x.ChangedColumns, x.LeftPreview, x.RightPreview))
+                    .SequenceEqual(actual.Select(x => (x.Key, x.Status, x.ChangedColumns, x.LeftPreview, x.RightPreview))),
+                    "In-memory duplicate parity " + test);
             }
             Guid epoch = Guid.NewGuid();
             RelationalComparisonTarget Target(string name) => new(new(name, "File", name, ComparisonResourceKind.File, "File", false, true, false, name), epoch);
             var collectionLeft = new[] { E("folder", true, ""), E("folder/a.sql", false, "same"), E("folder/b.sql", false, "old"), E("folder/b.sql", false, "ignored duplicate"), E("empty", true, ""), E("removed", false, "gone") };
             var collectionRight = new[] { E("folder", true, ""), E("folder/A.sql", false, "same"), E("folder/b.sql", false, "new"), E("empty", true, ""), E("added", false, "new") };
+            await using (var memory = await ComparisonCollectionEngine.BuildInMemoryAsync(Entries(collectionLeft), Entries(collectionRight), memoryLimits, ct))
+            {
+                var rows = await All(memory);
+                Check(rows.Single(row => row.Key == "folder").Status == "Different" &&
+                    rows.Single(row => row.Key == "folder/a.sql").Status == "Identical" && rows.Count == 6,
+                    "Forced memory collection route retains hierarchy and duplicate semantics beyond the sort budget without scratch access");
+                Check((await memory.ReadPageAsync(excluded: new HashSet<string> { "folder" }, ct: ct)).MatchingCount == 3 &&
+                    (await memory.ReadPageAsync(collapsed: new HashSet<string> { "folder" }, ct: ct)).MatchingCount == 4,
+                    "Forced memory collection results preserve exclusions and collapse filtering");
+                Check((await memory.ReadDocumentChoicesAsync(ct: ct)).Complete,
+                    "Forced memory comparison choices read only resident results");
+            }
             await using (var result = await ComparisonCollectionEngine.BuildAsync(Entries(collectionLeft), Entries(collectionRight), limits, ct))
             {
                 var rows = await All(result);
@@ -187,7 +230,14 @@ public static class ComparisonContractChecks
                 cancellation.Cancel();
                 try { await ComparisonTableEngine.BuildAsync(Input(left), Input(right), ["Id"], limits, cancellation.Token); throw new Exception("Canceled comparison published."); }
                 catch (OperationCanceledException) { passed.Add("Canceled comparison publishes no partial result"); }
+                try { await ComparisonTableEngine.BuildInMemoryAsync(Input(left), Input(right), ["Id"], memoryLimits, cancellation.Token); throw new Exception("Canceled memory comparison published."); }
+                catch (OperationCanceledException) { passed.Add("Canceled in-memory table comparison publishes no partial result"); }
+                try { await ComparisonCollectionEngine.BuildInMemoryAsync(Entries(collectionLeft), Entries(collectionRight), memoryLimits, cancellation.Token); throw new Exception("Canceled memory collection comparison published."); }
+                catch (OperationCanceledException) { passed.Add("Canceled in-memory collection comparison publishes no partial result"); }
             }
+            try { await ComparisonTableEngine.BuildInMemoryAsync(Input(left) with { MaximumRows = 1 }, Input(right), ["Id"], memoryLimits, ct); throw new Exception("Pinned memory row count was ignored."); }
+            catch (ComparisonLimitException) { passed.Add("In-memory table comparison rejects rows beyond the pinned count"); }
+            File.Delete(blockedScratch);
             Check(!Directory.EnumerateFileSystemEntries(root).Any(), "All quota/cancellation/completion spools are cleaned");
             return passed;
 
