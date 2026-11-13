@@ -5692,6 +5692,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             MetadataEditorPlaceholder.Visibility = Visibility.Collapsed;
             MetadataEditorPanel.Visibility = Visibility.Visible;
             MetadataLinkTextBox.Text = GetReadableDatabaseMetadataLink(metadata.Link);
+            _metadataEditorOriginalLink = metadata.Link;
+            _metadataEditorDisplayedLink = MetadataLinkTextBox.Text.Trim();
             LoadMetadataDocumentation(metadata.DocumentationXaml);
             _metadataEditorQueries.AddRange(metadata.Queries.Select(query => query.Clone()));
             RebuildMetadataQueriesEditor();
@@ -5710,6 +5712,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         MetadataEditorPlaceholder.Visibility = Visibility.Visible;
         MetadataEditorPlaceholderText.Text = message;
         MetadataLinkTextBox.Text = string.Empty;
+        _metadataEditorOriginalLink = _metadataEditorDisplayedLink = string.Empty;
         MetadataDocumentationRichTextBox.Document = new FlowDocument();
         MetadataQueriesPanel.Children.Clear();
     }
@@ -5726,7 +5729,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var metadata = new DiagramObjectMetadata
         {
-            Link = NormalizeDatabaseMetadataLink(MetadataLinkTextBox.Text.Trim()),
+            Link = GetMetadataEditorLink(),
             DocumentationXaml = SerializeMetadataDocumentation(),
             Queries = _metadataEditorQueries
                 .Select(query => query.Clone())
@@ -6424,7 +6427,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void MetadataOpenLinkButton_Click(object sender, RoutedEventArgs e)
     {
-        await OpenMetadataLinkAsync(MetadataLinkTextBox.Text.Trim());
+        await OpenMetadataLinkAsync(GetMetadataEditorLink());
     }
 
     private async Task<bool> OpenMetadataLinkAsync(string link)
@@ -7952,7 +7955,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         PlaceDiagramResourceOnDiagram(
             openTab.FileName,
-            openTab.FilePath,
+            _relational != null ? GetRelationalPersistentDocumentPath(openTab.FilePath) : openTab.FilePath,
             GetDiagramImageResourceKind(openTab.FilePath),
             () => TryGetOpenTabContent(openTab, out string content) ? content : null,
             canvasPoint);
@@ -9081,7 +9084,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        reference = reference with { DocumentPath = GetCanonicalDatabaseDocumentPath(window.State.FilePath) };
+        reference = reference with { DocumentPath = _relational != null ? window.PersistentDocumentPath
+            : GetCanonicalDatabaseDocumentPath(window.State.FilePath) };
         try
         {
             TextClipboardService.CopyText(CodeSearchReferenceService.Encode(reference));
@@ -16885,6 +16889,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return string.Empty;
         }
 
+        if (_relational != null) return NormalizeRelationalMetadataLink(link);
+
         if (CodeSearchReferenceService.TryDecode(link, out CodeSearchReference searchReference))
         {
             return CodeSearchReferenceService.Encode(searchReference with
@@ -16911,6 +16917,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             return string.Empty;
         }
+
+        if (_relational != null) return GetReadableRelationalMetadataLink(link);
 
         if (CodeSearchReferenceService.TryDecode(link, out CodeSearchReference searchReference))
         {

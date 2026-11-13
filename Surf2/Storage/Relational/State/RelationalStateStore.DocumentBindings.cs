@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.Data.SqlClient;
 using Surf2.Models;
 using Surf2.Services;
+using Surf2.Services.RelationalDocuments;
 using Surf2.Storage.Relational.Snapshots;
 
 namespace Surf2.Storage.Relational.State;
@@ -78,6 +79,23 @@ WHERE ReferenceConnectionLineKey=@Key AND SourceBoundResourceKey IS NULL AND Tar
         string path, long? scope, CancellationToken ct)
     {
         if (!DatabaseDocumentService.IsDatabaseDocumentPath(path)) return new(null, null, SavedDocumentTargetState.External);
+        if (DurableDocumentLink.TryParse(path, out var durable))
+        {
+            await using var command = Command(connection, transaction, """
+SELECT s.SnapshotKey,r.ResourceKey
+FROM surf.DatabaseSnapshot s JOIN surf.SnapshotResource r ON r.SnapshotKey=s.SnapshotKey
+WHERE s.PublicId=@Snapshot AND r.PublicId=@Resource AND r.Kind=@Kind
+ AND s.IsPublished=1 AND s.UserKey=1 AND r.CurrentRevisionKey IS NOT NULL
+ AND (@Scope IS NULL OR EXISTS(SELECT 1 FROM surf.ScopeResource sr WHERE sr.ScopeKey=@Scope AND sr.SnapshotKey=s.SnapshotKey));
+""", RelationalSession.Parameter("@Snapshot", SqlDbType.UniqueIdentifier, durable.SnapshotId),
+                RelationalSession.Parameter("@Resource", SqlDbType.UniqueIdentifier, durable.ResourceId),
+                RelationalSession.Parameter("@Kind", SqlDbType.Int, (int)durable.Kind),
+                RelationalSession.Parameter("@Scope", SqlDbType.BigInt, scope));
+            using var cancellation = RelationalSession.CancelCommand(command, ct);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            return await reader.ReadAsync(ct) ? new(reader.GetInt64(0), reader.GetInt64(1), SavedDocumentTargetState.Resolved)
+                : new(null, null, SavedDocumentTargetState.Missing);
+        }
         if (!DatabaseDocumentService.TryParseDocumentPath(path, out var reference)) return new(null, null, SavedDocumentTargetState.Missing);
         var candidates = new List<(long Key, int Rank)>();
         var budget = new StateBudget(_limits);

@@ -113,6 +113,7 @@ WHERE DiagramKey=@Key AND ProfileKey=1 AND Version=@Version;
         long? diagramKey, long? workbenchKey,
         Guid publication, StateBudget budget, CancellationToken ct)
     {
+        await NormalizeDiagramDocumentLinksAsync(connection, transaction, diagram, diagramKey, workbenchKey, ct);
         long revision = await InsertAsync(connection, transaction, StateMaps.Diagram, diagram, ct,
             ("DiagramKey", SqlDbType.BigInt, diagramKey), ("WorkbenchKey", SqlDbType.BigInt, workbenchKey),
             ("Origin", SqlDbType.Int, diagramKey.HasValue ? 0 : 1), ("PublicationId", SqlDbType.UniqueIdentifier, publication));

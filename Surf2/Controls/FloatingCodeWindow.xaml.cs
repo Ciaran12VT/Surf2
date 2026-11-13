@@ -90,6 +90,11 @@ public partial class FloatingCodeWindow : UserControl
 
     public Func<string?>? ClipboardTextFileNameSeedProvider { get; set; }
 
+    // Window identity is session-local; links copied into diagrams or shared with other sessions are durable.
+    public Func<string?>? PersistentDocumentPathProvider { get; set; }
+
+    public string PersistentDocumentPath => PersistentDocumentPathProvider?.Invoke() ?? State.FilePath;
+
     public event EventHandler? BoundsChanged;
 
     public event EventHandler? BringToFrontRequested;
@@ -232,7 +237,7 @@ public partial class FloatingCodeWindow : UserControl
             referenceText = token;
         }
 
-        string lineAddress = $"{State.FilePath}:{startLocation.Line.ToString(CultureInfo.InvariantCulture)}";
+        string lineAddress = $"{PersistentDocumentPath}:{startLocation.Line.ToString(CultureInfo.InvariantCulture)}";
         info = new CodeReferenceDiagramObjectInfo(
             token,
             referenceText,
@@ -1623,7 +1628,7 @@ public partial class FloatingCodeWindow : UserControl
         }
 
         lineNumber = Math.Clamp(line, 1, Editor.Document.LineCount);
-        lineAddress = $"{State.FilePath}:{lineNumber.ToString(CultureInfo.InvariantCulture)}";
+        lineAddress = $"{PersistentDocumentPath}:{lineNumber.ToString(CultureInfo.InvariantCulture)}";
         return true;
     }
 

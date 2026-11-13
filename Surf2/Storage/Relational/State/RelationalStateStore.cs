@@ -85,10 +85,16 @@ public sealed partial class RelationalStateStore
         await command.ExecuteNonQueryAsync(ct);
     }
 
+    private Task<long> InsertAsync<T>(SqlConnection connection, SqlTransaction transaction, StateRowMap<T> map,
+        T value, CancellationToken ct, params (string Name, SqlDbType Type, object? Value)[] extra) where T : new() =>
+        InsertAsync(connection, transaction, map, value, null, ct, extra);
+
     private async Task<long> InsertAsync<T>(SqlConnection connection, SqlTransaction transaction, StateRowMap<T> map,
-        T value, CancellationToken ct, params (string Name, SqlDbType Type, object? Value)[] extra) where T : new()
+        T value, DocumentLinkPreservation? preservation, CancellationToken ct,
+        params (string Name, SqlDbType Type, object? Value)[] extra) where T : new()
     {
         _session.RejectValidationWrite();
+        await NormalizeStateDocumentLinksAsync(connection, transaction, value, ct, preservation);
         string names = string.Join(", ", extra.Select(p => $"[{p.Name}]"));
         string values = string.Join(", ", extra.Select((_, i) => $"@e{i}"));
         await using var command = Command(connection, transaction,
@@ -103,8 +109,9 @@ public sealed partial class RelationalStateStore
     }
 
     private async Task UpdateAsync<T>(SqlConnection connection, SqlTransaction transaction, StateRowMap<T> map,
-        T value, StateToken expected, Guid publication, CancellationToken ct) where T : new()
+        T value, StateToken expected, Guid publication, CancellationToken ct, DocumentLinkPreservation? preservation = null) where T : new()
     {
+        await NormalizeStateDocumentLinksAsync(connection, transaction, value, ct, preservation);
         await using var command = Command(connection, transaction,
             $"UPDATE surf.[{map.Table}] SET {map.Assignments}, PublicationId=@Publication " +
             $"OUTPUT INSERTED.[{map.Key}] WHERE [{map.Key}]=@Key AND ProfileKey=1 AND Version=@Version;",

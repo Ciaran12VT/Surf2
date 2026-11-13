@@ -17,6 +17,19 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--durable-links", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunDurableLinkChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} durable database link checks.");
+    return;
+}
+if (args.Contains("--durable-links-ui", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
+        Path.Combine(AppContext.BaseDirectory, "durable-links-ui-checks"), durableLinksOnly: true);
+    Console.WriteLine($"Passed {passed} durable database link UI checks.");
+    return;
+}
 if (args.Contains("--image-ui", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,

@@ -86,6 +86,10 @@ public partial class MainWindow
             SetStartupStage(StartupStage.DatabaseReadiness);
             await runtime.Session.RequireReadyAsync(ct);
             RequireRelationalStartup(ct);
+            var linkRepair = await runtime.StateStore.RepairStoredDocumentLinksAsync(ct);
+            RequireRelationalStartup(ct);
+            InternalLogService.Info("Checked stored database document links.", ("Inspected", linkRepair.Inspected),
+                ("Repaired", linkRepair.Repaired), ("Unresolved", linkRepair.Unresolved));
             if (_relationalDocumentOpener == null) InitializeRelationalDocumentAccess();
             SetStartupStage(StartupStage.Preferences);
             var preferences = RequireRelationalLoad(await runtime.Preferences.LoadStartupPreferencesAsync(ct), "preferences");
@@ -136,6 +140,8 @@ public partial class MainWindow
                 RememberRelationalScopeSwitchWorkbenchBaseline();
                 _persistenceLoadFailureMessage = null; _isPersistenceHydrated = true;
                 RefreshDiagramImageToolMenu();
+                if (linkRepair.Unresolved > 0)
+                    StatusText = $"Workspace loaded. {linkRepair.Unresolved} saved database link(s) have missing or inconsistent targets and could not be repaired.";
             }
             catch
             {
@@ -1002,7 +1008,8 @@ public partial class MainWindow
             if (state is SavedDocumentTargetState.Missing or SavedDocumentTargetState.Ambiguous) return null;
             var candidates = _openWindows.Values.Distinct().Where(w => state == SavedDocumentTargetState.Resolved
                 ? snapshot.HasValue && resource.HasValue && w.State.BoundSnapshotKey == snapshot && w.State.BoundResourceKey == resource
-                : string.Equals(w.State.FilePath, raw, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+                : string.Equals(w.State.FilePath, raw, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(GetRelationalPersistentDocumentPath(w.State.FilePath), raw, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
             return candidates.Length == 1 ? candidates[0] : null;
         }
         foreach (var state in states)
@@ -1169,9 +1176,11 @@ public partial class MainWindow
                 var previous = _relationalWorkbenchEdit; _relationalWorkbenchEdit = edit; if (previous != null) await previous.DisposeAsync();
                 RequireRelationalSelection(generation, ct);
                 SetStartupStage(StartupStage.Documents);
+                var activeDocument = _workspaceState.OpenDocuments.FirstOrDefault(document =>
+                    document.FilePath.Equals(model.ActiveDocumentPath, StringComparison.OrdinalIgnoreCase));
                 await RestoreRelationalDocumentsAsync(ct);
                 RequireRelationalSelection(generation, ct);
-                if (!string.IsNullOrWhiteSpace(model.ActiveDocumentPath)) SelectOpenDocument(model.ActiveDocumentPath);
+                if (!string.IsNullOrWhiteSpace(model.ActiveDocumentPath)) SelectOpenDocument(activeDocument?.FilePath ?? model.ActiveDocumentPath);
                 RestoreRelationalReferenceLines(model.ReferenceConnectionLines); UpdateEmptyWorkspaceHint();
                 SetStartupStage(StartupStage.Viewport);
                 await Dispatcher.InvokeAsync(new Action(() =>

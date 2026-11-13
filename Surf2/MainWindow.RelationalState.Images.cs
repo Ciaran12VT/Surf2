@@ -297,7 +297,8 @@ public partial class MainWindow
             if (!SameRelationalOwner(edit.ExpectedToken, owner)) throw new StateConflictException("matched image definition");
             var asset = RequireRelationalLoad(await RelationalStateRuntime.Preferences.ReadImageAssetAsync(matched.Key, owner, _relationalStateLifetime.Token), "matched image asset");
             var definition = edit.Snapshot(); var imageSource = DecodeRelationalImage(asset.CopyBytes());
-            if (_relationalStateClosing || !ReferenceEquals(scope, _relationalExplorerScope) || documentGeneration != _relationalDocumentContextGeneration || _isDiagramLocked) return;
+            link = await RelationalStateRuntime.StateStore.NormalizeDocumentLinkAsync(NormalizeRelationalMetadataLink(link), operation.Token);
+            if (_relationalStateClosing || !Services.RelationalRuntime.SameExplorerSelection(scope, _relationalExplorerScope) || documentGeneration != _relationalDocumentContextGeneration || _isDiagramLocked) return;
             var image = new Surf2.Controls.DiagramImageControl(definition.Id, definition.Name, imageSource, definition.ImageDataBase64);
             AttachDiagramImageHandlers(image); image.SetCanvasBounds(point.X - 60, point.Y - 48, 120, 96);
             image.ApplyDetails(name); image.ApplyMetadata(new DiagramObjectMetadata { Link = link }); ApplyDefaultDiagramZIndex(image);

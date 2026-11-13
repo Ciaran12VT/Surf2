@@ -47,7 +47,7 @@ public partial class FloatingCodeWindow
         }
 
         return new CodeSearchReference(
-            State.FilePath,
+            PersistentDocumentPath,
             _searchState.SearchText,
             _searchState.MatchCase,
             _searchState.WholeWords,

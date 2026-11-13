@@ -17,6 +17,14 @@ public sealed partial class RelationalDocumentService
             throw Missing("The database document address is invalid.");
         var snapshots = scope.Resources.Where(resource => resource.IsLoaded && resource.Snapshot != null)
             .Select(resource => resource.Snapshot!).DistinctBy(snapshot => snapshot.SnapshotKey).ToArray();
+        if (path.StartsWith("db://!", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!DurableDocumentLink.TryParse(path, out var persistent)) throw Missing("The persistent database document address is invalid.");
+            if (!snapshots.Any(snapshot => snapshot.PublicId == persistent.SnapshotId))
+                throw Missing("The comparison snapshot is not loaded in this scope.");
+            return await _runtime.Snapshots.ResolvePublicResourceAsync(persistent.SnapshotId, persistent.ResourceId, persistent.Kind, ct).ConfigureAwait(false)
+                ?? throw Missing("The comparison resource is not in the loaded snapshot.");
+        }
         SnapshotSummary selected;
         long? resourceKey = null;
         if (TryParseIdentityPath(reference, out long snapshotKey, out long parsedResourceKey))

@@ -66,7 +66,8 @@ public readonly record struct DocumentDigest(ulong A, ulong B, ulong C, ulong D)
 public sealed record DocumentTextKey(SessionLocator Locator, string RendererPolicy, string? PhysicalPath = null);
 public sealed record RelationalDocumentAddress(RelationalDocumentIdentity Identity, string DocumentPath,
     string SyntaxPath, string DisplayName, string? TextFileNameSeed, SnapshotResourceLocator? Resource,
-    ExplorerAddress? ExplorerAddress, SnapshotSummary? Snapshot = null, string? ReadableDocumentPath = null);
+    ExplorerAddress? ExplorerAddress, SnapshotSummary? Snapshot = null, string? ReadableDocumentPath = null,
+    string? PersistentDocumentPath = null);
 public sealed record DocumentTextPlan(RelationalDocumentAddress Address, DocumentTextKey Key,
     long EstimatedTextBytes, TableMetadataDetails? Table = null);
 public sealed record SelectedDocumentText(string Text, long EstimatedBytes);

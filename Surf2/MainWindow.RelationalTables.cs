@@ -66,6 +66,7 @@ public partial class MainWindow
         if (address.Resource == null) return address.DocumentPath;
         var metadata = await FindRelationalRelatedTableAsync(window.State.FilePath, DatabaseVersionedResourceKind.TableMetadata, window.State, ct);
         address = metadata ?? address;
+        if (address.PersistentDocumentPath != null) return address.PersistentDocumentPath;
         if (address.ExplorerAddress != null) return address.ExplorerAddress.ReadableLocator;
         var resource = await RelationalStateRuntime.Snapshots.ResolveResourceAsync(address.Resource!.ResourceKey, ct: ct)
             ?? throw new InvalidOperationException("The selected table is unavailable.");

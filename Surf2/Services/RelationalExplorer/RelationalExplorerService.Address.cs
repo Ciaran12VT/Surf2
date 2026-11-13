@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.IO;
 using Surf2.Models;
+using Surf2.Services.RelationalDocuments;
 using Surf2.Storage.Relational.Index;
 using Surf2.Storage.Relational.Snapshots;
 
@@ -95,9 +96,18 @@ public sealed partial class RelationalExplorerService
             string segment = reference.SnapshotId;
             var candidates = memberships.Where(r => r.Kind == ResourceKind.DatabaseSnapshot && r.Snapshot != null).ToArray();
             bool typed = segment.StartsWith('@');
+            bool persistent = segment.StartsWith('!');
+            DurableDocumentIdentity? persistentIdentity = null;
             long selectedResourceKey = 0;
             ExplorerResource? resource;
-            if (typed)
+            if (persistent)
+            {
+                if (!DurableDocumentLink.TryParse(locator, out persistentIdentity))
+                    throw new ArgumentException("The persistent database document address is invalid.", nameof(locator));
+                if (persistentIdentity.Kind == DatabaseVersionedResourceKind.TableData) return null;
+                resource = candidates.FirstOrDefault(r => r.Snapshot!.PublicId == persistentIdentity.SnapshotId);
+            }
+            else if (typed)
             {
                 if (!ExplorerCompatibility.TryParseDatabaseIdentity(reference, out var epoch, out var snapshotKey, out selectedResourceKey))
                     throw new ArgumentException("The typed database document address is invalid.", nameof(locator));
@@ -130,14 +140,15 @@ public sealed partial class RelationalExplorerService
             {
                 budget.Add(item.Resource.SchemaName, item.Resource.ObjectName, item.Resource.OriginalResourceKey);
                 if (selected == null && item.Resource.SnapshotKey == resource.Snapshot!.SnapshotKey &&
-                    (typed ? item.Resource.ResourceKey == selectedResourceKey :
+                    (persistent ? item.Resource.PublicId == persistentIdentity!.ResourceId && item.Resource.Kind == persistentIdentity.Kind :
+                     typed ? item.Resource.ResourceKey == selectedResourceKey :
                         SqlName.FormatPlainMultipartName(item.Resource.SchemaName, item.Resource.ObjectName)
                             .Equals(reference.FullName, StringComparison.OrdinalIgnoreCase))) selected = item;
             }
             if (selected == null) return null;
             var leaf = DatabaseNode(scope, resource, parent, selected);
             tableData = reference.DocumentType.Equals("table-data", StringComparison.OrdinalIgnoreCase);
-            canonical = typed ? leaf.FullPath : ExplorerCompatibility.DatabaseLocator(resource.Snapshot!, category.Value, leaf.SchemaName, leaf.ObjectName, true, tableData);
+            canonical = typed || persistent ? leaf.FullPath : ExplorerCompatibility.DatabaseLocator(resource.Snapshot!, category.Value, leaf.SchemaName, leaf.ObjectName, true, tableData);
             readable = ExplorerCompatibility.DatabaseLocator(resource.Snapshot!, category.Value, leaf.SchemaName, leaf.ObjectName, false, tableData);
             chain.Add(root); chain.Add(parent); chain.Add(leaf);
         }

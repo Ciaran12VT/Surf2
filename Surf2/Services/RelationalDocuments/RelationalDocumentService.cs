@@ -62,6 +62,12 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
                 Path.GetFileName(fullPath), address?.TextFileNameSeed, null, address);
         }
         if (!DatabaseDocumentService.TryParseDocumentPath(path, out var reference)) throw Missing("The database document address is invalid.");
+        if (path.StartsWith("db://!", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!DurableDocumentLink.TryParse(path, out var persistent)) throw Missing("The persistent database document address is invalid.");
+            resource = await _runtime.Snapshots.ResolvePublicResourceAsync(persistent.SnapshotId, persistent.ResourceId, persistent.Kind, ct).ConfigureAwait(false);
+            return await AddressAsync(resource ?? throw Missing("The linked resource does not exist in this database snapshot."), scope, ct).ConfigureAwait(false);
+        }
         if (TryParseIdentityPath(reference, out long snapshotKey, out long resourceKey))
         {
             resource = await _runtime.Snapshots.ResolveResourceAsync(resourceKey, ct: ct).ConfigureAwait(false);
@@ -188,7 +194,8 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
         return new(new SnapshotDocumentIdentity(Epoch, resource.SnapshotKey, resource.ResourceKey, data), path,
             data ? "document.csv" : "document.sql", name + (data ? " data.csv" : ".sql"), explorer?.TextFileNameSeed,
             SnapshotResourceLocator.From(Epoch, resource), explorer, snapshot,
-            ExplorerCompatibility.DatabaseLocator(snapshot, category, resource.SchemaName, resource.ObjectName, tableData: data));
+            ExplorerCompatibility.DatabaseLocator(snapshot, category, resource.SchemaName, resource.ObjectName, tableData: data),
+            DurableDocumentLink.Create(snapshot.PublicId, resource.PublicId, resource.Kind!.Value));
     }
 
     // Reproduce effective ancestry by identity, including duplicate-key virtual-folder moves.

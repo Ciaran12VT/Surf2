@@ -120,9 +120,8 @@ public partial class MainWindow
                 {
                     string link = item.Metadata.Link;
                     bool matches = member.Kind == ResourceKind.DatabaseSnapshot
-                        ? resource.Snapshot != null && DatabaseDocumentService.TryParseDocumentPath(ParseMetadataLinkTarget(link).Link, out var database) &&
-                            ExplorerCompatibility.TryParseDatabaseIdentity(database, out Guid epoch, out long snapshot, out _) &&
-                            epoch == owner.Token.Epoch && snapshot == resource.Snapshot.SnapshotKey
+                        ? resource.Snapshot != null && RelationalLinkTargetsSnapshot(link, resource.Snapshot.PublicId,
+                            resource.Snapshot.SnapshotKey, owner.Token.Epoch)
                         : (member.Kind != ResourceKind.Diagram || uniqueDiagramTarget) &&
                             scope.Resources.Count(r => r.Kind == member.Kind && r.Path.Equals(member.Path, StringComparison.OrdinalIgnoreCase)) == 1 &&
                             DiagramMetadataLinkTargetsResource(link, member);
@@ -167,5 +166,19 @@ public partial class MainWindow
         if (!SameRelationalScope(acknowledged, live)) edit.Replace(live);
         _relationalScopeEdit = edit; SetActiveScope(live);
         await owner.Edit.DisposeAsync();
+    }
+
+    private static bool RelationalLinkTargetsSnapshot(string link, Guid publicId, long snapshotKey, Guid epoch)
+    {
+        bool matches = false;
+        Services.RelationalDocuments.DurableDocumentLink.Rewrite(link, path =>
+        {
+            matches = Services.RelationalDocuments.DurableDocumentLink.TryParse(path, out var persistent)
+                ? persistent.SnapshotId == publicId
+                : Services.RelationalDocuments.DurableDocumentLink.TryParseSessionPath(path, out var temporary) &&
+                    temporary.Epoch == epoch && temporary.SnapshotKey == snapshotKey;
+            return path;
+        });
+        return matches;
     }
 }

@@ -35,9 +35,11 @@ public sealed partial class RelationalStateStore
         var copy = StateCopies.Workspace(workspace, new StateBudget(_limits));
         return ReadyAsync(async (connection, transaction) =>
         {
+            var preserved = await ReadLayoutLinkPreservationAsync(connection, transaction,
+                "WorkspaceSessionKey", expected.Key, copy.OpenDocuments, null, cancellationToken);
             await UpdateAsync(connection, transaction, StateMaps.Workspace, copy, expected, publicationId, cancellationToken);
             await ClearLayoutAsync(connection, transaction, "WorkspaceSessionKey", expected.Key, cancellationToken);
-            await LayoutAsync(connection, transaction, "WorkspaceSessionKey", expected.Key, copy.OpenDocuments, copy.UnloadedResourceIds, cancellationToken);
+            await LayoutAsync(connection, transaction, "WorkspaceSessionKey", expected.Key, copy.OpenDocuments, copy.UnloadedResourceIds, cancellationToken, preserved);
             return await TokenAsync(connection, transaction, "WorkspaceSession", "WorkspaceSessionKey", expected.Key, cancellationToken);
         }, cancellationToken);
     }
@@ -117,22 +119,25 @@ public sealed partial class RelationalStateStore
         return ReadyAsync(async (connection, transaction) =>
         {
             await BumpAsync(connection, transaction, 2, publicationId, cancellationToken);
-            await UpdateAsync(connection, transaction, StateMaps.Workbench, copy, expected, publicationId, cancellationToken);
+            var preserved = await ReadLayoutLinkPreservationAsync(connection, transaction,
+                "WorkbenchKey", expected.Key, copy.OpenDocuments, copy, cancellationToken);
+            await UpdateAsync(connection, transaction, StateMaps.Workbench, copy, expected, publicationId, cancellationToken, preserved.GetValueOrDefault(copy));
             await ClearLayoutAsync(connection, transaction, "WorkbenchKey", expected.Key, cancellationToken);
             await ExecuteAsync(connection, transaction, "DELETE FROM surf.ReferenceConnectionLine WHERE WorkbenchKey=@Key;",
                 cancellationToken, Key(expected.Key));
-            await WorkbenchChildrenAsync(connection, transaction, expected.Key, copy, pasted, fallbacks, publicationId, budget, cancellationToken);
+            await WorkbenchChildrenAsync(connection, transaction, expected.Key, copy, pasted, fallbacks, publicationId, budget, cancellationToken, preserved);
             return await TokenAsync(connection, transaction, "Workbench", "WorkbenchKey", expected.Key, cancellationToken);
         }, cancellationToken);
     }
 
     private async Task WorkbenchChildrenAsync(SqlConnection connection, SqlTransaction transaction, long key,
         WorkbenchState workbench, IReadOnlyDictionary<int, byte[]> pasted, IReadOnlyDictionary<int, PastedImageFallback> fallbacks,
-        Guid publication, StateBudget budget, CancellationToken ct)
+        Guid publication, StateBudget budget, CancellationToken ct, IReadOnlyDictionary<object, DocumentLinkPreservation>? preserved = null)
     {
-        await LayoutAsync(connection, transaction, "WorkbenchKey", key, workbench.OpenDocuments, workbench.UnloadedResourceIds, ct);
+        await LayoutAsync(connection, transaction, "WorkbenchKey", key, workbench.OpenDocuments, workbench.UnloadedResourceIds, ct, preserved);
         for (int i = 0; i < workbench.ReferenceConnectionLines.Count; i++)
-            await InsertAsync(connection, transaction, StateMaps.Connection, workbench.ReferenceConnectionLines[i], ct,
+            await InsertAsync(connection, transaction, StateMaps.Connection, workbench.ReferenceConnectionLines[i],
+                preserved?.GetValueOrDefault(workbench.ReferenceConnectionLines[i]), ct,
                 ("WorkbenchKey", SqlDbType.BigInt, key), ("SortOrdinal", SqlDbType.BigInt, (long)i));
         long? revision = workbench.ActiveDiagramSnapshot == null ? null : await WriteDiagramRevisionAsync(connection, transaction,
             workbench.ActiveDiagramSnapshot, pasted, fallbacks, null, key, publication, budget, ct);
@@ -174,12 +179,13 @@ public sealed partial class RelationalStateStore
         }, cancellationToken);
 
     private async Task LayoutAsync(SqlConnection connection, SqlTransaction transaction, string ownerColumn, long owner,
-        IEnumerable<OpenDocumentState> windows, IEnumerable<string> unloaded, CancellationToken ct)
+        IEnumerable<OpenDocumentState> windows, IEnumerable<string> unloaded, CancellationToken ct,
+        IReadOnlyDictionary<object, DocumentLinkPreservation>? preserved = null)
     {
         long ordinal = 0;
         foreach (var window in windows)
         {
-            long key = await InsertAsync(connection, transaction, StateMaps.Window, window, ct,
+            long key = await InsertAsync(connection, transaction, StateMaps.Window, window, preserved?.GetValueOrDefault(window), ct,
                 (ownerColumn, SqlDbType.BigInt, owner), ("SortOrdinal", SqlDbType.BigInt, ordinal++));
             long filterOrdinal = 0;
             foreach (var filter in window.SpreadsheetFilters)

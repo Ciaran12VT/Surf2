@@ -96,6 +96,7 @@ public partial class MainWindow
     private void ReleaseRelationalDocumentAccess(OpenDocumentState state)
     {
         _relationalDocumentToolTips.Remove(state.FilePath);
+        _relationalDocumentLinks.Remove(state.FilePath);
         _relationalPreviewLifetime?.InvalidateContext();
         _relationalNavigationLifetime?.InvalidateContext();
         if (_relationalGridStates.Remove(state, out var gridIdentity) && _relationalDocumentLifetimes.Remove(gridIdentity, out var gridOwner)) gridOwner.Dispose();
@@ -125,6 +126,7 @@ public partial class MainWindow
         var owners = _relationalDocumentLifetimes.Values.Concat(_relationalMenuLifetimes.Values).ToArray();
         _relationalDocumentLifetimes.Clear(); _relationalMenuLifetimes.Clear();
         _relationalDocumentWindows.Clear(); _relationalOpenTextKeys.Clear(); _relationalGridStates.Clear(); _relationalDocumentToolTips.Clear();
+        _relationalDocumentLinks.Clear();
         preview?.Dispose(); navigation?.Dispose(); foreach (var owner in owners) owner.Dispose();
         if (flights != null) await flights.DisposeAsync();
         if (preview != null) await preview.DisposeAsync();
@@ -340,9 +342,14 @@ public partial class MainWindow
     }
 
     private void SetRelationalDocumentFilenameSeed(FloatingCodeWindow window, RelationalDocumentAddress address,
-        ExplorerScope? scope, long contextGeneration) =>
+        ExplorerScope? scope, long contextGeneration)
+    {
+        // Capture the immutable link itself: copying remains valid when the window outlives its original scope.
+        string persistentPath = address.PersistentDocumentPath ?? address.DocumentPath;
+        window.PersistentDocumentPathProvider = () => persistentPath;
         window.ClipboardTextFileNameSeedProvider = () => RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) &&
             contextGeneration == _relationalDocumentContextGeneration ? address.TextFileNameSeed : null;
+    }
 
     private bool CanPublishRelationalDocument(Services.RelationalRuntime runtime, ExplorerScope? scope, QueryLifetime owner, QueryRequest request) =>
         ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) && owner.IsCurrent(request.Stamp);
