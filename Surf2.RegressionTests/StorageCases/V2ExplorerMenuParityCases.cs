@@ -55,7 +55,8 @@ public static partial class StorageRegressionSuite
                 here, inside, "|", add, "|", "New Diagram");
             Verify("diagram document", Summary("surf2://diagram/parity", ExplorerNodeRole.Diagram, ResourceKind.Diagram) with { IsVirtualDocument = true },
                 here, "|", add);
-            RuntimeWpfAssert(trace.Commands.Count == 0, check, "Object Explorer builds its master context menus from selected metadata without SQL reads");
+            RuntimeWpfAssert(trace.Commands.Count == 0, check, "Object Explorer builds its master context menus from selected metadata without SQL reads" +
+                (trace.Commands.Count == 0 ? "" : ": " + string.Join(" | ", trace.Commands.Select(command => command.Text))));
         }
         finally
         {

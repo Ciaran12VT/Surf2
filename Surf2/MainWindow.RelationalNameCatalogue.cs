@@ -41,6 +41,7 @@ public partial class MainWindow
     {
         RetireRelationalNameCatalogue();
         _relationalExplorerScope = catalogue.Scope;
+        runtime.SelectExplorerScope(catalogue.Scope);
         var state = new RelationalNameCatalogueState(runtime, catalogue);
         _relationalNameCatalogue = state;
         if (catalogue.Scope.Resources.Any(resource => resource.IsLoaded && resource.Kind is ResourceKind.File or ResourceKind.Folder))
@@ -104,6 +105,7 @@ public partial class MainWindow
     private void RetireRelationalNameCatalogue()
     {
         if (_relationalNameCatalogue is not { } state) return;
+        state.Runtime.SelectExplorerScope(null);
         _relationalNameCatalogue = null;
         state.Reconciliation?.Stop();
         var callbacks = state.Lifetime.Cancel();

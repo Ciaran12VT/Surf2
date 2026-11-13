@@ -33,6 +33,10 @@ public partial class SettingsWindow
     private PreferenceCursor<ExtensionAppearanceSummary>? _relationalExtensionNext;
     private PreferenceCursor<ReferenceStyleSummary>? _relationalStyleNext;
     private PreferenceCursor<ImageDefinitionSummary>? _relationalImageNext;
+    private int _relationalImageCatalogueCount;
+    private readonly List<object?>[] _relationalPreferencePageStarts = [[null], [null], [null]];
+    private readonly int[] _relationalPreferencePageIndex = new int[3];
+    private readonly (ListBox List, StackPanel Panel, Button Previous, Button Next, Thickness Margin)?[] _relationalPreferencePagers = new (ListBox, StackPanel, Button, Button, Thickness)?[3];
     private long _relationalExtensionGeneration, _relationalStyleGeneration, _relationalImageGeneration;
     private long _relationalPreferenceRetainedBytes;
     private bool _relationalPreferenceLoading, _relationalPreferenceSaving, _relationalPreferenceFailed;
@@ -132,25 +136,53 @@ public partial class SettingsWindow
             Settings.CodeWindows.BackcolorsByExtension.Clear(); Settings.ReferenceHighlights.Styles.Clear(); Settings.DiagramImages.Images.Clear();
             BackcolorList.ItemsSource = _relationalExtensions; HighlightStyleList.ItemsSource = _relationalStyles; DiagramImageList.ItemsSource = _relationalImages;
             LoadSelectedBackcolor(null); LoadSelectedHighlightStyle(null); LoadSelectedDiagramImage(null);
-            InstallRelationalNextButton(BackcolorList, () => ReadRelationalPreferencePageAsync(0));
-            InstallRelationalNextButton(HighlightStyleList, () => ReadRelationalPreferencePageAsync(1));
-            InstallRelationalNextButton(DiagramImageList, () => ReadRelationalPreferencePageAsync(2));
+            InstallRelationalPreferencePager(BackcolorList, 0);
+            InstallRelationalPreferencePager(HighlightStyleList, 1);
+            InstallRelationalPreferencePager(DiagramImageList, 2);
             await ReadRelationalPreferencePageAsync(0, ct); await ReadRelationalPreferencePageAsync(1, ct); await ReadRelationalPreferencePageAsync(2, ct);
         }
         catch { _relationalPreferenceFailed = true; throw; }
         finally { _relationalPreferenceLoading = false; }
     }
 
-    private void InstallRelationalNextButton(ListBox list, Func<Task> next)
+    private void InstallRelationalPreferencePager(ListBox list, int kind)
     {
         if (list.Parent is not Grid grid) return;
-        var button = new Button { Content = "Next", ToolTip = "Next catalogue page", HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 0, 0, 4), MinWidth = 52 };
-        button.SetResourceReference(StyleProperty, "SurfCompactPrimaryButtonStyle");
-        Grid.SetRow(button, Grid.GetRow(list));
-        list.Margin = new Thickness(list.Margin.Left, 32, list.Margin.Right, list.Margin.Bottom);
-        button.Click += async (_, _) => { if (_relationalPreferenceClosing) return; button.IsEnabled = false; try { await next(); } catch (Exception error) { RelationalPreferenceError(error); } finally { if (!_relationalPreferenceClosing) button.IsEnabled = true; } };
-        grid.Children.Add(button);
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top, Visibility = Visibility.Collapsed };
+        var previous = new Button { Content = "Previous", ToolTip = "Previous catalogue page", MinWidth = 65, Margin = new Thickness(0, 0, 4, 4) };
+        var next = new Button { Content = "Next", ToolTip = "Next catalogue page", MinWidth = 52, Margin = new Thickness(0, 0, 0, 4) };
+        previous.SetResourceReference(StyleProperty, "SurfCompactPrimaryButtonStyle"); next.SetResourceReference(StyleProperty, "SurfCompactPrimaryButtonStyle");
+        panel.Children.Add(previous); panel.Children.Add(next); Grid.SetRow(panel, Grid.GetRow(list));
+        _relationalPreferencePagers[kind] = (list, panel, previous, next, list.Margin);
+        previous.Click += async (_, _) => await NavigateRelationalPreferencePageAsync(kind, -1);
+        next.Click += async (_, _) => await NavigateRelationalPreferencePageAsync(kind, 1);
+        grid.Children.Add(panel);
+    }
+
+    private object? RelationalNextPreferencePage(int kind) => kind == 0 ? _relationalExtensionNext : kind == 1 ? _relationalStyleNext : _relationalImageNext;
+
+    private void UpdateRelationalPreferencePager(int kind)
+    {
+        if (_relationalPreferencePagers[kind] is not { } pager) return;
+        bool previous = _relationalPreferencePageIndex[kind] > 0, next = RelationalNextPreferencePage(kind) != null;
+        pager.Panel.Visibility = previous || next ? Visibility.Visible : Visibility.Collapsed;
+        pager.Previous.IsEnabled = previous && !_relationalPreferenceLoading;
+        pager.Next.IsEnabled = next && !_relationalPreferenceLoading;
+        pager.List.Margin = new Thickness(pager.Margin.Left, previous || next ? 32 : pager.Margin.Top, pager.Margin.Right, pager.Margin.Bottom);
+    }
+
+    private async Task NavigateRelationalPreferencePageAsync(int kind, int direction)
+    {
+        if (_relationalPreferenceClosing || _relationalPreferenceLoading || !CommitRelationalActivePreferences()) return;
+        int current = _relationalPreferencePageIndex[kind];
+        object? next = RelationalNextPreferencePage(kind);
+        if (direction < 0 && current == 0 || direction > 0 && next == null) return;
+        if (direction > 0 && current + 1 == _relationalPreferencePageStarts[kind].Count) _relationalPreferencePageStarts[kind].Add(next);
+        _relationalPreferencePageIndex[kind] += direction;
+        try { await ReadRelationalPreferencePageAsync(kind); }
+        catch (Exception error) { _relationalPreferencePageIndex[kind] = current; RelationalPreferenceError(error); }
+        finally { UpdateRelationalPreferencePager(kind); }
     }
 
     private async Task ReadRelationalPreferencePageAsync(int kind, CancellationToken ct = default)
@@ -161,31 +193,47 @@ public partial class SettingsWindow
         ct = operation.Token;
         var access = _relationalPreferences.Preferences;
         _relationalPreferenceLoading = true;
+        UpdateRelationalPreferencePager(kind);
+        object? start = _relationalPreferencePageStarts[kind][_relationalPreferencePageIndex[kind]];
         try
         {
             if (kind == 0)
             {
-                var page = RequirePreference(await access.ListExtensionAppearanceAsync(100, _relationalExtensionNext, ct));
+                var page = RequirePreference(await access.ListExtensionAppearanceAsync(100, (PreferenceCursor<ExtensionAppearanceSummary>?)start, ct));
                 ct.ThrowIfCancellationRequested(); _relationalExtensionGeneration++;
-                CheckPreferenceOwner(page.Owner); _relationalExtensions.Clear(); foreach (var row in page.Items) _relationalExtensions.Add(row); _relationalExtensionNext = page.Next;
+                CheckPreferenceOwner(page.Owner); RestoreRelationalPreferencePage(_relationalExtensions, page.Items, row => row.Key); _relationalExtensionNext = page.Next;
                 _activeSetting = null; LoadSelectedBackcolor(null);
             }
             else if (kind == 1)
             {
-                var page = RequirePreference(await access.ListStylesAsync(100, _relationalStyleNext, ct));
+                var page = RequirePreference(await access.ListStylesAsync(100, (PreferenceCursor<ReferenceStyleSummary>?)start, ct));
                 ct.ThrowIfCancellationRequested(); _relationalStyleGeneration++;
-                CheckPreferenceOwner(page.Owner); _relationalStyles.Clear(); foreach (var row in page.Items) _relationalStyles.Add(row); _relationalStyleNext = page.Next;
+                CheckPreferenceOwner(page.Owner); RestoreRelationalPreferencePage(_relationalStyles, page.Items, row => row.Key); _relationalStyleNext = page.Next;
                 _activeHighlightStyle = null; LoadSelectedHighlightStyle(null);
             }
             else
             {
-                var page = RequirePreference(await access.ListImagesAsync(100, _relationalImageNext, ct));
+                var page = RequirePreference(await access.ListImageSettingsAsync(100, (PreferenceCursor<ImageDefinitionSummary>?)start, ct));
                 ct.ThrowIfCancellationRequested(); _relationalImageGeneration++;
-                CheckPreferenceOwner(page.Owner); _relationalImages.Clear(); foreach (var row in page.Items) _relationalImages.Add(row); _relationalImageNext = page.Next;
+                CheckPreferenceOwner(page.Owner); RestoreRelationalPreferencePage(_relationalImages, page.Items, row => row.Key); _relationalImageNext = page.Next;
+                _relationalImageCatalogueCount = page.Items.FirstOrDefault()?.CatalogueCount ?? 0;
                 _activeDiagramImage = null; LoadSelectedDiagramImage(null);
             }
         }
-        finally { _relationalPreferenceLoading = false; }
+        finally { _relationalPreferenceLoading = false; UpdateRelationalPreferencePager(kind); }
+    }
+
+    private void RestoreRelationalPreferencePage<T>(ObservableCollection<object> destination, IReadOnlyList<T> summaries, Func<T, long> key) where T : class
+    {
+        destination.Clear();
+        foreach (var row in summaries)
+        {
+            var edited = _relationalPreferenceEdits.Values.FirstOrDefault(edit => edit.Key == key(row) &&
+                (row is ImageDefinitionSummary && edit.Model is DiagramImageDefinition ||
+                 row is ExtensionAppearanceSummary && edit.Model is ExtensionBackcolorSetting ||
+                 row is ReferenceStyleSummary && edit.Model is ReferenceHighlightStyleSetting));
+            if (edited?.Deleted != true) destination.Add(edited?.Model ?? row);
+        }
     }
 
     private static T RequirePreference<T>(StateLoad<T> load) where T : class => load.Value ?? throw load.Error ??
@@ -223,7 +271,7 @@ public partial class SettingsWindow
             else if (selected is ImageDefinitionSummary image)
             {
                 key = image.Key; model = FindPreferenceEdit<DiagramImageDefinition>(key.Value);
-                if (model == null) { await using var edit = RequirePreference(await _relationalPreferences.Preferences.LoadImageAsync(key.Value, _relationalPreferenceLifetime.Token)); CheckPreferenceOwner(edit.ExpectedToken); model = edit.Snapshot(); }
+                if (model == null) { await using var edit = RequirePreference(await _relationalPreferences.Preferences.LoadImageAsync(key.Value, _relationalPreferenceLifetime.Token)); CheckPreferenceOwner(edit.ExpectedToken); var loaded = edit.Snapshot(); loaded.SortOrder = image.SortOrder; model = loaded; }
             }
             if (generation != (kind == 0 ? _relationalExtensionGeneration : kind == 1 ? _relationalStyleGeneration : _relationalImageGeneration) || _relationalPreferenceClosing || _relationalPreferenceLifetime.Token.IsCancellationRequested) return;
             if (model == null) return;
@@ -264,7 +312,8 @@ public partial class SettingsWindow
     {
         if (!CommitRelationalActivePreferences()) return;
         object model = kind == 0 ? new ExtensionBackcolorSetting { Extension = ".txt", Backcolor = Settings.CodeWindows.DefaultBackcolor,
-            Language = CodeWindowSettings.PlainTextLanguage } : new DiagramImageDefinition { Name = "New Image", SortOrder = int.MaxValue };
+            DarkBackcolor = Settings.CodeWindows.DefaultDarkBackcolor,
+            Language = CodeWindowSettings.PlainTextLanguage } : new DiagramImageDefinition { Name = "New Image", SortOrder = NextRelationalImageSortOrder() };
         try
         {
             TrackPreferenceEdit(null, model);
@@ -273,6 +322,8 @@ public partial class SettingsWindow
         }
         catch (Exception error) { RelationalPreferenceError(error); }
     }
+    private int NextRelationalImageSortOrder() => checked(_relationalImageCatalogueCount +
+        _relationalPreferenceEdits.Values.Count(edit => edit.Key == null && edit.Model is DiagramImageDefinition && !edit.Deleted) + 1);
     private void RemoveRelationalPreference(int kind)
     {
         object? selected = kind == 0 ? _activeSetting : _activeDiagramImage;

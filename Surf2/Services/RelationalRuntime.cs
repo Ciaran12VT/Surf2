@@ -26,7 +26,7 @@ public sealed partial class RelationalRuntime
         Snapshots = new(Session, content);
         CapturedData = new(Session);
         Index = new(Session, content);
-        Explorer = new(new RelationalExplorerMetadataQueries(Session, Index));
+        Explorer = new(new RelationalExplorerMetadataQueries(Session, Index), selectedScope: IsSelectedExplorerScope);
         References = new(Session, Index);
         SearchSources = new(Session, Index, Snapshots, CapturedData);
     }

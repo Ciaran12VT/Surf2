@@ -109,6 +109,8 @@ IF EXISTS(SELECT 1 FROM sys.objects WHERE is_ms_shipped = 0)
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
 
+            await RelationalPreferenceSchema.InstallAsync(connection, transaction, cancellationToken);
+
             command.CommandText = """
 INSERT surf.StorageFormatInfo(Singleton, FormatIdentifier, SchemaVersion, MinimumReaderVersion,
     MinimumWriterVersion, State, DatabaseIdentity)

@@ -41,11 +41,14 @@ public sealed class PreferenceCursor<T>
 }
 
 public sealed record PreferencePage<T>(StateToken Owner, IReadOnlyList<T> Items, PreferenceCursor<T>? Next);
-public sealed record ExtensionAppearanceSummary(long Key, long SortOrdinal, string Extension, string Backcolor, string Language);
+public sealed record ExtensionAppearanceSummary(long Key, long SortOrdinal, string Extension, string Backcolor, string Language, string DarkBackcolor = "")
+{
+    public string EffectiveDarkBackcolor => string.IsNullOrWhiteSpace(DarkBackcolor) ? Backcolor : DarkBackcolor;
+}
 public sealed record ReferenceStyleSummary(long Key, long SortOrdinal, string Language, ReferenceEntityKind Kind,
     string Foreground, bool IsBold, bool IsItalic, bool IsUnderline);
 public sealed record ImageDefinitionSummary(long Key, long SortOrdinal, string Id, string Name, int SortOrder,
-    string ResourceTypeFilter, bool HasAsset);
+    string ResourceTypeFilter, bool HasAsset, string NameRegex = "", string ContentRegex = "", string OriginalFileName = "", int CatalogueCount = 0);
 
 public sealed record StateInputPreferences(int Version, bool EnableCanvasCtrlMousePanning, bool EnableTabCtrlMouseScrolling,
     bool EnableTabCtrlShiftMouseAutoscrolling, bool EnableCodeShiftMouseAutoscrolling,
@@ -75,10 +78,12 @@ public sealed record StateInputPreferences(int Version, bool EnableCanvasCtrlMou
 
 /// <summary>Scalar preferences only; neither an AppSettings master model nor image/style collections.</summary>
 public sealed record StartupPreferences(string Theme, bool LoadMostRecentWorkbenchOnStartup, bool IgnoreWhitespaceByDefault,
-    bool IgnoreCaseByDefault, bool EnableInternalLogging, string DefaultBackcolor, StateInputPreferences Input)
+    bool IgnoreCaseByDefault, bool EnableInternalLogging, string DefaultBackcolor, StateInputPreferences Input,
+    string DefaultDarkBackcolor = "", bool OpenDiagramDocumentationOnDoubleClick = true, bool ShowExplorerPreview = true)
 {
     internal static StartupPreferences From(PreferenceSummary v) => new(v.Theme, v.LoadMostRecentWorkbenchOnStartup,
-        v.IgnoreWhitespaceByDefault, v.IgnoreCaseByDefault, v.EnableInternalLogging, v.DefaultBackcolor, StateInputPreferences.From(v.KeyboardShortcuts));
+        v.IgnoreWhitespaceByDefault, v.IgnoreCaseByDefault, v.EnableInternalLogging, v.DefaultBackcolor, StateInputPreferences.From(v.KeyboardShortcuts),
+        v.DefaultDarkBackcolor, v.OpenDiagramDocumentationOnDoubleClick, v.ShowExplorerPreview);
 
     // Applies only the loaded scalar subset. Existing child collections remain untouched.
     public void ApplyToRuntime(AppSettings destination)
@@ -87,6 +92,10 @@ public sealed record StartupPreferences(string Theme, bool LoadMostRecentWorkben
         destination.Appearance ??= new(); destination.CodeWindows ??= new(); destination.ResourceComparison ??= new(); destination.Diagnostics ??= new();
         destination.Appearance.Theme = Theme;
         destination.CodeWindows.DefaultBackcolor = DefaultBackcolor;
+        destination.CodeWindows.DefaultDarkBackcolor = DefaultDarkBackcolor;
+        destination.Preferences ??= new();
+        destination.Preferences.OpenDiagramDocumentationOnDoubleClick = OpenDiagramDocumentationOnDoubleClick;
+        destination.Preferences.ShowExplorerPreview = ShowExplorerPreview;
         destination.LoadMostRecentWorkbenchOnStartup = LoadMostRecentWorkbenchOnStartup;
         destination.ResourceComparison.IgnoreWhitespaceByDefault = IgnoreWhitespaceByDefault;
         destination.ResourceComparison.IgnoreCaseByDefault = IgnoreCaseByDefault;

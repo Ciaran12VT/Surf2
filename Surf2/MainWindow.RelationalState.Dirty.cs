@@ -10,6 +10,18 @@ public partial class MainWindow
 
     internal Func<MessageBoxResult>? RelationalStateSwitchConfirmation { get; set; }
 
+    private async Task<bool> ConfirmRelationalDiagramSwitchAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        // Opening a diagram replaces only the canvas. Code windows, table edits and the scope stay open.
+        if (!HasRelationalUnsavedDiagramChanges()) return true;
+        var choice = RelationalStateSwitchConfirmation?.Invoke() ?? MessageBox.Show(this,
+            "Save changes to the current diagram before opening another diagram?", "Unsaved Diagram",
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+        ct.ThrowIfCancellationRequested();
+        return choice == MessageBoxResult.No || choice == MessageBoxResult.Yes && await SaveDiagramFromUiAsync();
+    }
+
     private void RememberRelationalScopeSwitchWorkbenchBaseline(WorkbenchState? published = null)
     {
         Dispatcher.VerifyAccess();

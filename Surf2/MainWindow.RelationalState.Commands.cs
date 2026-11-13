@@ -38,7 +38,7 @@ public partial class MainWindow
         catch (Exception error) { ReportRelationalStateFailure(error, "save diagram"); return false; }
     }
 
-    private async Task OpenRelationalDiagramFromUiAsync(string path, long? diagramKey = null)
+    private async Task<bool> OpenRelationalDiagramFromUiAsync(string path, long? diagramKey = null)
     {
         long started = Stopwatch.GetTimestamp();
         long? requestGeneration = null;
@@ -59,12 +59,13 @@ public partial class MainWindow
             if (!await LoadRelationalDiagramCoreAsync(chosen, generation, ct, EnterPhase))
             {
                 outcome = "Declined";
-                return;
+                return false;
             }
             RequireRelationalSelection(generation, ct);
             EnsureDiagramViewVisible();
             SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
             outcome = "Opened";
+            return true;
         }
         catch (OperationCanceledException) { outcome = "Cancelled"; }
         catch (Exception error) { ReportRelationalStateFailure(error, "open diagram"); }
@@ -73,6 +74,7 @@ public partial class MainWindow
             InternalLogService.Info("Relational diagram open ended.", ("Path", path), ("Request", requestGeneration),
                 ("Phase", phase), ("Outcome", outcome), ("Milliseconds", Stopwatch.GetElapsedTime(started).TotalMilliseconds));
         }
+        return false;
 
         void EnterPhase(string next)
         {

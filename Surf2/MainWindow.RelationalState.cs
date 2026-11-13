@@ -69,7 +69,8 @@ public partial class MainWindow
         public int? SourceOrdinal { get; set; }
     }
     private sealed record PreparedRelationalScope(StateEditSession<Scope> Edit, Scope Model, ExplorerNameCatalogue Names);
-    private sealed record PreparedRelationalDiagram(DiagramState State, IReadOnlyList<RelationalImagePayload?> Images);
+    private sealed record PreparedRelationalDiagram(DiagramState State, IReadOnlyList<RelationalImagePayload?> Images,
+        IReadOnlyList<BitmapImage?> DecodedImages);
 
     private RelationalRuntime RelationalStateRuntime => _relational ?? throw new InvalidOperationException("No relational runtime is selected.");
     private static readonly StateLimits RelationalRuntimeStateLimits = new();
@@ -432,7 +433,8 @@ public partial class MainWindow
         var captured = new StartupPreferences(_appSettings.Appearance.Theme, _appSettings.LoadMostRecentWorkbenchOnStartup,
             _appSettings.ResourceComparison.IgnoreWhitespaceByDefault, _appSettings.ResourceComparison.IgnoreCaseByDefault,
             _appSettings.Diagnostics.EnableInternalLogging, _appSettings.CodeWindows.DefaultBackcolor,
-            StateInputPreferences.From(_appSettings.KeyboardShortcuts));
+            StateInputPreferences.From(_appSettings.KeyboardShortcuts), _appSettings.CodeWindows.DefaultDarkBackcolor,
+            _appSettings.Preferences.OpenDiagramDocumentationOnDoubleClick, _appSettings.Preferences.ShowExplorerPreview);
         if (captured == edit.Snapshot()) return;
         edit.Replace(captured); await edit.SaveAsync(ct); // Scalar head only; unqueried image/style children are untouched.
     }
@@ -503,26 +505,47 @@ public partial class MainWindow
     private async Task<PreparedRelationalDiagram> PrepareRelationalDiagramAsync(DiagramState state, CancellationToken ct)
     {
         var images = new List<RelationalImagePayload?>(); var budget = new StateBudget(RelationalRuntimeStateLimits);
+        var decodedImages = new List<BitmapImage?>();
+        var missingDefinitions = state.Document.Objects.Select((value, ordinal) => (value, ordinal))
+            .Where(pair => pair.value.ObjectType == DiagramObjectType.Image &&
+                !state.PastedImages.ContainsKey(pair.ordinal) &&
+                state.PastedImageFallbacks?.ContainsKey(pair.ordinal) != true &&
+                string.IsNullOrWhiteSpace(pair.value.ImageDataBase64))
+            .Select(pair => pair.value.ImageDefinitionId).Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var definitionBytes = await ReadRelationalDefinitionBytesAsync(missingDefinitions, ct);
+        var decodedDefinitions = new Dictionary<string, BitmapImage>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in state.Document.Objects.Select((value, ordinal) => (value, ordinal)))
         {
             ct.ThrowIfCancellationRequested(); budget.Row(); var snapshot = pair.value;
-            if (snapshot.ObjectType != DiagramObjectType.Image) { images.Add(null); continue; }
+            if (snapshot.ObjectType != DiagramObjectType.Image) { images.Add(null); decodedImages.Add(null); continue; }
             byte[]? pasted = state.PastedImages.TryGetValue(pair.ordinal, out var p) ? p : null;
             PastedImageFallback? fallback = state.PastedImageFallbacks != null && state.PastedImageFallbacks.TryGetValue(pair.ordinal, out var f) ? f : null;
             byte[]? display = pasted ?? fallback?.Bytes ?? StateImages.Decode(snapshot.ImageDataBase64, RelationalRuntimeStateLimits, budget, ct);
-            display ??= await ReadRelationalDefinitionBytesAsync(snapshot.ImageDefinitionId, ct);
+            bool usesDefinition = display == null;
+            if (usesDefinition) definitionBytes.TryGetValue(snapshot.ImageDefinitionId, out display);
             if (display == null) throw new InvalidDataException("Diagram image at ordinal " + pair.ordinal + " has no usable selected asset. Its original object was retained; loading was not applied.");
-            budget.Asset(display.LongLength); StateImages.Validate(display, RelationalRuntimeStateLimits, cancellationToken: ct);
-            _ = DecodeRelationalImage(display); // Decode every chosen image before clearing the current canvas.
+            budget.Asset(display.LongLength);
+            // Selected definition bytes were already validated by the batched asset read.
+            if (!usesDefinition) StateImages.Validate(display, RelationalRuntimeStateLimits, cancellationToken: ct);
+            // Validate/decode before clearing the canvas, then reuse that bitmap when creating controls.
+            if (!usesDefinition || !decodedDefinitions.TryGetValue(snapshot.ImageDefinitionId, out var decoded))
+            {
+                decoded = DecodeRelationalImage(display);
+                if (usesDefinition) decodedDefinitions.Add(snapshot.ImageDefinitionId, decoded);
+            }
+            decodedImages.Add(decoded);
             images.Add(new(snapshot.PastedImageFileName, display, pasted, fallback));
         }
-        return new(state, images);
+        return new(state, images, decodedImages);
     }
 
-    private async Task<byte[]?> ReadRelationalDefinitionBytesAsync(string id, CancellationToken ct)
+    private async Task<IReadOnlyDictionary<string, byte[]>> ReadRelationalDefinitionBytesAsync(HashSet<string> ids, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(id)) return null;
-        PreferenceCursor<ImageDefinitionSummary>? cursor = null; ImageDefinitionSummary? found = null; StateToken? owner = null; int count = 0;
+        var result = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        if (ids.Count == 0) return result;
+        PreferenceCursor<ImageDefinitionSummary>? cursor = null; StateToken? owner = null; int count = 0;
+        var found = new Dictionary<string, ImageDefinitionSummary>(StringComparer.OrdinalIgnoreCase);
         do
         {
             var page = RequireRelationalLoad(await RelationalStateRuntime.Preferences.ListImagesAsync(100, cursor, ct), "image catalogue");
@@ -530,14 +553,18 @@ public partial class MainWindow
             foreach (var image in page.Items)
             {
                 if (++count > RelationalRuntimeStateLimits.MaximumRows) throw new InvalidDataException("Image identity lookup exceeds its metadata budget.");
-                if (!string.Equals(image.Id, id, StringComparison.OrdinalIgnoreCase)) continue;
-                if (found != null) throw new InvalidDataException("The original image definition ID is ambiguous. Select a definition explicitly.");
-                found = image;
+                if (!ids.Contains(image.Id)) continue;
+                if (!found.TryAdd(image.Id, image)) throw new InvalidDataException("The original image definition ID is ambiguous. Select a definition explicitly.");
             }
             cursor = page.Next;
         } while (cursor != null);
-        if (found == null || !found.HasAsset) return null;
-        return RequireRelationalLoad(await RelationalStateRuntime.Preferences.ReadImageAssetAsync(found.Key, owner!, ct), "image asset").CopyBytes();
+        foreach (var batch in found.Values.Where(image => image.HasAsset).Chunk(3))
+        {
+            var assets = await RelationalStateRuntime.Preferences.ReadImageAssetsAsync(batch.Select(image => image.Key).ToArray(), owner!, ct);
+            foreach (var image in batch)
+                if (assets.TryGetValue(image.Key, out var asset)) result.Add(image.Id, asset.CopyBytes());
+        }
+        return result;
     }
 
     private static BitmapImage DecodeRelationalImage(byte[] bytes)
@@ -691,7 +718,7 @@ public partial class MainWindow
         var oldWorkflows = _currentDiagramWorkflows;
         var controls = new List<FrameworkElement>();
         var newImages = new ConditionalWeakTable<FrameworkElement, RelationalImagePayload>();
-        _currentDiagramWorkflows = StateCopies.Diagram(diagram, new(RelationalRuntimeStateLimits)).Workflows;
+        _currentDiagramWorkflows = diagram.Workflows.Select(workflow => workflow.Clone()).ToList();
         try
         {
             for (int i = 0; i < diagram.Objects.Count; i++)
@@ -699,7 +726,7 @@ public partial class MainWindow
                 var snapshot = diagram.Objects[i]; FrameworkElement control;
                 if (prepared.Images[i] is { } payload)
                 {
-                    var image = new DiagramImageControl(snapshot.ImageDefinitionId, snapshot.ImageName, DecodeRelationalImage(payload.DisplayBytes),
+                    var image = new DiagramImageControl(snapshot.ImageDefinitionId, snapshot.ImageName, prepared.DecodedImages[i]!,
                         snapshot.ImageDataBase64, snapshot.PastedImageFileName, snapshot.Id);
                     AttachDiagramImageHandlers(image); ApplyDiagramObjectSnapshot(image, snapshot); newImages.Add(image, payload); control = image;
                 }
@@ -746,8 +773,14 @@ public partial class MainWindow
         enterPhase?.Invoke("Wait for selected owner");
         await WaitRelationalSelectedOwnerIdleAsync(ct);
         RequireRelationalSelection(generation, ct);
-        enterPhase?.Invoke("Confirm workspace changes");
-        if (_isPersistenceHydrated && !await ConfirmRelationalStateSwitchAsync(ct)) return false;
+        if (!_relationalDiagramDraft && _relationalDiagramEdit?.SubjectKey == chosen.Token.Key &&
+            _relationalActiveDiagramRevisionKey == chosen.RevisionKey)
+        {
+            StatusText = "Opened diagram '" + chosen.Name + "'.";
+            return true;
+        }
+        enterPhase?.Invoke("Confirm diagram changes");
+        if (_isPersistenceHydrated && !await ConfirmRelationalDiagramSwitchAsync(ct)) return false;
         RequireRelationalSelection(generation, ct);
         enterPhase?.Invoke("Wait for diagram read");
         await _relationalOwnerCommands.WaitAsync(ct);

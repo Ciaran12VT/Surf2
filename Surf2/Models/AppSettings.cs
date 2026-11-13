@@ -16,11 +16,14 @@ public sealed class AppSettings
 
     public AppearanceSettings Appearance { get; set; } = new();
 
+    public PreferencesSettings Preferences { get; set; } = new();
+
     public bool LoadMostRecentWorkbenchOnStartup { get; set; }
 
     public bool EnsureDefaults()
     {
         bool changed = false;
+        if (Preferences == null) { Preferences = new PreferencesSettings(); changed = true; }
         CodeWindows ??= new CodeWindowSettings();
         ReferenceHighlights ??= new ReferenceHighlightSettings();
         if (ResourceComparison == null)
@@ -83,6 +86,7 @@ public sealed class AppSettings
         ResourceComparison ??= new ResourceComparisonSettings();
         Diagnostics ??= new DiagnosticsSettings();
         Appearance ??= new AppearanceSettings();
+        Preferences ??= new PreferencesSettings();
         CodeWindows.BackcolorsByExtension ??= [];
         ReferenceHighlights.Styles ??= [];
         DiagramImages.Images ??= [];
@@ -93,11 +97,13 @@ public sealed class AppSettings
             CodeWindows = new CodeWindowSettings
             {
                 DefaultBackcolor = CodeWindows.DefaultBackcolor,
+                DefaultDarkBackcolor = CodeWindows.DefaultDarkBackcolor,
                 BackcolorsByExtension = CodeWindows.BackcolorsByExtension
                     .Select(setting => new ExtensionBackcolorSetting
                     {
                         Extension = setting.Extension,
                         Backcolor = setting.Backcolor,
+                        DarkBackcolor = setting.DarkBackcolor,
                         Language = setting.Language
                     })
                     .ToList()
@@ -112,9 +118,22 @@ public sealed class AppSettings
             KeyboardShortcuts = KeyboardShortcuts.Clone(),
             ResourceComparison = ResourceComparison.Clone(),
             Diagnostics = Diagnostics.Clone(),
-            Appearance = Appearance.Clone()
+            Appearance = Appearance.Clone(),
+            Preferences = Preferences.Clone()
         };
     }
+}
+
+public sealed class PreferencesSettings
+{
+    public bool OpenDiagramDocumentationOnDoubleClick { get; set; } = true;
+    public bool ShowExplorerPreview { get; set; } = true;
+
+    public PreferencesSettings Clone() => new()
+    {
+        OpenDiagramDocumentationOnDoubleClick = OpenDiagramDocumentationOnDoubleClick,
+        ShowExplorerPreview = ShowExplorerPreview
+    };
 }
 
 public sealed class AppearanceSettings

@@ -8,8 +8,13 @@ public sealed class ExtensionBackcolorSetting
 
     public string Backcolor { get; set; } = "#FFFFFF";
 
+    public string DarkBackcolor { get; set; } = string.Empty;
+
     public string Language { get; set; } = string.Empty;
 
     [JsonIgnore]
-    public string DisplayLabel => $"{Extension}  {Backcolor}  {Language}";
+    public string EffectiveDarkBackcolor => string.IsNullOrWhiteSpace(DarkBackcolor) ? Backcolor : DarkBackcolor;
+
+    [JsonIgnore]
+    public string DisplayLabel => $"{Extension}  Light: {Backcolor}  Dark: {EffectiveDarkBackcolor}  {Language}";
 }

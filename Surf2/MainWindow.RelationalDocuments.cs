@@ -95,6 +95,7 @@ public partial class MainWindow
     // Parent calls from the logical close paths. Reparenting does not release document ownership.
     private void ReleaseRelationalDocumentAccess(OpenDocumentState state)
     {
+        _relationalDocumentToolTips.Remove(state.FilePath);
         _relationalPreviewLifetime?.InvalidateContext();
         _relationalNavigationLifetime?.InvalidateContext();
         if (_relationalGridStates.Remove(state, out var gridIdentity) && _relationalDocumentLifetimes.Remove(gridIdentity, out var gridOwner)) gridOwner.Dispose();
@@ -123,7 +124,7 @@ public partial class MainWindow
         var documents = _relationalDocuments; _relationalDocuments = null;
         var owners = _relationalDocumentLifetimes.Values.Concat(_relationalMenuLifetimes.Values).ToArray();
         _relationalDocumentLifetimes.Clear(); _relationalMenuLifetimes.Clear();
-        _relationalDocumentWindows.Clear(); _relationalOpenTextKeys.Clear(); _relationalGridStates.Clear();
+        _relationalDocumentWindows.Clear(); _relationalOpenTextKeys.Clear(); _relationalGridStates.Clear(); _relationalDocumentToolTips.Clear();
         preview?.Dispose(); navigation?.Dispose(); foreach (var owner in owners) owner.Dispose();
         if (flights != null) await flights.DisposeAsync();
         if (preview != null) await preview.DisposeAsync();
@@ -149,17 +150,17 @@ public partial class MainWindow
         try
         {
             var address = await documents.ResolveExplorerNodeAsync(scope, selected, ct);
-            if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalExplorerScope, scope) ||
+            if (!ReferenceEquals(_relational, runtime) || !RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) ||
                 generation != _relationalDocumentContextGeneration) return null;
             await TryOpenRelationalFileAsync(address.DocumentPath, ct: ct, preferredResolvedAddress: address);
-            return ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope) &&
+            return ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) &&
                 generation == _relationalDocumentContextGeneration &&
                 (_openWindows.ContainsKey(address.DocumentPath) || _openSpreadsheetWindows.ContainsKey(address.DocumentPath)) ? address : null;
         }
         catch (OperationCanceledException) { return null; }
         catch (Exception error)
         {
-            if (ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope) &&
+            if (ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) &&
                 generation == _relationalDocumentContextGeneration)
                 StatusText = "Could not open the selected explorer document: " + error.Message;
             return null;
@@ -174,7 +175,7 @@ public partial class MainWindow
         var documents = _relationalDocuments ?? throw new InvalidOperationException("Relational document access was not initialized.");
         var scope = _relationalExplorerScope;
         var address = await documents.ResolveResourceAsync(snapshotKey, resourceKey, scope, ct);
-        if (!ReferenceEquals(_relationalExplorerScope, scope)) return true;
+        if (!RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope)) return true;
         return await TryOpenRelationalFileCoreAsync(address.DocumentPath, null, targetLine, targetColumn, null, sourceWindow, false, ct,
             preferredResolvedAddress: address);
     }
@@ -202,7 +203,8 @@ public partial class MainWindow
                     throw new DocumentTargetException(SavedDocumentTargetState.Ambiguous, "The prepared address does not match the saved document binding.");
                 await documents.ValidateAddressAsync(address, scope, ct);
             }
-            if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalExplorerScope, scope) || contextGeneration != _relationalDocumentContextGeneration) return true;
+            if (!ReferenceEquals(_relational, runtime) || !RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) || contextGeneration != _relationalDocumentContextGeneration) return true;
+            RememberRelationalDocumentPresentation(address);
             if (!_relationalDocumentLifetimes.TryGetValue(address.Identity, out var owner))
                 _relationalDocumentLifetimes.Add(address.Identity, owner = new(runtime.Session.Epoch, scope?.Context.ScopeKey));
             await flights.RunAsync(address.Identity, async flightToken =>
@@ -282,7 +284,7 @@ public partial class MainWindow
             }, ct);
             // A joined open still honors this caller's requested line without creating another window.
             using var joinedPublication = expectedSymbol == null ? null : await EnterRelationalReferenceReadAsync(ct);
-            if (ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope) &&
+            if (ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) &&
                 contextGeneration == _relationalDocumentContextGeneration &&
                 _relationalDocumentLifetimes.TryGetValue(address.Identity, out var activeOwner) && ReferenceEquals(activeOwner, owner) &&
                 _relationalDocumentWindows.TryGetValue(address.Identity, out var active))
@@ -297,7 +299,7 @@ public partial class MainWindow
                     await ValidateIndexReferenceAsync(plan, ct);
                 }
                 ct.ThrowIfCancellationRequested();
-                if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalExplorerScope, scope) ||
+                if (!ReferenceEquals(_relational, runtime) || !RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) ||
                     contextGeneration != _relationalDocumentContextGeneration ||
                     !_relationalDocumentLifetimes.TryGetValue(address.Identity, out var finalOwner) || !ReferenceEquals(finalOwner, owner) ||
                     !_relationalDocumentWindows.TryGetValue(address.Identity, out var finalWindow) || !ReferenceEquals(finalWindow, active) ||
@@ -307,6 +309,7 @@ public partial class MainWindow
                 // Reopening the same identity through another alias reuses the window
                 // and text, but its clipboard ancestry follows the clicked occurrence.
                 SetRelationalDocumentFilenameSeed(active, address, scope, contextGeneration);
+                RefreshOpenDocumentToolTips();
                 RevealRelationalDocument(active, targetLine, targetColumn, targetReference, suppressHistory);
                 referencePublished?.Invoke();
             }
@@ -329,7 +332,7 @@ public partial class MainWindow
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            if (ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope) && contextGeneration == _relationalDocumentContextGeneration)
+            if (ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) && contextGeneration == _relationalDocumentContextGeneration)
                 StatusText = "Could not open the selected document: " + ex.Message;
             // Handled failures MUST NOT fall through to eager legacy loading or alter a missing saved target.
             return true;
@@ -338,11 +341,11 @@ public partial class MainWindow
 
     private void SetRelationalDocumentFilenameSeed(FloatingCodeWindow window, RelationalDocumentAddress address,
         ExplorerScope? scope, long contextGeneration) =>
-        window.ClipboardTextFileNameSeedProvider = () => ReferenceEquals(_relationalExplorerScope, scope) &&
+        window.ClipboardTextFileNameSeedProvider = () => RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) &&
             contextGeneration == _relationalDocumentContextGeneration ? address.TextFileNameSeed : null;
 
     private bool CanPublishRelationalDocument(Services.RelationalRuntime runtime, ExplorerScope? scope, QueryLifetime owner, QueryRequest request) =>
-        ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope) && owner.IsCurrent(request.Stamp);
+        ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) && owner.IsCurrent(request.Stamp);
 
     private static void BindRelationalState(OpenDocumentState state, RelationalDocumentAddress address)
     {
@@ -723,7 +726,7 @@ public partial class MainWindow
                 else pattern = CreateSqlGenericUsageRegex(simple, operation);
             }
             if (!UsesRelationalMemoryReferences && !await runtime.Index.IsContextCurrentAsync(referencesScope.Context, pending.CancellationToken)) throw new IndexGenerationChangedException();
-            if (!ReferenceEquals(_relational, runtime) || !ReferenceEquals(_relationalExplorerScope, scope) ||
+            if (!ReferenceEquals(_relational, runtime) || !RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) ||
                 !ReferenceEquals(_relationalReferenceScope, referencesScope) || !_openWindows.Values.Contains(window)) return;
             if (!lifetime.TryPublish(pending.Stamp, () =>
             {
@@ -732,13 +735,13 @@ public partial class MainWindow
                 ObjectExplorerSearchTextBox.Text = pattern;
             })) return;
             await ApplyObjectExplorerSearchAsync();
-            if (ReferenceEquals(_relationalExplorerScope, scope)) lifetime.TryPublish(pending.Stamp,
+            if (RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope)) lifetime.TryPublish(pending.Stamp,
                 () => StatusText = $"Filtered Object Explorer for {GetSqlFindOperationHeader(operation)} usage of {description}.");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            if (ReferenceEquals(_relational, runtime) && ReferenceEquals(_relationalExplorerScope, scope))
+            if (ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope))
                 lifetime.TryPublish(pending.Stamp, () => StatusText = ex.Message);
         }
     }

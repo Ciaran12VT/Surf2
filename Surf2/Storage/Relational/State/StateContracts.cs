@@ -40,7 +40,8 @@ public sealed record WorkbenchSummary(StateToken Token, long SortOrdinal, string
 public sealed record ScopeSelection(int SchemaVersion, string? LastActiveScopeId);
 public sealed record PreferenceSummary(StateToken Token, string Theme, bool LoadMostRecentWorkbenchOnStartup,
     bool IgnoreWhitespaceByDefault, bool IgnoreCaseByDefault, bool EnableInternalLogging,
-    string DefaultBackcolor, KeyboardShortcutSettings KeyboardShortcuts);
+    string DefaultBackcolor, KeyboardShortcutSettings KeyboardShortcuts,
+    string DefaultDarkBackcolor = "", bool OpenDiagramDocumentationOnDoubleClick = true, bool ShowExplorerPreview = true);
 
 /// <summary>Pasted bytes are indexed by collection ordinal, since legacy object IDs can repeat.</summary>
 public enum PastedImageResolution { None, CapturedLocal, MissingUseInline, MissingUseDefinition }

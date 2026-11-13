@@ -95,6 +95,7 @@ WHERE fk.parent_object_id=OBJECT_ID(@Table,'U') ORDER BY fk.object_id,fc.constra
 
     internal static void CompareMetadata(RelationalPackageTable expected, RelationalPackageTable actual)
     {
+        actual = PreferenceMetadataForPackage(expected, actual);
         if (expected.Schema != actual.Schema || expected.Name != actual.Name || expected.RowSelection != actual.RowSelection ||
             expected.Columns.Count != actual.Columns.Count || !expected.PrimaryKey.SequenceEqual(actual.PrimaryKey, StringComparer.Ordinal))
             throw PackageRowDecoding.Bad("Table/PK differs from the installed known DDL");
@@ -116,6 +117,23 @@ WHERE fk.parent_object_id=OBJECT_ID(@Table,'U') ORDER BY fk.object_id,fc.constra
         if (!expected.ForeignKeys.Select(Normalized).Order(StringComparer.Ordinal).SequenceEqual(
             actual.ForeignKeys.Select(Normalized).Order(StringComparer.Ordinal), StringComparer.Ordinal))
             throw PackageRowDecoding.Bad("Foreign-key column pairs differ from the installed known DDL");
+    }
+
+    // Older packages predate the additive preference fields. Keep their original column
+    // projection for decoding and byte-for-byte verification; SQL supplies only known defaults.
+    private static RelationalPackageTable PreferenceMetadataForPackage(RelationalPackageTable package, RelationalPackageTable installed)
+    {
+        if (package.Schema != "surf" || installed.Schema != "surf" || package.Name != installed.Name) return installed;
+        string[] added = package.Name switch
+        {
+            "ApplicationPreference" => ["DefaultDarkBackcolor", "OpenDiagramDocumentationOnDoubleClick", "ShowExplorerPreview"],
+            "ExtensionAppearance" => ["DarkBackcolor"],
+            _ => []
+        };
+        if (added.Length == 0 || package.Columns.Any(c => added.Contains(c.Name, StringComparer.Ordinal)) ||
+            installed.Columns.Count != package.Columns.Count + added.Length ||
+            !installed.Columns.Skip(package.Columns.Count).Select(c => c.Name).SequenceEqual(added, StringComparer.Ordinal)) return installed;
+        return installed with { Columns = installed.Columns.Take(package.Columns.Count).ToArray() };
     }
 
     private async Task<List<KnownTable>> CreateCaptureTablesAsync(SqlConnection connection, PackageInput package, CancellationToken ct)

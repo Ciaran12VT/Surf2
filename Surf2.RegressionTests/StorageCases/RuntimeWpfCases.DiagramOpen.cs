@@ -1,4 +1,5 @@
 using System.Data;
+using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
@@ -28,6 +29,9 @@ public static partial class StorageRegressionSuite
         var settings = new AppSettings { LoadMostRecentWorkbenchOnStartup = false,
             Diagnostics = new() { EnableInternalLogging = false } };
         settings.EnsureDefaults();
+        const string imageId = "diagram-open-shared-image";
+        settings.DiagramImages.Images.Add(new() { Id = imageId, Name = "Shared diagram image", SortOrder = 1,
+            ImageDataBase64 = Convert.ToBase64String(Png(59)) });
         await InTransactionAsync(session, async (c, t) =>
         {
             await state.ImportSettingsAsync(c, t, settings, Guid.NewGuid());
@@ -47,6 +51,11 @@ public static partial class StorageRegressionSuite
                 [new() { Id = "shape", ObjectType = DiagramObjectType.Shape, ShapeKind = DiagramShapeKind.Rectangle,
                     LabelText = label, Left = 100, Top = 100, Width = 160, Height = 100 }]
             };
+            if (diagramKeys.Count == 0)
+                for (int image = 0; image < 2; image++)
+                    diagram.Objects.Add(new() { Id = "image-" + image, ObjectType = DiagramObjectType.Image,
+                        ImageDefinitionId = imageId, ImageName = "Shared diagram image", Left = 300 + image * 50,
+                        Top = 100, Width = 40, Height = 40 });
             var token = await state.CreateDiagramAsync(new(diagram, new Dictionary<int, byte[]>()), diagramKeys.Count, Guid.NewGuid());
             diagramKeys.Add(token.Key);
             scope.Resources.Add(new() { ResourceId = diagramId, Kind = ResourceKind.Diagram, Path = diagramId });
@@ -75,10 +84,19 @@ public static partial class StorageRegressionSuite
                 check, "Diagram open fixture restores its selected scope");
             RuntimeWpfField<TaskCompletionSource<bool>>(main, "_startupReadyCompletion").TrySetResult(true);
             await RuntimeWpfDrainReferenceRefreshAsync(main);
+            await RuntimeWpfField<Task>(main, "_relationalImageMenuTask");
+            int savePrompts = 0;
+            MessageBoxResult saveChoice = MessageBoxResult.No;
             typeof(Surf2.MainWindow).GetProperty("RelationalStateSwitchConfirmation", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .SetValue(main, (Func<MessageBoxResult>)(() => MessageBoxResult.No));
+                .SetValue(main, (Func<MessageBoxResult>)(() => { savePrompts++; return saveChoice; }));
             var diagramRoot = main.RootNodes.Single(node => node.FullPath == DiagramDocumentService.DiagramRootPath);
             await RuntimeWpfInvokeTaskAsync(main, "LoadRelationalChildrenAsync", diagramRoot);
+
+            Directory.CreateDirectory(fixture.OwnedDirectory);
+            string metadataFile = Path.Combine(fixture.OwnedDirectory, "diagram-reference.cs");
+            await File.WriteAllTextAsync(metadataFile, "class DiagramReference { public void Open() { } }");
+            RuntimeWpfAssert(await (Task<bool>)RuntimeWpfInvoke(main, "OpenMetadataLinkAsync", metadataFile)!, check,
+                "A diagram metadata link reports success after its code window exists");
 
             using (var firstTrace = new StateAccessSqlTrace(connection))
             {
@@ -89,7 +107,47 @@ public static partial class StorageRegressionSuite
                 var reads = StateAccessReads(firstTrace.Commands, "Diagram");
                 RuntimeWpfAssert(reads.Count > 0 && reads.All(command => command.Number("@Key") == diagramKeys[0]), check,
                     "The selected Explorer occurrence reads only its typed diagram key");
+                RuntimeWpfAssert(savePrompts == 0, check,
+                    "Opening a diagram keeps existing code windows without prompting to replace the workspace");
+                var imageControls = RuntimeWpfNamed<Canvas>(main, "DiagramCanvas").Children.OfType<DiagramImageControl>().ToArray();
+                RuntimeWpfAssert(imageControls.Length == 2 && ReferenceEquals(imageControls[0].ImageSource, imageControls[1].ImageSource), check,
+                    "Repeated image definitions reuse the same validated decoded bitmap when opening a diagram");
+                int imageCatalogueReads = firstTrace.Commands.Count(command => command.Text
+                    .Contains("FROM SURF.DIAGRAMIMAGEDEFINITION S", StringComparison.Ordinal));
+                RuntimeWpfAssert(imageCatalogueReads == 1, check,
+                    "Opening a diagram scans image definition metadata once for all repeated occurrences (observed " + imageCatalogueReads + ")");
             }
+
+            RuntimeWpfAssert(await (Task<bool>)RuntimeWpfInvoke(main, "OpenMetadataLinkAsync", metadataFile)!, check,
+                "An already open diagram reference can be revealed again");
+            RuntimeWpfAssert(RuntimeWpfField<object>(main, "_activeWorkspaceView").ToString() == "Code", check,
+                "A diagram reference activates the Code workspace instead of leaving its window hidden behind Diagram");
+            RuntimeWpfAssert(!await (Task<bool>)RuntimeWpfInvoke(main, "OpenMetadataLinkAsync",
+                "db://00000000000000000000000000000000/object/StoredProcedure/dbo.missing.sql")! &&
+                main.StatusText.StartsWith("Could not open", StringComparison.Ordinal), check,
+                "An unavailable database reference keeps its failure status and does not report opened");
+
+            var originalShape = RuntimeWpfNamed<Canvas>(main, "DiagramCanvas").Children.OfType<DiagramShapeControl>().Single();
+            originalShape.ApplyDetails("Unsaved first diagram", originalShape.OutlineColorText, originalShape.BackColorText);
+            using (var reselectTrace = new StateAccessSqlTrace(connection))
+            {
+                RuntimeWpfAssert(await (Task<bool>)RuntimeWpfInvoke(main, "OpenRelationalDiagramFromUiAsync",
+                    DiagramDocumentService.CreateDiagramDocumentPath(scope.Resources[0].Path), diagramKeys[0])!, check,
+                    "Reselecting the current saved diagram succeeds without replacing its canvas");
+                RuntimeWpfAssert(savePrompts == 0 && originalShape.LabelText == "Unsaved first diagram" &&
+                    ReferenceEquals(originalShape, RuntimeWpfNamed<Canvas>(main, "DiagramCanvas").Children.OfType<DiagramShapeControl>().Single()), check,
+                    "Reselecting the same diagram retains unsaved edits without a save prompt");
+                RuntimeWpfAssert(!reselectTrace.Commands.Any(command => command.Text
+                    .Contains("FROM SURF.DIAGRAMOBJECT", StringComparison.Ordinal)), check,
+                    "Reselecting the same revision does not reload the diagram graph");
+            }
+            saveChoice = MessageBoxResult.Cancel;
+            RuntimeWpfAssert(!await (Task<bool>)RuntimeWpfInvoke(main, "OpenRelationalDiagramFromUiAsync",
+                DiagramDocumentService.CreateDiagramDocumentPath(scope.Resources[1].Path), diagramKeys[1])! && savePrompts == 1 &&
+                ReferenceEquals(originalShape, RuntimeWpfNamed<Canvas>(main, "DiagramCanvas").Children.OfType<DiagramShapeControl>().Single()), check,
+                "Switching away from a changed diagram still prompts and Cancel retains its canvas");
+            originalShape.ApplyDetails(labels[0], originalShape.OutlineColorText, originalShape.BackColorText);
+            saveChoice = MessageBoxResult.No;
 
             await using var blocker = await session.OpenAsync();
             await using var transaction = (SqlTransaction)await blocker.BeginTransactionAsync(IsolationLevel.Serializable);

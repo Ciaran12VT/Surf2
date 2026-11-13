@@ -54,13 +54,20 @@ public sealed partial class RelationalPackageImporter
         foreach (var spec in PackageTableCatalogue.ForSchema(package.Manifest.DatabaseSchemaVersion))
         {
             var table = await ReadKnownAsync(connection, null, spec, ct);
-            CompareMetadata(package.Tables[spec.Key].Table, table.Metadata); known.Add(table);
+            var sourceMetadata = package.Tables[spec.Key].Table;
+            CompareMetadata(sourceMetadata, table.Metadata);
+            known.Add(table with { Metadata = PreferenceMetadataForPackage(sourceMetadata, table.Metadata) });
         }
         await ConstraintsAsync(connection, null, known, enable: false, ct);
         long rows = 0;
         foreach (var table in known)
             rows = checked(rows + await LoadTableAsync(connection, table, package.Tables[table.Spec.Key], package,
                 settings, import, fingerprint, database, ct));
+        // Preserve the old single background color in both theme slots when restoring an old package.
+        if (!package.Tables["surf.ApplicationPreference"].Table.Columns.Any(c => c.Name == "DefaultDarkBackcolor"))
+            await ExecuteAsync(connection, null, "UPDATE surf.ApplicationPreference SET DefaultDarkBackcolor=DefaultBackcolor;", ct);
+        if (!package.Tables["surf.ExtensionAppearance"].Table.Columns.Any(c => c.Name == "DarkBackcolor"))
+            await ExecuteAsync(connection, null, "UPDATE surf.ExtensionAppearance SET DarkBackcolor=Backcolor;", ct);
         var captures = package.Manifest.DatabaseSchemaVersion == 1
             ? await CreateCaptureTablesAsync(connection, package, ct) : new List<KnownTable>();
         await ConstraintsAsync(connection, null, captures, enable: false, ct);

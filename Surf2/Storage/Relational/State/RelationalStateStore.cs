@@ -22,6 +22,7 @@ public sealed partial class RelationalStateStore
     private async Task<T> ReadyAsync<T>(Func<SqlConnection, SqlTransaction, Task<T>> operation, CancellationToken ct)
     {
         await _session.RequireReadyAsync(ct);
+        await _session.EnsurePreferenceSchemaAsync(ct);
         await using var connection = await _session.OpenAsync(ct);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         T result = await operation(connection, transaction);

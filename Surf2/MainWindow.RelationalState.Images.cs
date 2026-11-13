@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Surf2.Controls;
 using Surf2.Models;
 using Surf2.Storage.Relational.Access;
@@ -63,6 +64,8 @@ public partial class MainWindow
 
     private readonly CancellationTokenSource _relationalStateLifetime = new();
     private Task _relationalImageMenuTask = Task.CompletedTask;
+    private StateToken? _relationalImagePreviewOwner;
+    private readonly Dictionary<long, ImageSource> _relationalImagePreviews = [];
     private Task _relationalImageSelectionTask = Task.CompletedTask;
     private DiagramImageDefinition? _relationalSelectedImageDefinition;
     private long _relationalImageSelectionGeneration;
@@ -105,13 +108,13 @@ public partial class MainWindow
         var operation = new RelationalStateOperation(this, ct); _relationalStateOperations.Add(operation.Completion); return operation;
     }
 
-    private void QueueRelationalImageMenuRefresh()
+    private void QueueRelationalImageMenuRefresh(bool includePreviews = false)
     {
         _relationalSelectedImageDefinition = null; _selectedDiagramImageId = null;
         if (!_relationalImageMenuTask.IsCompleted || _relationalStateLifetime.IsCancellationRequested) return;
-        _relationalImageMenuTask = ReadRelationalImageMenuAsync(null);
+        _relationalImageMenuTask = ReadRelationalImageMenuAsync(null, includePreviews);
     }
-    private async Task ReadRelationalImageMenuAsync(PreferenceCursor<ImageDefinitionSummary>? cursor)
+    private async Task ReadRelationalImageMenuAsync(PreferenceCursor<ImageDefinitionSummary>? cursor, bool includePreviews = true)
     {
         try
         {
@@ -119,11 +122,21 @@ public partial class MainWindow
             var page = RequireRelationalLoad(await RelationalStateRuntime.Preferences.ListImagesAsync(100, cursor, _relationalStateLifetime.Token), "image catalogue");
             _relationalStateLifetime.Token.ThrowIfCancellationRequested();
             var menu = DiagramImageToolButton?.ContextMenu; if (menu == null) return;
+            if (_relationalImagePreviewOwner == null || !StateEditSession<StartupPreferences>.SameToken(page.Owner, _relationalImagePreviewOwner))
+            {
+                _relationalImagePreviews.Clear(); _relationalImagePreviewOwner = page.Owner;
+            }
+            // Keep only the displayed page's thumbnails; source image bytes are released after decoding.
+            var pageKeys = page.Items.Select(item => item.Key).ToHashSet();
+            foreach (long key in _relationalImagePreviews.Keys.Where(key => !pageKeys.Contains(key)).ToArray()) _relationalImagePreviews.Remove(key);
             menu.Items.Clear();
+            var imageItems = new Dictionary<long, MenuItem>();
             foreach (var summary in page.Items)
             {
-                var item = new MenuItem { Header = summary.Name, Tag = summary, IsEnabled = summary.HasAsset };
+                _relationalImagePreviews.TryGetValue(summary.Key, out var preview);
+                var item = new MenuItem { Header = CreateRelationalImageMenuHeader(summary.Name, preview), Tag = summary, IsEnabled = summary.HasAsset };
                 item.Click += DiagramImageToolMenuItem_Click; menu.Items.Add(item);
+                imageItems.Add(summary.Key, item);
             }
             if (page.Next != null)
             {
@@ -138,9 +151,40 @@ public partial class MainWindow
                 menu.Items.Add(first);
             }
             if (page.Items.Count == 0) menu.Items.Add(new MenuItem { Header = "No images configured", IsEnabled = false });
+            if (!includePreviews && !menu.IsOpen) return;
+            var missing = page.Items.Where(item => item.HasAsset && !_relationalImagePreviews.ContainsKey(item.Key)).Select(item => item.Key).ToArray();
+            var loading = new MenuItem { Header = "Loading image previews...", IsEnabled = false };
+            if (missing.Length > 0) menu.Items.Insert(0, loading);
+            // Small batches cap transient source-byte retention even when the catalogue contains large images.
+            try
+            {
+                foreach (long[] keys in missing.Chunk(3))
+                {
+                    var assets = await RelationalStateRuntime.Preferences.ReadImageAssetsAsync(keys, page.Owner, operation.Token);
+                    operation.Token.ThrowIfCancellationRequested();
+                    foreach (var (key, asset) in assets)
+                    {
+                        using var stream = new MemoryStream(asset.CopyBytes(), false);
+                        var preview = new BitmapImage(); preview.BeginInit(); preview.CacheOption = BitmapCacheOption.OnLoad;
+                        preview.DecodePixelWidth = 48; preview.StreamSource = stream; preview.EndInit(); preview.Freeze();
+                        _relationalImagePreviews[key] = preview;
+                        var item = imageItems[key];
+                        item.Header = CreateRelationalImageMenuHeader(((ImageDefinitionSummary)item.Tag).Name, preview);
+                    }
+                }
+            }
+            finally { menu.Items.Remove(loading); }
         }
         catch (OperationCanceledException) { }
         catch (Exception error) { ReportRelationalStateFailure(error, "read image catalogue"); }
+    }
+
+    private static UIElement CreateRelationalImageMenuHeader(string name, ImageSource? preview)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, MinWidth = 160 };
+        panel.Children.Add(new Image { Width = 24, Height = 24, Stretch = Stretch.Uniform, Source = preview });
+        panel.Children.Add(new TextBlock { Text = name, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+        return panel;
     }
 
     private Task SelectRelationalDiagramImageAsync(ImageDefinitionSummary summary)
@@ -154,8 +198,8 @@ public partial class MainWindow
         {
             using var operation = BeginRelationalStateOperation();
             await using var edit = RequireRelationalLoad(await RelationalStateRuntime.Preferences.LoadImageAsync(summary.Key, _relationalStateLifetime.Token), "chosen image definition");
-            var asset = RequireRelationalLoad(await RelationalStateRuntime.Preferences.ReadImageAssetAsync(summary.Key, edit.ExpectedToken, _relationalStateLifetime.Token), "chosen image bytes");
-            var chosen = edit.Snapshot(); _ = DecodeRelationalImage(asset.CopyBytes());
+            var chosen = edit.Snapshot();
+            if (string.IsNullOrWhiteSpace(chosen.ImageDataBase64)) throw new InvalidDataException("The selected image has no SQL asset.");
             if (generation != _relationalImageSelectionGeneration || _relationalStateLifetime.IsCancellationRequested) return;
             _relationalSelectedImageDefinition = chosen; _selectedDiagramImageId = chosen.Id;
             _isUpdatingDiagramToolToggles = true;

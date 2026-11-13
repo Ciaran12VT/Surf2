@@ -747,6 +747,12 @@ UPDATE surf.DiagramImageDefinition SET SortOrdinal=@A,SortOrder=@SA WHERE Diagra
 UPDATE surf.DiagramImageDefinition SET SortOrdinal=@B,SortOrder=@SB WHERE DiagramImageDefinitionKey=@Key;
 """, ct, Key(move.Key), Key(move.AdjacentKey, "@Other"));
             }
+            if (imageCopies.Length > 0 || moves.Length > 0)
+                await ExecuteAsync(c, t, """
+WITH ordered AS (SELECT SortOrder,ROW_NUMBER() OVER(ORDER BY SortOrdinal,DiagramImageDefinitionKey) AS DisplayOrder
+FROM surf.DiagramImageDefinition WHERE ProfileKey=1)
+UPDATE ordered SET SortOrder=CONVERT(int,DisplayOrder) WHERE SortOrder<>DisplayOrder;
+""", ct);
             return await TokenAsync(c, t, "ApplicationPreference", "ProfileKey", 1, ct);
         }, ct);
     }

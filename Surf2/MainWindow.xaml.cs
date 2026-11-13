@@ -3777,7 +3777,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        RefreshDiagramImageToolMenu();
+        RefreshDiagramImageToolMenu(includePreviews: true);
         OpenDiagramImageToolMenu();
     }
 
@@ -4610,9 +4610,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void RefreshDiagramImageToolMenu()
+    private void RefreshDiagramImageToolMenu(bool includePreviews = false)
     {
-        if (_relational != null) { QueueRelationalImageMenuRefresh(); return; }
+        if (_relational != null) { QueueRelationalImageMenuRefresh(includePreviews); return; }
         if (DiagramImageToolButton?.ContextMenu == null)
         {
             return;
@@ -6479,8 +6479,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             if (DiagramDocumentService.IsDiagramDocumentPath(targetLink))
             {
-                await OpenDiagramAsync(targetLink);
-                return true;
+                return await OpenDiagramAsync(targetLink);
             }
 
             string filePath = uri?.IsFile == true ? uri.LocalPath : targetLink;
@@ -6501,6 +6500,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             if (File.Exists(filePath) || DatabaseDocumentService.IsDatabaseDocumentPath(filePath))
             {
+                if (_relational != null) return await OpenRelationalMetadataLinkAsync(filePath, target);
                 EnsureCodeViewVisible();
                 string? tableDataDocumentPath = await OpenMetadataFileLinkAsync(filePath, target);
                 if (tableDataDocumentPath != null)
@@ -8260,7 +8260,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return true;
     }
 
-    private Task OpenDiagramAsync(string diagramPath)
+    private Task<bool> OpenDiagramAsync(string diagramPath)
     {
         if (_relational != null) return OpenRelationalDiagramFromUiAsync(diagramPath);
         string diagramId = DiagramDocumentService.GetDiagramId(diagramPath);
@@ -8268,14 +8268,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (diagram == null)
         {
             StatusText = "Could not open diagram. It may no longer exist in persistence.";
-            return Task.CompletedTask;
+            return Task.FromResult(false);
         }
 
         EnsureDiagramViewVisible();
         LoadDiagram(diagram);
         SetActiveWorkspaceView(WorkspaceViewKind.Diagram);
         StatusText = $"Opened diagram '{diagram.Name}'.";
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
     private void LoadDiagram(DiagramDocument diagram)
@@ -8653,6 +8653,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private string GetOpenDocumentToolTip(string filePath)
     {
+        if (_relational != null && GetRelationalDocumentToolTip(filePath) is { } relationalToolTip) return relationalToolTip;
         ScopedResource? owningResource = FindOwningScopeResource(filePath);
         if (owningResource == null)
         {
@@ -11106,6 +11107,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async Task PreviewReferenceAsync(ReferenceNavigationRequestedEventArgs request, string sourceFilePath)
     {
+        if (!_appSettings.Preferences.ShowExplorerPreview && _previewPopoutWindow?.IsVisible != true) return;
         if (_relational != null)
         {
             await PreviewRelationalReferenceAsync(request, sourceFilePath);
@@ -11143,6 +11145,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ShowReferencePreview(ReferenceEntity reference, string content, int matchCount, string syntaxPath, string displayName)
     {
+        if (!_appSettings.Preferences.ShowExplorerPreview && _previewPopoutWindow?.IsVisible != true) return;
         _previewFilePath = reference.FilePath;
         _previewReference = reference;
         PreviewEditor.Text = content;
@@ -11237,6 +11240,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void SetPinnedExplorerDetailTab(TabItem? tabItem)
     {
+        if (ReferenceEquals(tabItem, PreviewTabItem) && !_appSettings.Preferences.ShowExplorerPreview) tabItem = null;
         _pinnedExplorerDetailTab = tabItem;
         _isUpdatingExplorerDetailPinButtons = true;
         try
@@ -11297,6 +11301,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void SelectExplorerDetailTabAutomatically(TabItem targetTab)
     {
+        if (ReferenceEquals(targetTab, PreviewTabItem) && !_appSettings.Preferences.ShowExplorerPreview) return;
         ExplorerDetailTabs.SelectedItem = _pinnedExplorerDetailTab ?? targetTab;
     }
 
@@ -14452,9 +14457,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         e.Handled = true;
         CommitMetadataEditorChanges();
         SelectDiagramObject(diagramObject);
-        OpenDiagramObjectMetadataSidebar(diagramObject);
-
         DiagramObjectMetadata? metadata = GetDiagramObjectMetadata(diagramObject);
+        if (_appSettings.Preferences.OpenDiagramDocumentationOnDoubleClick || string.IsNullOrWhiteSpace(metadata?.Link))
+            OpenDiagramObjectMetadataSidebar(diagramObject);
         if (!string.IsNullOrWhiteSpace(metadata?.Link))
         {
             await OpenMetadataLinkAsync(metadata.Link.Trim());
@@ -15871,6 +15876,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void ApplyThemeToRuntimeSurfaces()
     {
+        ApplyPreferencesToRuntimeSurfaces();
         SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
 
         if (WorkspaceCanvas != null && DiagramCanvas != null)
@@ -15886,6 +15892,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _diagramPopoutWindow?.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
         _previewPopoutWindow?.SetResourceReference(BackgroundProperty, AppThemeService.WindowBackgroundBrushKey);
         AppThemeService.ApplyWindowChromeToOpenWindows();
+    }
+
+    private void ApplyPreferencesToRuntimeSurfaces()
+    {
+        if (PreviewTabItem == null) return;
+        bool showPreview = _appSettings.Preferences.ShowExplorerPreview;
+        PreviewTabItem.Visibility = showPreview ? Visibility.Visible : Visibility.Collapsed;
+        if (!showPreview)
+        {
+            if (ReferenceEquals(_pinnedExplorerDetailTab, PreviewTabItem)) SetPinnedExplorerDetailTab(null);
+            if (ReferenceEquals(ExplorerDetailTabs.SelectedItem, PreviewTabItem)) ExplorerDetailTabs.SelectedItem = OpenWindowsTabItem;
+        }
     }
 
     private void RefreshDiagramObjectTextContrast()
@@ -18740,7 +18758,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private Color GetCodeWindowBackcolorColor(string filePath)
     {
-        string backcolor = _appSettings.CodeWindows.GetBackcolorForFile(filePath);
+        string backcolor = _appSettings.CodeWindows.GetBackcolorForFile(filePath,
+            AppearanceSettings.NormalizeTheme(_appSettings.Appearance.Theme) == AppearanceSettings.DarkTheme);
         try
         {
             if (ColorConverter.ConvertFromString(backcolor) is Color color)

@@ -44,6 +44,7 @@ public partial class SettingsWindow : Window
             {
                 Extension = setting.Extension,
                 Backcolor = setting.Backcolor,
+                DarkBackcolor = setting.DarkBackcolor,
                 Language = string.IsNullOrWhiteSpace(setting.Language)
                     ? CodeWindowSettings.GetDefaultLanguageForExtension(setting.Extension)
                     : CodeWindowSettings.NormalizeLanguage(setting.Language)
@@ -72,6 +73,7 @@ public partial class SettingsWindow : Window
         LoadKeyboardShortcutSettings();
         LoadResourceComparisonSettings();
         LoadAppearanceSettings();
+        LoadPreferenceSettings();
         LoadDiagnosticsSettings();
         LoadMostRecentWorkbenchCheckBox.IsChecked = Settings.LoadMostRecentWorkbenchOnStartup;
 
@@ -121,7 +123,8 @@ public partial class SettingsWindow : Window
             WorkbenchSettingsPanel == null ||
             AppearanceSettingsPanel == null ||
             PersistenceSettingsPanel == null ||
-            DiagnosticsSettingsPanel == null)
+            DiagnosticsSettingsPanel == null ||
+            PreferencesSettingsPanel == null)
         {
             return;
         }
@@ -135,6 +138,7 @@ public partial class SettingsWindow : Window
         AppearanceSettingsPanel.Visibility = SectionList.SelectedIndex == 6 ? Visibility.Visible : Visibility.Collapsed;
         PersistenceSettingsPanel.Visibility = SectionList.SelectedIndex == 7 ? Visibility.Visible : Visibility.Collapsed;
         DiagnosticsSettingsPanel.Visibility = SectionList.SelectedIndex == 8 ? Visibility.Visible : Visibility.Collapsed;
+        PreferencesSettingsPanel.Visibility = SectionList.SelectedIndex == 9 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private async void BackcolorList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -156,10 +160,13 @@ public partial class SettingsWindow : Window
         bool hasSelection = setting != null;
         ExtensionTextBox.IsEnabled = hasSelection;
         ColorTextBox.IsEnabled = hasSelection;
+        DarkColorTextBox.IsEnabled = hasSelection;
         LanguageComboBox.IsEnabled = hasSelection;
 
         ExtensionTextBox.Text = setting?.Extension ?? string.Empty;
         ColorTextBox.Text = setting?.Backcolor ?? string.Empty;
+        DarkColorTextBox.Text = setting == null ? string.Empty
+            : string.IsNullOrWhiteSpace(setting.DarkBackcolor) ? setting.Backcolor : setting.DarkBackcolor;
         LanguageComboBox.SelectedItem = setting == null
             ? null
             : string.IsNullOrWhiteSpace(setting.Language)
@@ -195,13 +202,13 @@ public partial class SettingsWindow : Window
 
     private void ColorTextBox_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (!ColorTextBox.IsEnabled)
+        if (sender is not TextBox colorTextBox || !colorTextBox.IsEnabled)
         {
             return;
         }
 
         e.Handled = true;
-        OpenBackcolorPicker();
+        OpenBackcolorPicker(colorTextBox);
     }
 
     private void PickColorButton_Click(object sender, RoutedEventArgs e)
@@ -221,9 +228,9 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private void OpenBackcolorPicker()
+    private void OpenBackcolorPicker(TextBox colorTextBox)
     {
-        string initialColor = ColorTextBox.Text;
+        string initialColor = colorTextBox.Text;
         if (!TryNormalizeColor(initialColor, out string normalizedBackcolor, out _))
         {
             normalizedBackcolor = "#FFFFFF";
@@ -239,7 +246,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        ColorTextBox.Text = picker.SelectedColor;
+        colorTextBox.Text = picker.SelectedColor;
         UpdatePreview(picker.SelectedColor);
 
         if (_activeSetting != null)
@@ -260,6 +267,7 @@ public partial class SettingsWindow : Window
         {
             Extension = ".txt",
             Backcolor = Settings.CodeWindows.DefaultBackcolor,
+            DarkBackcolor = Settings.CodeWindows.DefaultDarkBackcolor,
             Language = CodeWindowSettings.PlainTextLanguage
         };
 
@@ -1049,6 +1057,19 @@ public partial class SettingsWindow : Window
     private void SaveWorkbenchSettings()
     {
         Settings.LoadMostRecentWorkbenchOnStartup = LoadMostRecentWorkbenchCheckBox.IsChecked == true;
+        SavePreferenceSettings();
+    }
+
+    private void LoadPreferenceSettings()
+    {
+        OpenDiagramDocumentationCheckBox.IsChecked = Settings.Preferences.OpenDiagramDocumentationOnDoubleClick;
+        ShowExplorerPreviewCheckBox.IsChecked = Settings.Preferences.ShowExplorerPreview;
+    }
+
+    private void SavePreferenceSettings()
+    {
+        Settings.Preferences.OpenDiagramDocumentationOnDoubleClick = OpenDiagramDocumentationCheckBox.IsChecked == true;
+        Settings.Preferences.ShowExplorerPreview = ShowExplorerPreviewCheckBox.IsChecked == true;
     }
 
     private void LoadResourceComparisonSettings()
@@ -1138,10 +1159,17 @@ public partial class SettingsWindow : Window
                 return false;
             }
 
+            if (!TryNormalizeColor(setting.DarkBackcolor, out string darkBackcolor, out _))
+            {
+                ValidationText.Text = $"Invalid dark mode backcolor for {extension}.";
+                return false;
+            }
+
             normalizedSettings.Add(new ExtensionBackcolorSetting
             {
                 Extension = extension,
                 Backcolor = backcolor,
+                DarkBackcolor = darkBackcolor,
                 Language = string.IsNullOrWhiteSpace(setting.Language)
                     ? CodeWindowSettings.GetDefaultLanguageForExtension(extension)
                     : CodeWindowSettings.NormalizeLanguage(setting.Language)
@@ -1301,8 +1329,15 @@ public partial class SettingsWindow : Window
             return false;
         }
 
+        if (!TryNormalizeColor(DarkColorTextBox.Text, out string darkBackcolor, out _))
+        {
+            if (requireValid) ValidationText.Text = "Dark mode backcolor must be a valid color.";
+            return false;
+        }
+
         setting.Extension = extension;
         setting.Backcolor = backcolor;
+        setting.DarkBackcolor = darkBackcolor;
         setting.Language = LanguageComboBox.SelectedItem is string selectedLanguage
             ? CodeWindowSettings.NormalizeLanguage(selectedLanguage)
             : CodeWindowSettings.GetDefaultLanguageForExtension(extension);

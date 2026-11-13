@@ -8,7 +8,7 @@ using Surf2.Storage.Relational.State;
 namespace Surf2.Storage.Relational.Access.State;
 
 /// <summary>Small preference reads and child-targeted writes that preserve every unqueried sibling.</summary>
-public sealed class StatePreferenceAccess
+public sealed partial class StatePreferenceAccess
 {
     private readonly RelationalSession _session;
     private readonly RelationalStateStore _store;
@@ -120,10 +120,10 @@ CONVERT(bigint,DATALENGTH(s.Foreground)),s.Foreground
         PreferenceCursor<ExtensionAppearanceSummary>? after = null, CancellationToken ct = default) =>
         ChildPageAsync(StateMaps.Extension, pageSize, after, """
 CONVERT(bigint,DATALENGTH(s.Extension)),s.Extension,CONVERT(bigint,DATALENGTH(s.Backcolor)),s.Backcolor,
-CONVERT(bigint,DATALENGTH(s.Language)),s.Language
+CONVERT(bigint,DATALENGTH(s.Language)),s.Language,CONVERT(bigint,DATALENGTH(s.DarkBackcolor)),s.DarkBackcolor
 """, async (r, key, ordinal, budget, token) => new ExtensionAppearanceSummary(key, ordinal,
             (await StateText.ReadAsync(r, 2, budget, token))!, (await StateText.ReadAsync(r, 4, budget, token))!,
-            (await StateText.ReadAsync(r, 6, budget, token))!), ct);
+            (await StateText.ReadAsync(r, 6, budget, token))!, (await StateText.ReadAsync(r, 8, budget, token))!), ct);
 
     // Same Updated/Saved/Created fallback and stable source-order tie as MainWindow's existing startup choice.
     public Task<StateLoad<WorkbenchSummary>> ReadMostRecentWorkbenchSummaryAsync(CancellationToken ct = default) =>
@@ -177,7 +177,8 @@ s.SortOrdinal,s.WorkbenchKey;
     }
 
     private Task<StateLoad<PreferencePage<T>>> ChildPageAsync<T, TModel>(StateRowMap<TModel> map, int size, PreferenceCursor<T>? after,
-        string projection, Func<SqlDataReader, long, long, StateBudget, CancellationToken, Task<T>> read, CancellationToken ct) where TModel : new()
+        string projection, Func<SqlDataReader, long, long, StateBudget, CancellationToken, Task<T>> read, CancellationToken ct,
+        string joins = "") where TModel : new()
     {
         if (size < 1 || size > _limits.MaximumPageSize) throw new ArgumentOutOfRangeException(nameof(size));
         if (after != null) Owner(after.Owner);
@@ -188,6 +189,7 @@ s.SortOrdinal,s.WorkbenchKey;
             if (after != null && !StateEditSession<StartupPreferences>.SameToken(owner, after.Owner)) throw new StateConflictException("preference catalogue generation");
             await using var command = Command(c, t, $"""
 SELECT TOP (@Take) s.[{map.Key}],s.SortOrdinal,{projection} FROM surf.[{map.Table}] s
+{joins}
 WHERE s.ProfileKey=1 AND (s.SortOrdinal>@Ordinal OR (s.SortOrdinal=@Ordinal AND s.[{map.Key}]>@Key))
 ORDER BY s.SortOrdinal,s.[{map.Key}];
 """, Key((long)size + 1, "@Take"), Key(after?.Ordinal ?? -1, "@Ordinal"), Key(after?.Key ?? 0));
@@ -323,6 +325,7 @@ WHERE ProfileKey=1 AND Version=@Version;
     private async Task<T> ReadyAsync<T>(Func<SqlConnection, SqlTransaction, Task<T>> operation, CancellationToken ct)
     {
         await _session.RequireReadyAsync(ct).ConfigureAwait(false);
+        await _session.EnsurePreferenceSchemaAsync(ct).ConfigureAwait(false);
         await using var c = await _session.OpenAsync(ct).ConfigureAwait(false);
         await using var t = (SqlTransaction)await c.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
         T result = await operation(c, t).ConfigureAwait(false); await t.CommitAsync(ct).ConfigureAwait(false); return result;

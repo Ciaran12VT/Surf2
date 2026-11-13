@@ -132,6 +132,7 @@ ORDER BY s.SortOrdinal, s.WorkbenchKey;
             var v = state.Value;
             return new PreferenceSummary(state.Token, v.Appearance.Theme, v.LoadMostRecentWorkbenchOnStartup,
                 v.ResourceComparison.IgnoreWhitespaceByDefault, v.ResourceComparison.IgnoreCaseByDefault,
-                v.Diagnostics.EnableInternalLogging, v.CodeWindows.DefaultBackcolor, v.KeyboardShortcuts);
+                v.Diagnostics.EnableInternalLogging, v.CodeWindows.DefaultBackcolor, v.KeyboardShortcuts,
+                v.CodeWindows.DefaultDarkBackcolor, v.Preferences.OpenDiagramDocumentationOnDoubleClick, v.Preferences.ShowExplorerPreview);
         }, cancellationToken);
 }

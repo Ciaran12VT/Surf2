@@ -27,8 +27,9 @@ public partial class MainWindow
             Owner(page.Owner);
             foreach (var row in page.Items)
             {
-                Row(row.Extension, row.Backcolor, row.Language);
-                extensions.Add(new() { Extension = row.Extension, Backcolor = row.Backcolor, Language = row.Language });
+                Row(row.Extension, row.Backcolor, row.DarkBackcolor, row.Language);
+                extensions.Add(new() { Extension = row.Extension, Backcolor = row.Backcolor,
+                    DarkBackcolor = row.DarkBackcolor, Language = row.Language });
             }
             extensionNext = page.Next;
         } while (extensionNext != null);

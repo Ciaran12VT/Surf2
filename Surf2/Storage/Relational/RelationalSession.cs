@@ -11,6 +11,8 @@ public sealed class RelationalSession
     private readonly object _identityGate = new();
     private Guid? _databaseIdentity;
     private bool _identityChanged;
+    private readonly SemaphoreSlim _preferenceSchemaGate = new(1, 1);
+    private bool _preferenceSchemaReady;
     private static readonly Lazy<byte[]> SupportedScriptChecksum = new(() =>
         RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts()));
 
@@ -34,6 +36,29 @@ public sealed class RelationalSession
     internal void RejectValidationWrite()
     {
         if (IsMigrationValidation) throw new InvalidOperationException("A migration validation session cannot publish application changes.");
+    }
+
+    internal async Task EnsurePreferenceSchemaAsync(CancellationToken ct)
+    {
+        if (Volatile.Read(ref _preferenceSchemaReady)) return;
+        await _preferenceSchemaGate.WaitAsync(ct);
+        try
+        {
+            if (_preferenceSchemaReady) return;
+            await using var connection = await OpenAsync(ct);
+            await using var probe = connection.CreateCommand();
+            probe.CommandText = RelationalPreferenceSchema.IsInstalledSql;
+            using var cancellation = CancelCommand(probe, ct);
+            if (!Equals(await probe.ExecuteScalarAsync(ct), true))
+            {
+                RejectValidationWrite();
+                await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(ct);
+                await RelationalPreferenceSchema.InstallAsync(connection, transaction, ct);
+                await transaction.CommitAsync(ct);
+            }
+            Volatile.Write(ref _preferenceSchemaReady, true);
+        }
+        finally { _preferenceSchemaGate.Release(); }
     }
 
     internal static RelationalSession ForMigrationValidation(string connectionString, Guid migration, byte[] fingerprint)

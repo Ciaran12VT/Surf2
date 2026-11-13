@@ -17,6 +17,19 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--image-ui", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
+        Path.Combine(AppContext.BaseDirectory, "image-ui-checks"), imageUiOnly: true);
+    Console.WriteLine($"Passed {passed} image UI checks.");
+    return;
+}
+if (args.Contains("--preferences", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunPreferenceThemeChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} preference and theme checks.");
+    return;
+}
 if (args.Contains("--snapshot-memory", StringComparer.Ordinal))
 {
     foreach (string name in await Surf2.Services.RelationalComparison.ComparisonContractChecks.RunAsync()) Check(true, name);

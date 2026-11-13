@@ -29,6 +29,9 @@ public sealed class CodeWindowSettings
 
     public string DefaultBackcolor { get; set; } = "#FFFFFF";
 
+    // An empty value identifies settings saved before separate theme colors existed.
+    public string DefaultDarkBackcolor { get; set; } = string.Empty;
+
     public List<ExtensionBackcolorSetting> BackcolorsByExtension { get; set; } = [];
 
     public bool EnsureDefaultBackcolorEntries()
@@ -36,8 +39,19 @@ public sealed class CodeWindowSettings
         bool changed = false;
         BackcolorsByExtension ??= [];
 
+        if (string.IsNullOrWhiteSpace(DefaultDarkBackcolor))
+        {
+            DefaultDarkBackcolor = DefaultBackcolor;
+            changed = true;
+        }
+
         foreach (ExtensionBackcolorSetting setting in BackcolorsByExtension)
         {
+            if (string.IsNullOrWhiteSpace(setting.DarkBackcolor))
+            {
+                setting.DarkBackcolor = setting.Backcolor;
+                changed = true;
+            }
             string normalizedLanguage = string.IsNullOrWhiteSpace(setting.Language)
                 ? GetDefaultLanguageForExtension(setting.Extension)
                 : NormalizeLanguage(setting.Language);
@@ -60,6 +74,7 @@ public sealed class CodeWindowSettings
             {
                 Extension = extension,
                 Backcolor = DefaultBackcolor,
+                DarkBackcolor = DefaultDarkBackcolor,
                 Language = GetDefaultLanguageForExtension(extension)
             });
             changed = true;
@@ -68,14 +83,17 @@ public sealed class CodeWindowSettings
         return changed;
     }
 
-    public string GetBackcolorForFile(string filePath)
+    public string GetBackcolorForFile(string filePath, bool darkMode = false)
     {
         BackcolorsByExtension ??= [];
         string extension = Path.GetExtension(filePath);
         ExtensionBackcolorSetting? setting = BackcolorsByExtension.FirstOrDefault(candidate =>
             string.Equals(candidate.Extension, extension, StringComparison.OrdinalIgnoreCase));
 
-        return string.IsNullOrWhiteSpace(setting?.Backcolor) ? DefaultBackcolor : setting.Backcolor;
+        string lightColor = string.IsNullOrWhiteSpace(setting?.Backcolor) ? DefaultBackcolor : setting.Backcolor;
+        if (!darkMode) return lightColor;
+        if (setting != null) return string.IsNullOrWhiteSpace(setting.DarkBackcolor) ? lightColor : setting.DarkBackcolor;
+        return string.IsNullOrWhiteSpace(DefaultDarkBackcolor) ? DefaultBackcolor : DefaultDarkBackcolor;
     }
 
     public string GetLanguageForFile(string filePath)

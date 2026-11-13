@@ -101,6 +101,7 @@
                 <ListBoxItem Content="Appearance" />
                 <ListBoxItem Content="Persistence" />
                 <ListBoxItem Content="Diagnostics" />
+                <ListBoxItem Content="Preferences" />
             </ListBox>
         </Grid>
 
@@ -134,6 +135,8 @@
                                     <ColumnDefinition Width="90" />
                                     <ColumnDefinition Width="36" />
                                     <ColumnDefinition Width="110" />
+                                    <ColumnDefinition Width="36" />
+                                    <ColumnDefinition Width="110" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock VerticalAlignment="Center"
@@ -149,8 +152,17 @@
                                 <TextBlock Grid.Column="2"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource Theme.SubtleTextBrush}"
-                                           Text="{Binding Backcolor}" />
-                                <TextBlock Grid.Column="3"
+                                           Text="{Binding Backcolor, StringFormat=Light: {0}}" />
+                                <Border Grid.Column="3"
+                                        Width="24" Height="16"
+                                        VerticalAlignment="Center"
+                                        Background="{Binding EffectiveDarkBackcolor}"
+                                        BorderBrush="#9CA3AF" BorderThickness="1" />
+                                <TextBlock Grid.Column="4"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource Theme.SubtleTextBrush}"
+                                           Text="{Binding EffectiveDarkBackcolor, StringFormat=Dark: {0}}" />
+                                <TextBlock Grid.Column="5"
                                            Margin="10,0,0,0"
                                            VerticalAlignment="Center"
                                            Foreground="{DynamicResource Theme.SubtleTextBrush}"
@@ -163,11 +175,12 @@
                 <Grid Grid.Row="2">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="76" />
-                        <ColumnDefinition Width="104" />
-                        <ColumnDefinition Width="72" />
-                        <ColumnDefinition Width="130" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="140" />
+                        <ColumnDefinition Width="90" />
+                        <ColumnDefinition Width="48" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="48" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="80" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock VerticalAlignment="Center" Text="Extension" />
@@ -177,7 +190,7 @@
                     <TextBlock Grid.Column="2"
                                Margin="12,0,0,0"
                                VerticalAlignment="Center"
-                               Text="Backcolor" />
+                               Text="Light" />
                     <TextBox x:Name="ColorTextBox"
                              Grid.Column="3"
                              Height="26"
@@ -185,8 +198,15 @@
                              PreviewMouseLeftButtonDown="ColorTextBox_PreviewMouseLeftButtonDown"
                              ToolTip="Click to pick a color"
                              TextChanged="ColorTextBox_TextChanged" />
+                    <TextBlock Grid.Column="4"
+                               Margin="12,0,0,0"
+                               VerticalAlignment="Center" Text="Dark" />
+                    <TextBox x:Name="DarkColorTextBox"
+                             Grid.Column="5" Height="26" Cursor="Hand"
+                             PreviewMouseLeftButtonDown="ColorTextBox_PreviewMouseLeftButtonDown"
+                             ToolTip="Click to pick the dark mode background color" />
                     <Button x:Name="PickColorButton"
-                            Grid.Column="4"
+                            Grid.Column="6"
                             Width="72"
                             Height="26"
                             Margin="8,0,0,0"
@@ -194,7 +214,7 @@
                             Click="PickColorButton_Click"
                             Content="Apply" />
                     <ComboBox x:Name="LanguageComboBox"
-                              Grid.Column="5"
+                              Grid.Column="7"
                               Height="26"
                               Margin="8,0,0,0"
                               SelectionChanged="LanguageComboBox_SelectionChanged"
@@ -444,7 +464,7 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock VerticalAlignment="Center"
                                            Foreground="{DynamicResource Theme.SubtleTextBrush}"
-                                           Text="{Binding SortOrder}" />
+                                           Text="{Binding SortOrder}" ToolTip="Image order" />
                                 <TextBlock Grid.Column="1"
                                            VerticalAlignment="Center"
                                            FontWeight="SemiBold"
@@ -928,6 +948,27 @@
                                 Content="Close" />
                     </StackPanel>
                 </DockPanel>
+            </Grid>
+
+            <Grid x:Name="PreferencesSettingsPanel" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <TextBlock FontSize="14" FontWeight="SemiBold" Text="Preferences" />
+                <StackPanel Grid.Row="1" Margin="0,14,0,0">
+                    <CheckBox x:Name="OpenDiagramDocumentationCheckBox"
+                              Content="Open the documentation sidebar when double-clicking a diagram reference" />
+                    <CheckBox x:Name="ShowExplorerPreviewCheckBox" Margin="0,14,0,0"
+                              Content="Show the Preview tab below the Object Explorer" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Margin="0,12,0,0" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Width="96" Margin="0,0,8,0" Style="{StaticResource SettingsSaveButtonStyle}"
+                            Click="SaveWorkbenchSettingsButton_Click" Content="Save" />
+                    <Button Width="86" Style="{StaticResource SettingsCloseButtonStyle}"
+                            Click="CloseButton_Click" Content="Close" />
+                </StackPanel>
             </Grid>
 
             <Grid x:Name="DiagnosticsSettingsPanel"

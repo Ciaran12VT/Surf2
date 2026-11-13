@@ -148,6 +148,7 @@ internal static class StateMaps
     public static readonly StateRowMap<ExtensionBackcolorSetting> Extension = new("ExtensionAppearance", "ExtensionAppearanceKey",
         Text<ExtensionBackcolorSetting>(nameof(ExtensionBackcolorSetting.Extension), v => v.Extension, (v,x) => v.Extension=x),
         Text<ExtensionBackcolorSetting>(nameof(ExtensionBackcolorSetting.Backcolor), v => v.Backcolor, (v,x) => v.Backcolor=x),
+        Text<ExtensionBackcolorSetting>(nameof(ExtensionBackcolorSetting.DarkBackcolor), v => v.DarkBackcolor, (v,x) => v.DarkBackcolor=x),
         Text<ExtensionBackcolorSetting>(nameof(ExtensionBackcolorSetting.Language), v => v.Language, (v,x) => v.Language=x));
     public static readonly StateRowMap<ReferenceHighlightStyleSetting> Style = new("ReferenceStyle", "ReferenceStyleKey",
         Text<ReferenceHighlightStyleSetting>(nameof(ReferenceHighlightStyleSetting.Language), v => v.Language, (v,x) => v.Language=x),
@@ -174,6 +175,9 @@ internal static class StateMaps
         Bool<AppSettings>("IgnoreCaseByDefault", v => v.ResourceComparison.IgnoreCaseByDefault, (v,x) => v.ResourceComparison.IgnoreCaseByDefault=x),
         Bool<AppSettings>("EnableInternalLogging", v => v.Diagnostics.EnableInternalLogging, (v,x) => v.Diagnostics.EnableInternalLogging=x),
         Text<AppSettings>("CodeWindows.DefaultBackcolor", v => v.CodeWindows.DefaultBackcolor, (v,x) => v.CodeWindows.DefaultBackcolor=x, column: "DefaultBackcolor"),
+        Text<AppSettings>("CodeWindows.DefaultDarkBackcolor", v => v.CodeWindows.DefaultDarkBackcolor, (v,x) => v.CodeWindows.DefaultDarkBackcolor=x, column: "DefaultDarkBackcolor"),
+        Bool<AppSettings>("OpenDiagramDocumentationOnDoubleClick", v => v.Preferences.OpenDiagramDocumentationOnDoubleClick, (v,x) => v.Preferences.OpenDiagramDocumentationOnDoubleClick=x),
+        Bool<AppSettings>("ShowExplorerPreview", v => v.Preferences.ShowExplorerPreview, (v,x) => v.Preferences.ShowExplorerPreview=x),
         Int<AppSettings>("KeyboardShortcuts.Version", v => v.KeyboardShortcuts.Version, (v,x) => v.KeyboardShortcuts.Version=x, "KeyboardShortcutVersion"),
         Bool<AppSettings>(nameof(KeyboardShortcutSettings.EnableCanvasCtrlMousePanning), v => v.KeyboardShortcuts.EnableCanvasCtrlMousePanning, (v,x) => v.KeyboardShortcuts.EnableCanvasCtrlMousePanning=x),
         Bool<AppSettings>(nameof(KeyboardShortcutSettings.EnableTabCtrlMouseScrolling), v => v.KeyboardShortcuts.EnableTabCtrlMouseScrolling, (v,x) => v.KeyboardShortcuts.EnableTabCtrlMouseScrolling=x),

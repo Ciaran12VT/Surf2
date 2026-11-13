@@ -12,10 +12,11 @@ public sealed partial class RelationalExplorerService
     private readonly IExplorerMetadataQueries _metadata;
     private readonly IPhysicalExplorerQueries _physical;
     private readonly ExplorerLimits _limits;
+    private readonly Func<ExplorerScope, bool>? _selectedScope;
     public RelationalExplorerService(IExplorerMetadataQueries metadata, IPhysicalExplorerQueries? physical = null,
-        ExplorerLimits? limits = null)
+        ExplorerLimits? limits = null, Func<ExplorerScope, bool>? selectedScope = null)
     {
-        _metadata = metadata; _physical = physical ?? new PhysicalExplorerQueries();
+        _metadata = metadata; _physical = physical ?? new PhysicalExplorerQueries(); _selectedScope = selectedScope;
         _limits = limits ?? new(); _limits.Validate();
     }
     public Task<ExplorerScope> OpenScopeAsync(long scopeKey, IReadOnlySet<string>? unloadedResourceIds = null,
@@ -129,6 +130,7 @@ public sealed partial class RelationalExplorerService
     private async Task CheckAsync(ExplorerScope scope, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        if (_selectedScope?.Invoke(scope) == true) return;
         bool current = _metadata is IExplorerDomainFence domain
             ? await domain.IsDomainCurrentAsync(scope.Context, ct).ConfigureAwait(false)
             : await _metadata.IsCurrentAsync(scope.Context, ct).ConfigureAwait(false);

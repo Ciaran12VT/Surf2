@@ -29,6 +29,8 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
 
     public async Task RequireCurrentAsync(ExplorerScope? scope, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (_runtime.IsSelectedExplorerScope(scope)) return;
         if (scope != null)
         {
             if (scope.Context.Epoch != Epoch || !await _domain.IsDomainCurrentAsync(scope.Context, ct).ConfigureAwait(false))
@@ -185,7 +187,8 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
         string path = IdentityPath(Epoch, resource, category, data);
         return new(new SnapshotDocumentIdentity(Epoch, resource.SnapshotKey, resource.ResourceKey, data), path,
             data ? "document.csv" : "document.sql", name + (data ? " data.csv" : ".sql"), explorer?.TextFileNameSeed,
-            SnapshotResourceLocator.From(Epoch, resource), explorer, snapshot);
+            SnapshotResourceLocator.From(Epoch, resource), explorer, snapshot,
+            ExplorerCompatibility.DatabaseLocator(snapshot, category, resource.SchemaName, resource.ObjectName, tableData: data));
     }
 
     // Reproduce effective ancestry by identity, including duplicate-key virtual-folder moves.

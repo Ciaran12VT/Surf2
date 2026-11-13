@@ -111,6 +111,9 @@ public static partial class StorageRegressionSuite
             RuntimeWpfField<TaskCompletionSource<bool>>(main, "_startupReadyCompletion").TrySetResult(true);
             var content = (FrameworkElement)main.Content; main.Content = null; root.Children.Add(content);
             host.RootVisual = root; RuntimeWpfArrange(root, 1280, 820); await RuntimeWpfIdleAsync();
+            // Startup image metadata is independent of the deliberately blocked definition load.
+            // Finish it before asserting that synchronous Explorer menu construction performs no SQL.
+            await RuntimeWpfField<Task>(main, "_relationalImageMenuTask");
             var scope = RuntimeWpfField<ExplorerScope>(main, "_relationalExplorerScope");
             VerifyV2ExplorerMenuParity(main, scope, folder, callerPath, check);
             var selector = RuntimeWpfNamed<ComboBox>(main, "ObjectExplorerSearchTargetComboBox");
@@ -189,6 +192,8 @@ public static partial class StorageRegressionSuite
             RuntimeWpfArrange(root, 1280, 820); await RuntimeWpfIdleAsync();
             RuntimeWpfSaveRender(root, outputDir, "v2-workspace-ready", 1280, 820, check);
             await VerifyV2HistoryUiParityAsync(main, scope, models.Snapshots, outputDir, check);
+            await VerifyLoadedBrowsePresentationAsync(main, fixture, connection, folder, check);
+            RunPreferenceThemeUiChecks(main, check);
             await fixture.VerifySourceUnchangedAsync(check);
         }
         finally
