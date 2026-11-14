@@ -219,20 +219,20 @@ internal sealed class PackageRowDecoding(Stream input, RelationalPackageLimits l
     }
 
     internal static void OrderedKey(IReadOnlyList<RelationalPackageColumn> columns, IReadOnlyList<string> primaryKey,
-        object[] row, ref long[]? previous)
+        object[] row, ref object[]? previous)
     {
-        var key = new long[primaryKey.Count];
+        var key = new object[primaryKey.Count];
         for (int i = 0; i < key.Length; i++)
         {
             int ordinal = -1;
             for (int j = 0; j < columns.Count; j++) if (columns[j].Name == primaryKey[i]) ordinal = j;
-            if (ordinal < 0 || row[ordinal] is not (long or int or short or byte)) throw Bad("Unsupported authoritative PK type");
-            key[i] = Convert.ToInt64(row[ordinal], CultureInfo.InvariantCulture);
+            if (ordinal < 0 || row[ordinal] is not (long or int or short or byte or Guid)) throw Bad("Unsupported authoritative PK type");
+            key[i] = row[ordinal] is Guid id ? new SqlGuid(id) : Convert.ToInt64(row[ordinal], CultureInfo.InvariantCulture);
         }
         if (previous != null)
         {
             int comparison = 0;
-            for (int i = 0; i < key.Length && comparison == 0; i++) comparison = key[i].CompareTo(previous[i]);
+            for (int i = 0; i < key.Length && comparison == 0; i++) comparison = ((IComparable)key[i]).CompareTo(previous[i]);
             if (comparison <= 0) throw Bad("Rows must have strictly increasing SQL primary keys");
         }
         previous = key;

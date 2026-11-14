@@ -1279,7 +1279,9 @@ ORDER BY SortOrdinal,[{keyColumn}];
         {
             if (type.Kind != JsonTypeInfoKind.Object) return;
             for (int i = type.Properties.Count - 1; i >= 0; i--)
-                if (type.Properties[i].AttributeProvider is PropertyInfo property && property.SetMethod == null)
+                if (type.Properties[i].AttributeProvider is PropertyInfo property && (property.SetMethod == null ||
+                    type.Type==typeof(Scope) && property.Name==nameof(Scope.ResourceContainers) ||
+                    type.Type==typeof(ScopedResource) && property.Name is nameof(ScopedResource.PublicId) or nameof(ScopedResource.ContainerId) or nameof(ScopedResource.Source) or nameof(ScopedResource.PairedResourceId)))
                     type.Properties.RemoveAt(i);
         });
         return new(LegacySchemaInspector.JsonOptions) { TypeInfoResolver = resolver };

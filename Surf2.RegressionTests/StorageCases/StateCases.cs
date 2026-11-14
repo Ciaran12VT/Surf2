@@ -63,7 +63,8 @@ public static partial class StorageRegressionSuite
             {
                 ResourceId = "duplicate resource", Kind = kind, Path = "fixture-only-unresolved-path-" + i,
                 DisplayNameOverride = "name " + i, DetailsOverride = "details\r\n" + i,
-                AddedAtUtc = EvidenceTime.AddTicks(i), IncludeChildren = i % 2 == 0
+                AddedAtUtc = EvidenceTime.AddTicks(i), IncludeChildren = i % 2 == 0,
+                Source = kind==ResourceKind.LiveDatabase ? new(){Provider=SourceProvider.LiveSql,Endpoint="fixture-only-server",DatabaseName="fixture-only-database"} : null
             })),
             VirtualFolders =
             [

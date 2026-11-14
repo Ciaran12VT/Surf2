@@ -109,6 +109,12 @@ ORDER BY m.ScopeResourceKey,d.DocumentKey;
 
     public async Task<string> ReadCurrentContentAsync(ExplorerNodeSummary node, int maximumCharacters, CancellationToken ct)
     {
+        if (node.Role == ExplorerNodeRole.LiveDatabaseDocument)
+        {
+            string path = await SourceResources.LiveSourceWorkspace.MaterializeAsync(node.FullPath, ct).ConfigureAwait(false);
+            await using var liveFile = await IndexedFileRead.OpenAsync(path, maximumCharacters, ct).ConfigureAwait(false);
+            return liveFile.Text;
+        }
         if (IsPhysicalFile(node))
         {
             await using var file = await IndexedFileRead.OpenAsync(node.FullPath, maximumCharacters, ct).ConfigureAwait(false);

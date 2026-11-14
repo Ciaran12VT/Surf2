@@ -17,6 +17,33 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--source-ui", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
+        Path.Combine(AppContext.BaseDirectory, "source-ui-checks"), sourceUiOnly: true);
+    Console.WriteLine($"Passed {passed} source UI checks.");
+    return;
+}
+if (args.Contains("--remote-folders", StringComparer.Ordinal))
+{
+    foreach (string name in await Surf2.Services.RemoteFolders.RemoteFolderContractChecks.RunAsync()) Check(true, name);
+    foreach (string name in await Surf2.Services.SourceResources.SourceWorkspaceContractChecks.RunAsync()) Check(true, name);
+    Console.WriteLine($"Passed {passed} remote folder checks.");
+    return;
+}
+if(args.Contains("--live-sql",StringComparer.Ordinal) || args.Contains("--live-sql-contract",StringComparer.Ordinal))
+{
+    Surf2.RegressionTests.LiveSqlFeatureTests.Run(Check);
+    if(args.Contains("--live-sql",StringComparer.Ordinal)) await StorageRegressionSuite.RunLiveSqlChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} live SQL checks.");
+    return;
+}
+if(args.Contains("--resource-schema",StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunResourceSchemaChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} resource schema checks.");
+    return;
+}
 if (args.Contains("--durable-links", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunDurableLinkChecksAsync(Check);

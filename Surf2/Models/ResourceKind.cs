@@ -5,5 +5,6 @@ public enum ResourceKind
     Folder,
     File,
     DatabaseSnapshot,
-    Diagram
+    Diagram,
+    LiveDatabase
 }

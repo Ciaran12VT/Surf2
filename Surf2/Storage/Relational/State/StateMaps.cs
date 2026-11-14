@@ -16,7 +16,11 @@ internal static class StateMaps
         Text<ScopedResource>(nameof(ScopedResource.DisplayNameOverride), v => v.DisplayNameOverride, (v,x) => v.DisplayNameOverride=x),
         Text<ScopedResource>(nameof(ScopedResource.DetailsOverride), v => v.DetailsOverride, (v,x) => v.DetailsOverride=x, true),
         Time<ScopedResource>(nameof(ScopedResource.AddedAtUtc), v => v.AddedAtUtc, (v,x) => v.AddedAtUtc=x),
-        Bool<ScopedResource>(nameof(ScopedResource.IncludeChildren), v => v.IncludeChildren, (v,x) => v.IncludeChildren=x));
+        Bool<ScopedResource>(nameof(ScopedResource.IncludeChildren), v => v.IncludeChildren, (v,x) => v.IncludeChildren=x),
+        Identity<ScopedResource>(nameof(ScopedResource.PublicId), v => v.PublicId, (v,x) => v.PublicId=x),
+        Identity<ScopedResource>(nameof(ScopedResource.ContainerId), v => v.ContainerId, (v,x) => v.ContainerId=x),
+        NullableIdentity<ScopedResource>("SourceId", v => v.Source?.SourceId, (v,x) => v.Source=x.HasValue ? new ResourceSourceDefinition { SourceId=x.Value } : null),
+        NullableIdentity<ScopedResource>(nameof(ScopedResource.PairedResourceId), v => v.PairedResourceId, (v,x) => v.PairedResourceId=x));
     public static readonly StateRowMap<VirtualFolder> Folder = new("VirtualFolder", "VirtualFolderKey",
         Text<VirtualFolder>(nameof(VirtualFolder.VirtualFolderId), v => v.VirtualFolderId, (v,x) => v.VirtualFolderId=x),
         Text<VirtualFolder>(nameof(VirtualFolder.Name), v => v.Name, (v,x) => v.Name=x),

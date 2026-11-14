@@ -8,12 +8,46 @@ internal static class StateCopies
 {
     public static Scope Scope(Scope source, StateBudget budget)
     {
+        source.EnsureResourceContainers();
+        foreach(var container in source.ResourceContainers)
+        {
+            var members=source.Resources.Where(r=>r.ContainerId==container.ContainerId).Take(2).ToArray();
+            if(members is not [var member])continue;
+            // Keep singleton aliases working as before. A shared container name is independent
+            // of which alternative is active; unloaded snapshot metadata must not replace a
+            // previously resolved friendly label with its raw snapshot identifier.
+            if(!string.IsNullOrWhiteSpace(member.DisplayNameOverride) ||
+                member.Kind is ResourceKind.File or ResourceKind.Folder or ResourceKind.LiveDatabase ||
+                member.Kind==ResourceKind.DatabaseSnapshot&&member.SnapshotDisplayName!=null)
+                container.Name=member.DisplayName;
+        }
         var value = StateMaps.Scope.Copy(source, budget);
-        foreach (var resource in source.Resources) value.Resources.Add(StateMaps.Resource.Copy(resource, budget));
+        foreach (var resource in source.Resources)
+        {
+            var copy = StateMaps.Resource.Copy(resource, budget);
+            PortableResourcePath.Validate(copy.Path);
+            copy.Source = resource.Source?.Copy();
+            if (copy.Source == null && copy.Kind is ResourceKind.Folder or ResourceKind.File)
+            {
+                resource.Source = new ResourceSourceDefinition { Endpoint = resource.Path };
+                copy.Source = resource.Source.Copy();
+            }
+            else if(copy.Source?.Provider==SourceProvider.LocalFileSystem && copy.Source.Endpoint!=copy.Path)
+            {
+                // A concrete member can be rebound independently of copies in other scopes.
+                copy.Source.Endpoint=copy.Path;copy.Source.SourceId=Guid.NewGuid();copy.Source.ConfigurationRevision=1;
+                resource.Source=copy.Source.Copy();
+            }
+            value.Resources.Add(copy);
+        }
+        foreach (var container in source.ResourceContainers)
+            value.ResourceContainers.Add(new ResourceContainer { ContainerId=container.ContainerId,
+                Name=String(container.Name,budget), DefaultResourceId=container.DefaultResourceId });
         foreach (var folder in source.VirtualFolders)
         {
             var copy = StateMaps.Folder.Copy(folder, budget);
-            foreach (string member in folder.ChildNodeKeys) copy.ChildNodeKeys.Add(String(member, budget));
+            PortableResourcePath.Validate(copy.ParentNodeKey);
+            foreach (string member in folder.ChildNodeKeys) { PortableResourcePath.Validate(member); copy.ChildNodeKeys.Add(String(member, budget)); }
             value.VirtualFolders.Add(copy);
         }
         return value;
@@ -25,6 +59,7 @@ internal static class StateCopies
         foreach (var item in source.Objects)
         {
             var copy = StateMaps.Object.Copy(item, budget);
+            PortableResourcePath.Validate(copy.Metadata.Link);
             copy.Metadata.Queries = item.Metadata.Queries.Select(q => StateMaps.Query.Copy(q, budget)).ToList();
             value.Objects.Add(copy);
         }
@@ -45,6 +80,8 @@ internal static class StateCopies
     public static OpenDocumentState Window(OpenDocumentState source, StateBudget budget)
     {
         var value = StateMaps.Window.Copy(source, budget);
+        if(source.PersistentSourcePath!=null)value.FilePath=String(source.PersistentSourcePath,budget);
+        PortableResourcePath.Validate(value.FilePath);
         foreach (var filter in source.SpreadsheetFilters)
             value.SpreadsheetFilters.Add(filter.Key, String(filter.Value, budget));
         return value;
@@ -53,6 +90,7 @@ internal static class StateCopies
     public static WorkspaceState Workspace(WorkspaceState source, StateBudget budget)
     {
         var value = StateMaps.Workspace.Copy(source, budget);
+        PortableResourcePath.Validate(value.LastFolderPath);
         value.UnloadedResourceIds = source.UnloadedResourceIds.Select(id => String(id, budget)).ToList();
         foreach (var window in source.OpenDocuments) value.OpenDocuments.Add(Window(window, budget));
         return value;
@@ -61,9 +99,11 @@ internal static class StateCopies
     public static WorkbenchState Workbench(WorkbenchState source, StateBudget budget)
     {
         var value = StateMaps.Workbench.Copy(source, budget);
+        PortableResourcePath.Validate(value.ActiveDocumentPath);
         value.UnloadedResourceIds = source.UnloadedResourceIds.Select(id => String(id, budget)).ToList();
         value.OpenDocuments = source.OpenDocuments.Select(w => Window(w, budget)).ToList();
         value.ReferenceConnectionLines = source.ReferenceConnectionLines.Select(c => StateMaps.Connection.Copy(c, budget)).ToList();
+        foreach(var line in value.ReferenceConnectionLines) { PortableResourcePath.Validate(line.SourceFilePath); PortableResourcePath.Validate(line.TargetFilePath); }
         value.ActiveDiagramSnapshot = source.ActiveDiagramSnapshot == null ? null : Diagram(source.ActiveDiagramSnapshot, budget);
         return value;
     }

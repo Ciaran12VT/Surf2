@@ -6,6 +6,7 @@ using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Surf2.Models;
 using Surf2.Storage.Relational;
+using Surf2.Services.LiveSql;
 
 namespace Surf2.Services.RelationalSnapshots;
 
@@ -32,9 +33,11 @@ internal sealed class SqlSnapshotSource : IAsyncDisposable
     private readonly SqlConnection _connection;
     private readonly SqlTransaction _transaction;
     private readonly RelationalSnapshotOperationLimits _limits;
-    private SqlSnapshotSource(SqlConnection connection, SqlTransaction transaction, RelationalSnapshotOperationLimits limits)
-    { _connection = connection; _transaction = transaction; _limits = limits; }
+    private readonly IReadOnlyList<LiveSqlObject> _inventory;
+    private SqlSnapshotSource(SqlConnection connection, SqlTransaction transaction, RelationalSnapshotOperationLimits limits, IReadOnlyList<LiveSqlObject> inventory)
+    { _connection = connection; _transaction = transaction; _limits = limits; _inventory = inventory; }
     public IsolationLevel Isolation => _transaction.IsolationLevel;
+    public Task<DatabaseOrigin> ReadOriginAsync(Guid? sourceId, CancellationToken ct) => DatabaseOriginQueryService.ReadAsync(_connection, _transaction, sourceId, ct);
     public static async Task<SqlSnapshotSource> OpenAsync(string connectionString, RelationalSnapshotOperationLimits limits,
         SqlCaptureDatabaseIdentity destination, CancellationToken ct, bool allowSerializableFallback = false, bool metadataOnly = false)
     {
@@ -64,7 +67,8 @@ internal sealed class SqlSnapshotSource : IAsyncDisposable
             if (!metadataOnly && !snapshotEnabled && !allowSerializableFallback) throw new SourceSnapshotUnavailableException();
             var isolation = metadataOnly ? IsolationLevel.ReadCommitted : snapshotEnabled ? IsolationLevel.Snapshot : IsolationLevel.Serializable;
             transaction = (SqlTransaction)await connection.BeginTransactionAsync(isolation, ct).ConfigureAwait(false);
-            return new(connection, transaction, limits);
+            var access = await LiveSqlAccess.QualifyAsync(connection, transaction, ct).ConfigureAwait(false); access.RequireQualified();
+            return new(connection, transaction, limits, access.Objects);
         }
         catch
         {
@@ -206,7 +210,12 @@ internal sealed class SqlSnapshotSource : IAsyncDisposable
         if (position != bytes || carry >= 0) throw new InvalidDataException("Selected source text length was not preserved.");
         return new string(chars);
     }
-    public Task CompleteAsync(CancellationToken ct) => _transaction.CommitAsync(ct);
+    public async Task CompleteAsync(CancellationToken ct)
+    {
+        var final = await LiveSqlAccess.QualifyAsync(_connection, _transaction, ct).ConfigureAwait(false); final.RequireQualified();
+        if (!_inventory.SequenceEqual(final.Objects)) throw new InvalidOperationException("Source definitions or table identities changed during capture. No snapshot was published; retry the capture.");
+        await _transaction.CommitAsync(ct).ConfigureAwait(false);
+    }
     public async ValueTask DisposeAsync()
     { await _transaction.DisposeAsync().ConfigureAwait(false); await _connection.DisposeAsync().ConfigureAwait(false); }
 }

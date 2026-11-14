@@ -115,6 +115,12 @@ public partial class SettingsWindow : Window
 
     private void SectionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (SectionList.SelectedIndex == 10)
+        {
+            SectionList.SelectedIndex = 0;
+            new LocalCacheWindow { Owner = this }.ShowDialog();
+            return;
+        }
         if (CodeWindowSettingsPanel == null ||
             ReferenceHighlightSettingsPanel == null ||
             DiagramImageSettingsPanel == null ||

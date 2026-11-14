@@ -16,6 +16,9 @@ public partial class MainWindow
     private RelationalRuntime? _relational;
     private readonly AccessCancellation _relationalStartupCancellation = new();
     private readonly List<Task> _relationalGridRetirements = [];
+    // Offscreen fixtures exercise the same explicit decision and recovery flow without modal automation.
+    internal Func<PersistenceFormatResult,bool>? RelationalResourceUpgradeConfirmation { get; set; }
+    internal string? RelationalResourceUpgradeRecoveryDirectory { get; set; }
 
     private async Task<ExternalOpenResponse> OpenRelationalExternalResourceAsync(ExternalOpenRequest request)
     {
@@ -187,11 +190,29 @@ public partial class MainWindow
         ct.ThrowIfCancellationRequested();
         SetStartupStage(StartupStage.DatabaseFormat);
         PersistenceFormatResult format = await new PersistenceFormatProbe().ProbeAsync(options.ConnectionString, ct);
-        if (format.SchemaVersion == 1 && format.Format is PersistenceFormat.Relational or PersistenceFormat.Incomplete)
+        if (format.SchemaVersion is 1 or 2 && format.Format == PersistenceFormat.Relational)
         {
+            string recoveryDirectory=RelationalResourceUpgradeRecoveryDirectory??System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Surf2","SchemaRecovery");
+            bool confirmed=RelationalResourceUpgradeConfirmation?.Invoke(format)??(MessageBox.Show(this,
+                "This Surf2 database needs the local resource upgrade (schema "+format.SchemaVersion+" to 3).\n\n"+
+                "Close every other Surf2 instance and database connection before continuing. A verified recovery export will be retained in:\n"+recoveryDirectory+
+                "\n\nExisting scopes, snapshots and history will be preserved. Older Surf2 versions cannot use the upgraded database. Continue?",
+                "Upgrade Surf2 database",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes);
+            if(!confirmed)
+                throw new OperationCanceledException("Database upgrade cancelled.");
             SetStartupStage(StartupStage.DatabaseUpgrade);
-            await new RelationalCaptureSchemaUpgrade().UpgradeAsync(options.ConnectionString,
-                new Progress<string>(message => StatusText = message), ct);
+            try
+            {
+                await new RelationalResourceSchemaUpgrade().UpgradeAsync(options.ConnectionString,
+                    new Progress<string>(message => StatusText = message), ct,recoveryDirectory);
+            }
+            catch(Exception error) when(error is not OperationCanceledException)
+            {
+                string details=error.Message;
+                if(error.Data["SchemaRecoveryPackage"] is string package)details+="\n\nRecovery export: "+package;
+                if(error.Data["UpgradeAdmissionRecovery"] is string admission)details+="\n\n"+admission;
+                throw new InvalidOperationException(details,error);
+            }
             format = await new PersistenceFormatProbe().ProbeAsync(options.ConnectionString, ct);
         }
         ct.ThrowIfCancellationRequested();

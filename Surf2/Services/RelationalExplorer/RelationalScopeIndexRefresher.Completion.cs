@@ -71,7 +71,7 @@ SELECT CASE WHEN OBJECT_ID(N'surf.ReferenceCompletionExtension',N'U') IS NULL TH
         Field(CompletionPolicy); Field(RelationalIndexStore.TableRendererVersion); Field(RelationalIndexStore.DiagramRendererVersion);
         if (PhysicalRoot(resource))
             foreach (var extension in languagePolicy.Extensions) { Field(extension.Extension); Field(extension.Language); }
-        var aliases = scope.Resources.Where(r => PhysicalRoot(resource) ? PhysicalRoot(r) : resource.Kind == ResourceKind.DatabaseSnapshot
+        var aliases = scope.Resources.Where(r => resource.Kind == ResourceKind.LiveDatabase ? r.PublicId == resource.PublicId : PhysicalRoot(resource) ? PhysicalRoot(r) : resource.Kind == ResourceKind.DatabaseSnapshot
             ? r.Snapshot?.SnapshotKey == resource.Snapshot!.SnapshotKey
             : r.DiagramRevisionKey == resource.DiagramRevisionKey).OrderBy(r => r.ScopeResourceKey);
         foreach (var alias in aliases)
@@ -92,7 +92,8 @@ SELECT CASE WHEN OBJECT_ID(N'surf.ReferenceCompletionExtension',N'U') IS NULL TH
 
     private async Task<Dictionary<long, long>> ReadCompletedRootsAsync(ExplorerScope scope, ExplorerIndexLanguagePolicy languagePolicy, CancellationToken ct)
     {
-        var resources = scope.Resources.Where(r => r.IsLoaded && (CapturedRoot(r) || PhysicalRoot(r) && _verifiedPhysicalRoots.ContainsKey(r.ScopeResourceKey))).ToArray();
+        var resources = scope.Resources.Where(r => r.IsLoaded && (CapturedRoot(r) ||
+            (PhysicalRoot(r) || r.Kind == ResourceKind.LiveDatabase) && _verifiedPhysicalRoots.ContainsKey(r.ScopeResourceKey))).ToArray();
         if (resources.Length == 0) return [];
         var context = await _index.CaptureContextAsync(scope.Context.ScopeKey, scope.Context.UnloadedScopeResourceKeys, token: ct).ConfigureAwait(false);
         RequireSameDomain(scope.Context, context);
@@ -129,7 +130,8 @@ WHERE sr.ScopeKey=@Scope AND c.SourceVersion=COALESCE(latest.RowVersion,diagram.
     private async Task CompleteRootsAsync(ExplorerScope scope, IEnumerable<long> roots,
         HashSet<(long Resource, long Document)> seen, ExplorerIndexLanguagePolicy languagePolicy, bool allowIncomplete, CancellationToken ct)
     {
-        var resources = scope.Resources.Where(r => roots.Contains(r.ScopeResourceKey) && (CapturedRoot(r) || PhysicalRoot(r))).ToArray();
+        var resources = scope.Resources.Where(r => roots.Contains(r.ScopeResourceKey) &&
+            (CapturedRoot(r) || PhysicalRoot(r) || r.Kind == ResourceKind.LiveDatabase)).ToArray();
         if (resources.Length == 0) return;
         await using var connection = await _session.OpenAsync(ct).ConfigureAwait(false);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct).ConfigureAwait(false);
@@ -171,7 +173,7 @@ END
             IndexSql.Add(command, "@Count", SqlDbType.BigInt, (long)seen.Count(m => m.Resource == resource.ScopeResourceKey));
             IndexSql.Add(command, "@AllowIncomplete", SqlDbType.Bit, allowIncomplete);
             using var cancel = RelationalSession.CancelCommand(command, ct);
-            if (Equals(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), true) && PhysicalRoot(resource))
+            if (Equals(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), true) && (PhysicalRoot(resource) || resource.Kind == ResourceKind.LiveDatabase))
                 verifiedPhysical.Add(resource.ScopeResourceKey);
         }
         await transaction.CommitAsync(ct).ConfigureAwait(false);

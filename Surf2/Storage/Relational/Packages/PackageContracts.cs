@@ -5,7 +5,7 @@ namespace Surf2.Storage.Relational.Packages;
 public static class RelationalPackageFormat
 {
     public const string Identifier = "Surf2.RelationalV2.Package";
-    public const int PackageVersion = 2;
+    public const int PackageVersion = 3;
     public const int ExporterVersion = 1;
     public const int RowEncodingVersion = 1;
     public const string ManifestEntry = "manifest.json";

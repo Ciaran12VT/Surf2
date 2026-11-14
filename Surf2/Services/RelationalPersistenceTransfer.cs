@@ -11,7 +11,8 @@ using Surf2.Storage.Relational.Packages;
 namespace Surf2.Services;
 
 public enum PersistencePackageKind { Legacy, Relational }
-public sealed record PersistencePackageInspection(PersistencePackageKind Kind, string ManifestSha256);
+public sealed record PersistencePackageInspection(PersistencePackageKind Kind, string ManifestSha256,
+    int? PackageVersion=null,int? DatabaseSchemaVersion=null,int? ExporterVersion=null,int? RowEncodingVersion=null);
 public sealed record PersistenceTransferResult(string DatabaseName, Guid DatabaseIdentity, long CapturedRows,
     SqlServerConnectionOptions Destination, string? RecoveryDirectory);
 
@@ -38,16 +39,27 @@ public sealed class RelationalPersistenceTransfer
         bytes.Position = 0;
         using var json = await JsonDocument.ParseAsync(bytes, cancellationToken: ct);
         if (json.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException("The manifest is not an object.");
+        if(json.RootElement.EnumerateObject().Select(p=>p.Name).Distinct(StringComparer.Ordinal).Count()!=json.RootElement.EnumerateObject().Count())
+            throw new InvalidDataException("The package manifest contains duplicate fields.");
         PersistencePackageKind kind;
+        int? packageVersion=null,schemaVersion=null,exporterVersion=null,rowVersion=null;
         if (json.RootElement.TryGetProperty("PackageIdentifier", out var identifier) &&
-            identifier.GetString() == RelationalPackageFormat.Identifier &&
-            json.RootElement.TryGetProperty("PackageVersion", out var version) && version.GetInt32() == RelationalPackageFormat.PackageVersion)
+            identifier.GetString() == RelationalPackageFormat.Identifier)
+        {
+            int Number(string name)=>json.RootElement.TryGetProperty(name,out var value)&&value.TryGetInt32(out var result)?result:throw new InvalidDataException("Missing package version field: "+name);
+            packageVersion=Number("PackageVersion");schemaVersion=Number("DatabaseSchemaVersion");
+            exporterVersion=Number("ExporterVersion");rowVersion=Number("RowEncodingVersion");
+            if(!((packageVersion==2&&schemaVersion is 1 or 2)||(packageVersion==3&&schemaVersion==3)) ||
+                exporterVersion!=1||rowVersion!=1 || Number("MinimumReaderVersion")!=schemaVersion ||Number("MinimumWriterVersion")!=schemaVersion ||
+                !json.RootElement.TryGetProperty("DatabaseFormatIdentifier",out var databaseFormat)||databaseFormat.GetString()!=PersistenceFormatProbe.FormatIdentifier)
+                throw new InvalidDataException("The package/schema/encoding version combination is not supported.");
             kind = PersistencePackageKind.Relational;
+        }
         else if (json.RootElement.TryGetProperty("FormatVersion", out var legacy) && legacy.GetInt32() == 1 &&
             !json.RootElement.TryGetProperty("PackageIdentifier", out _))
             kind = PersistencePackageKind.Legacy;
         else throw new InvalidDataException("This package format is not supported.");
-        return new(kind, Convert.ToHexStringLower(SHA256.HashData(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length)))));
+        return new(kind, Convert.ToHexStringLower(SHA256.HashData(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length)))),packageVersion,schemaVersion,exporterVersion,rowVersion);
     }
 
     public async Task<PersistenceTransferResult> ImportIntoNewDatabaseAsync(string packagePath,

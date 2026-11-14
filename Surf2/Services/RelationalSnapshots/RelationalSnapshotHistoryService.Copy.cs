@@ -18,6 +18,8 @@ public sealed partial class RelationalSnapshotHistoryService
             !scope.Token.Version.AsSpan().SequenceEqual(expectedScope.Version)) throw new StateConflictException("copy scope");
         await using var source = await OpenVersionAsync(sourceSnapshotKey, sourceVersionKey, ct).ConfigureAwait(false);
         var plan = await _runtime.Snapshots.BeginRuntimeStageAsync(null, displayName, source.Header.DatabaseName, DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
+        if (sourceVersionKey > 0) plan.Origin = await _runtime.Snapshots.ReadOriginAsync(sourceVersionKey, ct).ConfigureAwait(false);
+        else if (source.Header.CurrentVersionKey is long currentVersion) plan.Origin = await _runtime.Snapshots.ReadOriginAsync(currentVersion, ct).ConfigureAwait(false);
         var budget = new SnapshotOperationBudget(_limits); var columns = new Dictionary<long, long>(); var keys = new Dictionary<long, long>();
         long rows = 0;
         await foreach (var entry in source.StreamAsync(HistoricalCollection.Objects, ct).ConfigureAwait(false))

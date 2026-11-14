@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -212,6 +212,7 @@ public partial class MainWindow
     private RelationalSelectionRequest BeginRelationalSelection(CancellationToken ct)
     {
         if (_relationalStateClosing) throw new OperationCanceledException("The window is closing.");
+        foreach (var preparation in _sourcePreparations.Values.ToArray()) preparation.Cancel();
         if (_relationalSelectionLifetime != null) RetireRelationalSelection(_relationalSelectionLifetime);
         _relationalSelectionLifetime = new(++_relationalSelectionGeneration, ct, _relationalStateLifetime.Token);
         return _relationalSelectionLifetime;
@@ -285,31 +286,40 @@ public partial class MainWindow
         try
         {
             SetStartupStage(StartupStage.ScopeMetadata);
+            var sourceModel = edit.Snapshot();
+            await PrepareSourceScopeAsync(sourceModel, unloaded ?? GetUnloadedResourceIds(), ct);
             var explorer = await RelationalStateRuntime.Explorer.OpenScopeAsync(edit.SubjectKey, unloaded ?? GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, ct);
             SetStartupStage(StartupStage.ScopeRoots);
             var names = await BuildRelationalNameCatalogueAsync(RelationalStateRuntime, explorer, ct);
             // Derived references are owned by the cancellable background job, not workspace hydration.
-            return new(edit, edit.Snapshot(), names);
+            return new(edit, sourceModel, names);
         }
         catch { await edit.DisposeAsync(); throw; }
     }
 
     private void ApplyRelationalScope(PreparedRelationalScope scope)
     {
+        var sourceMembers = scope.Model.Resources.Select(r => r.PublicId).ToHashSet();
+        foreach (var id in _sourceWindows.Keys.Concat(_pairedFolderWatches.Keys).Distinct().Where(id => !sourceMembers.Contains(id)).ToArray())
+            if (Services.SourceResources.ResourceWorkspace.Find(id) is { } oldSource) CloseResourceViews(oldSource);
+        Services.SourceResources.ResourceWorkspace.ReleaseExcept(scope.Model.Resources.Select(r => r.PublicId).ToHashSet());
+        Services.SourceResources.LiveSourceWorkspace.ReleaseExcept(scope.Model.Resources.Select(r => r.PublicId).ToHashSet());
         SetActiveScope(scope.Model); _relationalScopeEdit = scope.Edit;
         SetRelationalNameCatalogue(RelationalStateRuntime, scope.Names);
         _relationalReferenceCatalogue = null;
         _referenceIndex = ScopeReferenceIndex.Empty; // The reference owner consumes the shared relational paint lookup.
-        RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
+        RootNodes.Clear(); _relationalExplorerNodes.Clear(); _sourceActions.Clear(); _sourceActionTargets.Clear(); _expandedObjectExplorerNodeKeys.Clear();
         foreach (var root in scope.Names.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
         CurrentFolderDisplay = "Scope: " + scope.Model.Name;
         BeginRelationalExplorerContext();
         InitializeRelationalScopeResourceCommands();
         InvalidateRelationalDocumentContext();
+        StartPendingSourceRefreshes();
     }
 
     private FileSystemNode CreateRelationalExplorerNode(ExplorerNodeSummary summary)
     {
+        summary = DecorateSourceNode(summary);
         var node = new FileSystemNode(summary.FullPath, summary.IsDirectory, summary.Exists, summary.Name, summary.IconKind,
             summary.ParentNodeKey, summary.NodeKey, summary.IsVirtualFolder, summary.VirtualFolderId, summary.ScopeResourceId,
             summary.ResourceKind, summary.IsScopeResourceRoot, summary.IsScopeResourceLoaded, summary.ToolTip)
@@ -317,7 +327,8 @@ public partial class MainWindow
             NaturalParentKey = summary.NaturalParentKey, IsVirtualDocument = summary.IsVirtualDocument,
             HasUnresolvedQueries = summary.HasUnresolvedQueries, IsLoaded = summary.ChildrenState == ExplorerChildrenState.Loaded
         };
-        _relationalExplorerNodes.Add(node, summary); if (!node.IsLoaded) node.AddLoadingPlaceholder(); return node;
+        _relationalExplorerNodes.Add(node, summary); if (!node.IsLoaded) node.AddLoadingPlaceholder();
+        AddSourceActionRow(node, summary); return node;
     }
 
     private async Task LoadRelationalLastActiveScopeAsync(CancellationToken cancellationToken = default)
@@ -420,9 +431,12 @@ public partial class MainWindow
         for (int i = 0; i < a.Resources.Count; i++)
         {
             var x = a.Resources[i]; var y = b.Resources[i];
+            if (x.PublicId != y.PublicId || x.ContainerId != y.ContainerId || x.PairedResourceId != y.PairedResourceId ||
+                System.Text.Json.JsonSerializer.Serialize(x.Source) != System.Text.Json.JsonSerializer.Serialize(y.Source)) return false;
             if (x.ResourceId != y.ResourceId || x.Kind != y.Kind || x.Path != y.Path || x.DisplayNameOverride != y.DisplayNameOverride ||
                 x.DetailsOverride != y.DetailsOverride || x.AddedAtUtc != y.AddedAtUtc || x.IncludeChildren != y.IncludeChildren) return false;
         }
+        if (System.Text.Json.JsonSerializer.Serialize(a.ResourceContainers) != System.Text.Json.JsonSerializer.Serialize(b.ResourceContainers)) return false;
         for (int i = 0; i < a.VirtualFolders.Count; i++)
         {
             var x = a.VirtualFolders[i]; var y = b.VirtualFolders[i];
@@ -971,7 +985,7 @@ public partial class MainWindow
             ReferenceConnectionLinesEnabled = _referenceConnectionLinesEnabled, CodeCanvasZoom = _canvasZoom,
             CodeViewportHorizontalOffset = WorkspaceScrollViewer.HorizontalOffset, CodeViewportVerticalOffset = WorkspaceScrollViewer.VerticalOffset,
             UnloadedResourceIds = GetUnloadedResourceIds().ToList(), OpenDocuments = CaptureRelationalWindows(),
-            ReferenceConnectionLines = CaptureRelationalConnections(), ActiveDocumentPath = GetActiveDocumentPath() ?? baseline?.ActiveDocumentPath ?? string.Empty,
+            ReferenceConnectionLines = CaptureRelationalConnections(), ActiveDocumentPath = GetRelationalPersistentDocumentPath(GetActiveDocumentPath() ?? baseline?.ActiveDocumentPath ?? string.Empty),
             ActiveDiagramId = _activeDiagramId ?? string.Empty, ActiveDiagramName = CurrentDiagramName, ActiveDiagramSnapshot = diagram?.Document,
             IsDiagramLocked = _isDiagramLocked, DiagramCanvasZoom = _diagramCanvasZoom,
             DiagramViewportHorizontalOffset = DiagramScrollViewer.HorizontalOffset, DiagramViewportVerticalOffset = DiagramScrollViewer.VerticalOffset
@@ -989,6 +1003,7 @@ public partial class MainWindow
             int index = _relationalConnectionOccurrences.TryGetValue(line, out var original) ? _relationalRetainedConnections.FindIndex(r => ReferenceEquals(r, original)) : -1;
             var copy = StateMaps.Connection.Copy(line, new(RelationalRuntimeStateLimits));
             if (original != null) { copy.SourceFilePath = original.SourceFilePath; copy.TargetFilePath = original.TargetFilePath; }
+            else { copy.SourceFilePath = GetRelationalPersistentDocumentPath(copy.SourceFilePath); copy.TargetFilePath = GetRelationalPersistentDocumentPath(copy.TargetFilePath); }
             if (index < 0) result.Add(copy); else result[index] = copy;
         }
         return result;

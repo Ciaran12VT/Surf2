@@ -68,21 +68,24 @@ LEFT JOIN surf.StateCatalogueGeneration d ON d.ProfileKey=h.UserKey AND d.Kind=1
 WITH Headers AS (
  SELECT 0 SourceKind,sr.ScopeResourceKey SourceKey,s.ScopeKey,s.ScopeId SourceScopeId,s.Name SourceName,sr.Kind,sr.Path,
  sr.DisplayNameOverride,dc.Text DetailsOverride,sr.IncludeChildren,sr.SnapshotKey,sr.DiagramKey,
- db.DisplayName DatabaseNameLabel,db.DatabaseName,di.Name DiagramName
+ db.DisplayName DatabaseNameLabel,db.DatabaseName,di.Name DiagramName,
+ sd.SourceId,sd.Provider,sd.ConfigurationRevision,sd.Endpoint,sd.Container,sd.Prefix,sd.Ref,sd.Subfolder,sd.DatabaseName SourceDatabase,sd.AuthenticationKind
  FROM surf.ScopeResource sr JOIN surf.Scope s ON s.ScopeKey=sr.ScopeKey
  JOIN surf.TextContent dc ON dc.ContentKey=sr.DetailsOverrideContentKey
  LEFT JOIN surf.DatabaseSnapshot db ON db.SnapshotKey=sr.SnapshotKey AND db.IsPublished=1
- LEFT JOIN surf.Diagram di ON di.DiagramKey=sr.DiagramKey WHERE s.ProfileKey=1
+ LEFT JOIN surf.Diagram di ON di.DiagramKey=sr.DiagramKey
+ LEFT JOIN surf.SourceDefinition sd ON sd.SourceId=sr.SourceId WHERE s.ProfileKey=1
  UNION ALL
  SELECT 1,db.SnapshotKey,NULL,NULL,N'Database Snapshots',2,db.OriginalSnapshotId,db.DisplayName,db.DatabaseName,
- CONVERT(bit,1),db.SnapshotKey,NULL,db.DisplayName,db.DatabaseName,NULL FROM surf.DatabaseSnapshot db WHERE db.UserKey=1 AND db.IsPublished=1
+ CONVERT(bit,1),db.SnapshotKey,NULL,db.DisplayName,db.DatabaseName,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL FROM surf.DatabaseSnapshot db WHERE db.UserKey=1 AND db.IsPublished=1
  UNION ALL
  SELECT 2,di.DiagramKey,NULL,NULL,N'Diagrams',3,di.DiagramId,di.Name,N'Diagram',CONVERT(bit,1),NULL,di.DiagramKey,
- NULL,NULL,di.Name FROM surf.Diagram di WHERE di.ProfileKey=1 AND di.CurrentRevisionKey IS NOT NULL
+ NULL,NULL,di.Name,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL FROM surf.Diagram di WHERE di.ProfileKey=1 AND di.CurrentRevisionKey IS NOT NULL
 )
 SELECT TOP(@Take) SourceKind,SourceKey,ScopeKey,LEFT(SourceScopeId,65537),LEFT(SourceName,65537),Kind,LEFT(Path,65537),
  LEFT(DisplayNameOverride,65537),LEFT(DetailsOverride,65537),IncludeChildren,SnapshotKey,DiagramKey,
- LEFT(DatabaseNameLabel,65537),LEFT(DatabaseName,65537),LEFT(DiagramName,65537)
+ LEFT(DatabaseNameLabel,65537),LEFT(DatabaseName,65537),LEFT(DiagramName,65537),
+ SourceId,Provider,ConfigurationRevision,LEFT(Endpoint,32769),LEFT(Container,32769),LEFT(Prefix,32769),LEFT(Ref,32769),LEFT(Subfolder,32769),LEFT(SourceDatabase,32769),LEFT(AuthenticationKind,32769)
 FROM Headers WHERE SourceKind>@SourceKind OR (SourceKind=@SourceKind AND SourceKey>@After)
 ORDER BY SourceKind,SourceKey;
 """);
@@ -108,7 +111,13 @@ ORDER BY SourceKind,SourceKey;
                 string databaseLabel = Field(12), database = Field(13), diagram = Field(14);
                 budget.Add(sourceId, sourceName, path, alias, detailsOverride, databaseLabel, database, diagram);
                 if (sourceKind == 0 && sourceId.Equals(target.ScopeId, StringComparison.OrdinalIgnoreCase)) continue;
-                if (target.Resources.Any(r => SameIdentity(r.Kind, r.Path, kind, path))) continue;
+                ResourceSourceDefinition? source = reader.IsDBNull(15) ? null : new()
+                {
+                    SourceId=reader.GetGuid(15),Provider=(SourceProvider)reader.GetInt32(16),ConfigurationRevision=reader.GetInt64(17),
+                    Endpoint=Field(18),Container=Field(19),Prefix=Field(20),Ref=Field(21),Subfolder=Field(22),DatabaseName=Field(23),AuthenticationKind=Field(24)
+                };
+                if(source!=null)budget.Add(source.Endpoint,source.Container,source.Prefix,source.Ref,source.Subfolder,source.DatabaseName,source.AuthenticationKind);
+                if (target.Resources.Any(r => SameIdentity(r.Kind, r.LogicalPath ?? r.Path, kind, path, r.Source, source))) continue;
                 string name = !string.IsNullOrWhiteSpace(alias) ? alias : kind == ResourceKind.DatabaseSnapshot
                     ? !string.IsNullOrWhiteSpace(databaseLabel) ? databaseLabel : !string.IsNullOrWhiteSpace(database) ? database : string.IsNullOrWhiteSpace(path) ? "Database" : path
                     : kind == ResourceKind.Diagram ? !string.IsNullOrWhiteSpace(diagram) ? diagram : string.IsNullOrWhiteSpace(path) ? "Diagram" : path
@@ -116,16 +125,24 @@ ORDER BY SourceKind,SourceKey;
                 string details = !string.IsNullOrWhiteSpace(detailsOverride) ? detailsOverride : kind == ResourceKind.DatabaseSnapshot
                     ? string.IsNullOrEmpty(database) ? path : database : kind == ResourceKind.Diagram && Key(11) != null ? "Diagram" : path;
                 var header = new ExistingScopeResourceCandidate(name, kind == ResourceKind.DatabaseSnapshot ? "Database" : kind.ToString(),
-                    details, string.IsNullOrWhiteSpace(sourceName) ? "Scope" : sourceName, kind, path, alias, detailsOverride, reader.GetBoolean(9));
+                    details, string.IsNullOrWhiteSpace(sourceName) ? "Scope" : sourceName, kind, path, alias, detailsOverride, reader.GetBoolean(9), source);
                 items.Add(new(header, Key(2), sourceKind == 0 ? after : null, Key(10), Key(11),
                     new(session.Epoch, scopeVersion, snapshotVersion, diagramVersion, sourceKind, after)));
             }
         return new(items.ToImmutable(), count < pageSize ? null : new(session.Epoch, scopeVersion, snapshotVersion, diagramVersion, sourceKind, after));
     }
 
-    internal static bool SameIdentity(ResourceKind firstKind, string first, ResourceKind secondKind, string second)
+    internal static bool SameIdentity(ResourceKind firstKind, string first, ResourceKind secondKind, string second,
+        ResourceSourceDefinition? firstSource = null, ResourceSourceDefinition? secondSource = null)
     {
         if (firstKind != secondKind) return false;
+        bool remoteFirst=firstSource?.Provider is SourceProvider.Git or SourceProvider.AzureBlob or SourceProvider.LiveSql;
+        bool remoteSecond=secondSource?.Provider is SourceProvider.Git or SourceProvider.AzureBlob or SourceProvider.LiveSql;
+        if(remoteFirst||remoteSecond)
+            return remoteFirst && remoteSecond && firstSource!.SourceId==secondSource!.SourceId;
+        // URI paths are logical provider locations. They must never acquire the process working directory,
+        // and their path/ref/prefix case cannot be folded like a Windows filesystem path.
+        if(IsRemoteLocator(first)||IsRemoteLocator(second))return string.Equals(first,second,StringComparison.Ordinal);
         static string Normalize(ResourceKind kind, string path)
         {
             if (kind is not (ResourceKind.File or ResourceKind.Folder)) return path.Trim();
@@ -135,4 +152,7 @@ ORDER BY SourceKind,SourceKey;
         }
         return Normalize(firstKind, first).Equals(Normalize(secondKind, second), StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsRemoteLocator(string path) =>
+        Uri.TryCreate(path,UriKind.Absolute,out var uri) && !uri.IsFile || path.Contains("://",StringComparison.Ordinal);
 }

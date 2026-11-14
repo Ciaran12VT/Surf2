@@ -77,7 +77,7 @@ UPDATE surf.DataSet SET ActualRowCount=ActualRowCount-1,ExpectedActualRowCount=E
         await Task.WhenAll(new RelationalCaptureSchemaUpgrade().UpgradeAsync(fixture.DestinationConnectionString),
             new RelationalCaptureSchemaUpgrade().UpgradeAsync(fixture.DestinationConnectionString));
         var format = await new PersistenceFormatProbe().ProbeAsync(fixture.DestinationConnectionString);
-        check(format.Format == PersistenceFormat.Relational && format.SchemaVersion == PersistenceFormatProbe.SupportedSchemaVersion &&
+        check(format.Format == PersistenceFormat.Relational && format.SchemaVersion == 2 &&
             format.DatabaseIdentity == identity, "Concurrent startup migrations publish the new format and retain database identity");
         check(Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM sys.tables WHERE schema_id=SCHEMA_ID(N'capture');")) == 0 &&
             Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.DataValueException;")) == 0,
@@ -85,6 +85,8 @@ UPDATE surf.DataSet SET ActualRowCount=ActualRowCount-1,ExpectedActualRowCount=E
         check(Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.FullTableData;")) == 3,
             "Ready, empty and partially written captures each receive one JSON document");
 
+        await using(var upgraded=await session.OpenAsync())
+            await RelationalResourceSchemaUpgrade.ApplyAsync(upgraded,identity,false,CancellationToken.None);
         var capture = new RelationalCaptureStore(new RelationalSession(fixture.DestinationConnectionString));
         var descriptor = await capture.GetDescriptorAsync(currentKey);
         check(descriptor.Summary.RevisionKey == snapshots.CurrentDataRevision && descriptor.Summary.LayoutKey == layoutKey &&
@@ -115,7 +117,8 @@ UPDATE surf.DataSet SET ActualRowCount=ActualRowCount-1,ExpectedActualRowCount=E
             "Captured content search uses decoded cell values after JSON migration");
         object? before = await fixture.DestinationSqlAsync("SELECT HASHBYTES('SHA2_256',JsonPayload) FROM surf.FullTableData WHERE DataSetKey=@Key;",
             RelationalSession.Parameter("@Key", SqlDbType.BigInt, currentKey));
-        await new RelationalCaptureSchemaUpgrade().UpgradeAsync(fixture.DestinationConnectionString);
+        await using(var upgraded=await session.OpenAsync())
+            await RelationalResourceSchemaUpgrade.ApplyAsync(upgraded,identity,false,CancellationToken.None);
         var after = (byte[])(await fixture.DestinationSqlAsync("SELECT HASHBYTES('SHA2_256',JsonPayload) FROM surf.FullTableData WHERE DataSetKey=@Key;",
             RelationalSession.Parameter("@Key", SqlDbType.BigInt, currentKey)))!;
         check(before is byte[] hash && hash.SequenceEqual(after) &&

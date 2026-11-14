@@ -129,7 +129,7 @@ public static class PackageRowDecodingChecks
             catch (RelationalPackageLimitException)
             { Check(reservedPayload == 0, "Row/batch budget rejects declared LOB before allocating/reserving its payload"); }
         }
-        long[]? previous = null;
+        object[]? previous = null;
         PackageRowDecoding.OrderedKey(new[] { Column("bigint") }, new[] { "Value" }, new object[] { 1L }, ref previous);
         try
         {

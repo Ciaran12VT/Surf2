@@ -12,9 +12,9 @@ public sealed class ExistingScopeResourceService
         DiagramLibrary diagramLibrary)
     {
         HashSet<string> targetKeys = targetScope.Resources
-            .Select(resource => CreateIdentityKey(resource.Kind, resource.Path))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var candidatesByKey = new Dictionary<string, ExistingScopeResourceCandidate>(StringComparer.OrdinalIgnoreCase);
+            .Select(resource => CreateIdentityKey(resource.Kind, resource.Path, resource.Source))
+            .ToHashSet(StringComparer.Ordinal);
+        var candidatesByKey = new Dictionary<string, ExistingScopeResourceCandidate>(StringComparer.Ordinal);
 
         foreach (Scope scope in scopeLibrary.Scopes)
         {
@@ -79,9 +79,9 @@ public sealed class ExistingScopeResourceService
 
     public bool TryAddResource(Scope targetScope, ExistingScopeResourceCandidate candidate)
     {
-        string candidateKey = CreateIdentityKey(candidate.Kind, candidate.Path);
+        string candidateKey = CreateIdentityKey(candidate.Kind, candidate.Path, candidate.SourceConfiguration);
         bool alreadyExists = targetScope.Resources.Any(resource =>
-            string.Equals(CreateIdentityKey(resource.Kind, resource.Path), candidateKey, StringComparison.OrdinalIgnoreCase));
+            string.Equals(CreateIdentityKey(resource.Kind, resource.Path, resource.Source), candidateKey, StringComparison.Ordinal));
         if (alreadyExists)
         {
             return false;
@@ -96,7 +96,7 @@ public sealed class ExistingScopeResourceService
         HashSet<string> targetKeys,
         ExistingScopeResourceCandidate candidate)
     {
-        string key = CreateIdentityKey(candidate.Kind, candidate.Path);
+        string key = CreateIdentityKey(candidate.Kind, candidate.Path, candidate.SourceConfiguration);
         if (targetKeys.Contains(key))
         {
             return;
@@ -121,7 +121,7 @@ public sealed class ExistingScopeResourceService
             resource.Path,
             resource.DisplayNameOverride,
             resource.DetailsOverride,
-            resource.IncludeChildren);
+            resource.IncludeChildren, resource.Source?.Copy());
     }
 
     private static string GetResourceDisplayName(
@@ -193,12 +193,16 @@ public sealed class ExistingScopeResourceService
         };
     }
 
-    private static string CreateIdentityKey(ResourceKind kind, string path)
+    private static string CreateIdentityKey(ResourceKind kind, string path, ResourceSourceDefinition? source = null)
     {
+        if(source?.Provider is SourceProvider.Git or SourceProvider.AzureBlob or SourceProvider.LiveSql)
+            return $"{kind}|source:{source.SourceId:N}";
+        if(Uri.TryCreate(path,UriKind.Absolute,out var uri)&&!uri.IsFile)
+            return $"{kind}|uri:{path}";
         string normalizedPath = kind is ResourceKind.File or ResourceKind.Folder
             ? NormalizePath(path)
             : path.Trim();
-        return $"{kind}|{normalizedPath}";
+        return $"{kind}|{normalizedPath.ToUpperInvariant()}";
     }
 
     private static string NormalizePath(string path)

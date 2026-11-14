@@ -219,6 +219,10 @@ AND rr.IsSealed=1 AND s.IsPublished=1;
     {
         RequireEpoch(address);
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
+        if (SourceResources.ResourceWorkspace.IsBlockedPath(address.PersistentDocumentPath ?? address.DocumentPath) ||
+            SourceResources.LiveSourceWorkspace.TryParse(address.PersistentDocumentPath ?? address.DocumentPath, out var live, out _) && !SourceResources.LiveSourceWorkspace.Available(live) ||
+            address.Snapshot is { } snapshot && SourceResources.ResourceWorkspace.IsSnapshotBlocked(snapshot.SnapshotId))
+            throw new DocumentTargetException(SavedDocumentTargetState.Missing, "The resource was unloaded while opening this document.");
         if (address.Resource != null)
         {
             var current = await _runtime.Snapshots.ResolveResourceAsync(address.Resource.ResourceKey, ct: ct).ConfigureAwait(false);

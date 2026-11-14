@@ -197,7 +197,7 @@ public static partial class StorageRegressionSuite
         check(Equals(await fixture.DestinationSqlAsync("SELECT State FROM surf.StorageFormatInfo WHERE Singleton=1;"), "Migrating"),
             "Schema installer never publishes Ready");
         byte[] checksum = (byte[])Required(await fixture.DestinationSqlAsync("SELECT ScriptChecksum FROM surf.SchemaMigration;"), "schema checksum");
-        check(RelationalSchemaInstaller.ReadScripts().Length == 6 &&
+        check(RelationalSchemaInstaller.ReadScripts().Length == 7 &&
             Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM sys.table_types WHERE schema_id=SCHEMA_ID(N'surf') AND name=N'IndexKeyBatch';")) == 1 &&
             Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.IndexCatalogueHead;")) == 1,
             "Fifth 001.Indexes script installs its table type and catalogue head after State");

@@ -34,6 +34,8 @@ public sealed class DatabaseExportService(DatabaseDocumentService databaseDocume
         int csvFileCount = 0;
 
         using ZipArchive archive = ZipFile.Open(zipFilePath, ZipArchiveMode.Create);
+        using (var metadata = archive.CreateEntry(SnapshotExportMetadata.FileName).Open())
+            System.Text.Json.JsonSerializer.Serialize(metadata, SnapshotExportMetadata.Create(snapshot.Origin, snapshot.DatabaseName, snapshot.ImportedAtUtc, snapshot.FullDataTableNames));
         AddFolderEntry(archive, usedEntryNames, StoredProceduresFolder);
         AddFolderEntry(archive, usedEntryNames, ViewsFolder);
         AddFolderEntry(archive, usedEntryNames, FunctionsFolder);

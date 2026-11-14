@@ -10,16 +10,27 @@ public sealed partial class RelationalPackageExporter
 {
     private readonly RelationalSession _session;
     private readonly RelationalPackageLimits _limits;
+    private readonly int _schemaVersion;
 
-    public RelationalPackageExporter(RelationalSession session, RelationalPackageLimits? limits = null)
+    public RelationalPackageExporter(RelationalSession session, RelationalPackageLimits? limits = null,
+        int schemaVersion = PersistenceFormatProbe.SupportedSchemaVersion)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _limits = limits ?? new();
         _limits.Validate();
+        if(schemaVersion is <1 or >PersistenceFormatProbe.SupportedSchemaVersion)throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+        _schemaVersion=schemaVersion;
     }
 
-    public async Task<RelationalPackageExportResult> ExportAsync(string destination,
+    public Task<RelationalPackageExportResult> ExportAsync(string destination,
         RelationalPackageExportOptions? options = null, CancellationToken cancellationToken = default)
+        =>ExportCoreAsync(destination,options,cancellationToken,null);
+
+    internal Task<RelationalPackageExportResult> ExportExclusiveAsync(SqlConnection connection,string destination,CancellationToken ct)
+        =>ExportCoreAsync(destination,new(){AllowBlockingConsistentFallback=true},ct,connection);
+
+    private async Task<RelationalPackageExportResult> ExportCoreAsync(string destination,
+        RelationalPackageExportOptions? options,CancellationToken cancellationToken,SqlConnection? exclusiveConnection)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         var settings = options ?? new();
@@ -34,7 +45,13 @@ public sealed partial class RelationalPackageExporter
         RelationalPackageExportResult? result = null;
         try
         {
-            await _session.RequireReadyAsync(ct);
+            if(exclusiveConnection==null&&_schemaVersion==PersistenceFormatProbe.SupportedSchemaVersion) await _session.RequireReadyAsync(ct);
+            else if(exclusiveConnection==null)
+            {
+                var format=await new PersistenceFormatProbe().ProbeAsync(_session.ConnectionString,ct);
+                if(format.Format!=PersistenceFormat.Relational || format.SchemaVersion!=_schemaVersion)
+                    throw new InvalidOperationException("Compatibility export requires its exact Ready source schema.");
+            }
             var budget = new PackageBudget(_limits);
             var tables = new List<RelationalPackageTableStream>();
             var localFiles = new List<RelationalPackageLocalStream>();
@@ -48,14 +65,26 @@ public sealed partial class RelationalPackageExporter
                 owned = true;
                 using (var archive = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
                 {
-                    await using (var connection = await _session.OpenAsync(ct))
+                    await using (var ownedConnection = exclusiveConnection==null?await _session.OpenAsync(ct):null)
                     {
+                        var connection=exclusiveConnection??ownedConnection!;
                         isolation = await SelectIsolationAsync(connection, settings.AllowBlockingConsistentFallback, ct);
                         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(isolation, ct);
                         source = await ReadReadyHeaderAsync(connection, transaction, ct);
-                        await ValidateCompleteCapturesAsync(connection, transaction, ct);
-                        foreach (var spec in PackageTableCatalogue.Authoritative)
+                        if(_schemaVersion>=2)await ValidateCompleteCapturesAsync(connection, transaction, ct);
+                        foreach (var spec in PackageTableCatalogue.ForSchema(_schemaVersion))
                             await ExportTableAsync(spec);
+                        if(_schemaVersion==1)
+                        {
+                            var captureTables=new List<PackageTableSpec>();
+                            await using(var list=Command(connection,transaction,"SELECT LayoutKey,ColumnCount FROM surf.DataLayout l WHERE EXISTS(SELECT 1 FROM surf.DataSet d WHERE d.LayoutKey=l.LayoutKey AND "+PackageTableCatalogue.DataSet("d")+") ORDER BY LayoutKey;"))
+                            {
+                                using var cancel=RelationalSession.CancelCommand(list,ct);
+                                await using var reader=await list.ExecuteReaderAsync(ct);
+                                while(await reader.ReadAsync(ct))captureTables.Add(PackageTableCatalogue.Capture(reader.GetInt64(0),reader.GetInt32(1)));
+                            }
+                            foreach(var spec in captureTables)await ExportTableAsync(spec);
+                        }
                         await transaction.CommitAsync(ct);
 
                         async Task ExportTableAsync(PackageTableSpec spec)
@@ -71,9 +100,9 @@ public sealed partial class RelationalPackageExporter
                     if (settings.LocalFiles != null)
                         await foreach (var selected in settings.LocalFiles.WithCancellation(ct).ConfigureAwait(false))
                             localFiles.Add(await WriteLocalFileAsync(selected, archive, budget, ct));
-                    var manifest = new RelationalPackageManifest(RelationalPackageFormat.Identifier, RelationalPackageFormat.PackageVersion,
+                    var manifest = new RelationalPackageManifest(RelationalPackageFormat.Identifier, _schemaVersion<=2?2:RelationalPackageFormat.PackageVersion,
                         RelationalPackageFormat.ExporterVersion, RelationalPackageFormat.RowEncodingVersion,
-                        PersistenceFormatProbe.FormatIdentifier, PersistenceFormatProbe.SupportedSchemaVersion,
+                        PersistenceFormatProbe.FormatIdentifier, _schemaVersion,
                         source.MinimumReader, source.MinimumWriter, source.Identity, source.CreatedAt, exportedAt,
                         isolation == IsolationLevel.Snapshot ? "SqlSnapshot-v1" : "SqlSerializableBlocking-v1",
                         "ExplicitCallerSelection-v1", tables.AsReadOnly(), localFiles.AsReadOnly());
@@ -127,8 +156,8 @@ SELECT Singleton,FormatIdentifier,SchemaVersion,MinimumReaderVersion,MinimumWrit
         using var cancellation = RelationalSession.CancelCommand(command, ct);
         await using var reader = await command.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct) || reader.GetByte(0) != 1 || reader.GetString(1) != PersistenceFormatProbe.FormatIdentifier ||
-            reader.GetInt32(2) != PersistenceFormatProbe.SupportedSchemaVersion ||
-            reader.GetInt32(3) != PersistenceFormatProbe.SupportedSchemaVersion || reader.GetInt32(4) != PersistenceFormatProbe.SupportedSchemaVersion ||
+            reader.GetInt32(2) != _schemaVersion ||
+            reader.GetInt32(3) != _schemaVersion || reader.GetInt32(4) != _schemaVersion ||
             reader.GetString(5) != "Ready" || reader.GetGuid(6) == Guid.Empty)
             throw new InvalidOperationException("Package export requires the exact supported Ready format inside the pinned snapshot.");
         var result = new SourceHeader(reader.GetGuid(6), reader.GetFieldValue<DateTimeOffset>(7), reader.GetInt32(3), reader.GetInt32(4));

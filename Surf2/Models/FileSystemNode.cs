@@ -12,7 +12,12 @@ public enum FileSystemNodeIconKind
     Database,
     Diagrams,
     VirtualFolder,
-    Missing
+    Missing,
+    GitFolder,
+    GitRepository,
+    BlobStorage,
+    LiveDatabase,
+    SourceAction
 }
 
 public sealed class FileSystemNode
@@ -25,6 +30,10 @@ public sealed class FileSystemNode
     private static readonly Geometry DatabaseIconGeometry = CreateFrozenGeometry("M4,5 C4,3.7 14,3.7 14,5 C14,6.3 4,6.3 4,5 M4,5 L4,13 C4,14.3 14,14.3 14,13 L14,5 M4,9 C4,10.3 14,10.3 14,9");
     private static readonly Geometry DiagramsIconGeometry = CreateFrozenGeometry("M5,3.5 L13,3.5 L13,7.5 L5,7.5 Z M9,7.5 L9,10 M5,13.5 L2,13.5 L2,16.5 L5,16.5 Z M16,13.5 L13,13.5 L13,16.5 L16,16.5 Z M9,10 L3.5,13.5 M9,10 L14.5,13.5");
     private static readonly Geometry MissingIconGeometry = CreateFrozenGeometry("M9,2.5 L16,15.5 L2,15.5 Z M9,6.5 L9,10.5 M9,13.2 L9.1,13.2");
+    private static readonly Geometry GitIconGeometry = CreateFrozenGeometry("M9,1 L17,9 L9,17 L1,9 Z M6,5 L6,12 M6,6 L12,12 M5,5 L7,5 M5,12 L7,12 M11,12 L13,12");
+    private static readonly Geometry GitFolderIconGeometry = CreateFrozenGeometry("M2,4 L7,4 L9,6 L16,6 L16,16 L2,16 Z M7,8 L7,13 M7,9 L12,13 M6,8 L8,8 M6,13 L8,13 M11,13 L13,13");
+    private static readonly Geometry BlobIconGeometry = CreateFrozenGeometry("M2,3 L16,3 L16,16 L2,16 Z M2,7 L16,7 M2,11 L16,11 M7,7 L7,16 M12,7 L12,16");
+    private static readonly Geometry SwitchIconGeometry = CreateFrozenGeometry("M2,5 L15,5 L12,2 M15,5 L12,8 M16,13 L3,13 L6,10 M3,13 L6,16");
 
     private static readonly Brush FileIconBrush = CreateFrozenBrush(Color.FromRgb(0x64, 0x74, 0x8B));
     private static readonly Brush FolderIconBrush = CreateFrozenBrush(Color.FromRgb(0xB4, 0x79, 0x00));
@@ -124,6 +133,11 @@ public sealed class FileSystemNode
     {
         FileSystemNodeIconKind.Folder => FolderIconGeometry,
         FileSystemNodeIconKind.Database => DatabaseIconGeometry,
+        FileSystemNodeIconKind.LiveDatabase => DatabaseIconGeometry,
+        FileSystemNodeIconKind.GitFolder => GitFolderIconGeometry,
+        FileSystemNodeIconKind.GitRepository => GitIconGeometry,
+        FileSystemNodeIconKind.BlobStorage => BlobIconGeometry,
+        FileSystemNodeIconKind.SourceAction => SwitchIconGeometry,
         FileSystemNodeIconKind.Diagrams => DiagramsIconGeometry,
         FileSystemNodeIconKind.VirtualFolder => FolderIconGeometry,
         FileSystemNodeIconKind.Missing => MissingIconGeometry,
@@ -134,6 +148,10 @@ public sealed class FileSystemNode
     {
         FileSystemNodeIconKind.Folder => FolderIconBrush,
         FileSystemNodeIconKind.Database => DatabaseIconBrush,
+        FileSystemNodeIconKind.LiveDatabase => Brushes.DodgerBlue,
+        FileSystemNodeIconKind.GitFolder or FileSystemNodeIconKind.GitRepository => Brushes.OrangeRed,
+        FileSystemNodeIconKind.BlobStorage => Brushes.DodgerBlue,
+        FileSystemNodeIconKind.SourceAction => Brushes.SlateBlue,
         FileSystemNodeIconKind.Diagrams => DiagramsIconBrush,
         FileSystemNodeIconKind.VirtualFolder => VirtualFolderIconBrush,
         FileSystemNodeIconKind.Missing => MissingIconBrush,

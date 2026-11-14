@@ -22,7 +22,8 @@ public sealed partial class RelationalSnapshotStore
         foreach (var batch in objects.SelectMany(value => new[] { value.RevisionKey, previous[value.ResourceKey].RevisionKey }).Distinct().Chunk(128))
             foreach (var pair in await ReadRuntimeObjectValuesAsync(batch, ct).ConfigureAwait(false)) values.Add(pair.Key, pair.Value);
         var columns = new Dictionary<long,long>(); var keys = new Dictionary<long,long>();
-        for (int i = 0; i < plan.Resources.Count; i++)
+        // Normalize data before metadata so an unchanged row count does not hide a changed dataset's capture time.
+        foreach (int i in Enumerable.Range(0, plan.Resources.Count).OrderBy(i => plan.Resources[i].Kind == DatabaseVersionedResourceKind.TableData ? 0 : 1))
         {
             ct.ThrowIfCancellationRequested();
             var value = plan.Resources[i];
@@ -32,9 +33,14 @@ public sealed partial class RelationalSnapshotStore
             {
                 var before = await ReadTableMetadataAsync(old.RevisionKey, ct).ConfigureAwait(false);
                 var after = await ReadTableMetadataAsync(value.RevisionKey, ct).ConfigureAwait(false);
-                same = SnapshotValueEquality.Table(before.Table, after.Table) &&
+                same = CaptureTableEqual(before.Table, after.Table, plan.CompareCaptureContent) &&
                     SnapshotValueEquality.Sequence(before.Columns, after.Columns, (a,b) => SnapshotValueEquality.Column(a.Column, b.Column)) &&
                     SnapshotValueEquality.Sequence(before.PrimaryKeys, after.PrimaryKeys, (a,b) => SnapshotValueEquality.Key(a.Column, b.Column));
+                if (same && plan.CompareCaptureContent && after.Table.HasFullData)
+                {
+                    var data = plan.Resources.FirstOrDefault(r => r.Kind == DatabaseVersionedResourceKind.TableData && r.SchemaName == value.SchemaName && r.Name == value.Name);
+                    if (data != null && (!previous.TryGetValue(data.ResourceKey, out var oldData) || oldData.RevisionKey != data.RevisionKey)) same = false;
+                }
                 if (same)
                 {
                     for (int c = 0; c < after.Columns.Count; c++) columns[after.Columns[c].ColumnRevisionKey] = before.Columns[c].ColumnRevisionKey;
@@ -42,7 +48,7 @@ public sealed partial class RelationalSnapshotStore
                 }
             }
             else if (value.Kind == DatabaseVersionedResourceKind.TableData)
-                same = await RuntimeDataEqualAsync(old.RevisionKey, value.RevisionKey, ct).ConfigureAwait(false);
+                same = await RuntimeDataEqualAsync(old.RevisionKey, value.RevisionKey, plan.CompareCaptureContent, ct).ConfigureAwait(false);
             else same = values[old.RevisionKey] == values[value.RevisionKey];
             if (same) plan.Resources[i] = value with { RevisionKey = old.RevisionKey };
         }
@@ -76,7 +82,7 @@ public sealed partial class RelationalSnapshotStore
         return result;
     }
 
-    private async Task<bool> RuntimeDataEqualAsync(long beforeRevision, long afterRevision, CancellationToken ct)
+    private async Task<bool> RuntimeDataEqualAsync(long beforeRevision, long afterRevision, bool contentOnly, CancellationToken ct)
     {
         var capture = new RelationalCaptureStore(session);
         var before = await capture.GetForRevisionAsync(beforeRevision, ct).ConfigureAwait(false);
@@ -84,12 +90,12 @@ public sealed partial class RelationalSnapshotStore
         if (before == null || after == null) throw new InvalidOperationException("A staged dataset is not ready.");
         if (before.Summary.ReportedRowCount != after.Summary.ReportedRowCount ||
             before.Summary.ActualRowCount != after.Summary.ActualRowCount ||
-            !before.Summary.ImportedAtUtc.EqualsExact(after.Summary.ImportedAtUtc) ||
+            (!contentOnly && !before.Summary.ImportedAtUtc.EqualsExact(after.Summary.ImportedAtUtc)) ||
             !before.Columns.SequenceEqual(after.Columns)) return false;
         var oldMetadata = await ReadTableDataMetadataAsync(beforeRevision, ct).ConfigureAwait(false);
         var newMetadata = await ReadTableDataMetadataAsync(afterRevision, ct).ConfigureAwait(false);
         if (oldMetadata.SchemaName != newMetadata.SchemaName || oldMetadata.TableName != newMetadata.TableName ||
-            !SnapshotValueEquality.Table(oldMetadata.Table, newMetadata.Table)) return false;
+            !CaptureTableEqual(oldMetadata.Table, newMetadata.Table, contentOnly)) return false;
         await using var oldRows = capture.StreamRowsAsync(before.Summary.DataSetKey, cancellationToken: ct).GetAsyncEnumerator(ct);
         await using var newRows = capture.StreamRowsAsync(after.Summary.DataSetKey, cancellationToken: ct).GetAsyncEnumerator(ct);
         while (await oldRows.MoveNextAsync().ConfigureAwait(false))
@@ -103,8 +109,13 @@ public sealed partial class RelationalSnapshotStore
         if (plan.IsNew || plan.Previous.Count != plan.Resources.Count ||
             !plan.Columns.SequenceEqual(plan.PreviousColumns.Select(value => value.ColumnRevisionKey)) ||
             !plan.PrimaryKeys.SequenceEqual(plan.PreviousPrimaryKeys.Select(value => value.KeyColumnKey)) ||
-            !plan.FullDataSelections.SequenceEqual(plan.PreviousFullDataSelections, StringComparer.Ordinal)) return false;
+            (!plan.CompareCaptureContent && !plan.FullDataSelections.SequenceEqual(plan.PreviousFullDataSelections, StringComparer.Ordinal))) return false;
         var previous = plan.Previous.ToDictionary(value => value.ResourceKey);
         return plan.Resources.All(value => previous.TryGetValue(value.ResourceKey, out var old) && value == old);
     }
+    internal static bool CaptureTableEqual(SqlTable? before, SqlTable? after, bool contentOnly) => !contentOnly
+        ? SnapshotValueEquality.Table(before, after)
+        : before == null || after == null ? before == after
+        : before.SchemaName == after.SchemaName && before.TableName == after.TableName &&
+          before.HasFullData == after.HasFullData && before.FullDataRowCount == after.FullDataRowCount;
 }

@@ -7,7 +7,36 @@ namespace Surf2.Storage.Relational.Snapshots;
 public sealed record SnapshotHeader(string SnapshotId, string DisplayName, string DatabaseName,
     DateTimeOffset ImportedAtUtc, long SortOrdinal, long UserKey = 1);
 public sealed record SnapshotSummary(long SnapshotKey, Guid PublicId, string SnapshotId, string DisplayName,
-    string DatabaseName, DateTimeOffset ImportedAtUtc, long SortOrdinal, long? CurrentVersionKey, byte[] RowVersion);
+    string DatabaseName, DateTimeOffset ImportedAtUtc, long SortOrdinal, long? CurrentVersionKey, byte[] RowVersion)
+{
+    public SnapshotRefreshDisplay? RefreshDisplay { get; init; }
+}
+public sealed record SnapshotRefreshDisplay(int VersionNumber, DateTimeOffset CapturedAtUtc,
+    DateTimeOffset? LastAttemptUtc, SnapshotRefreshOutcome? LastOutcome, DateTimeOffset? LastSuccessfulRefreshUtc,
+    DateTimeOffset? LastCompletedRefreshUtc = null, SnapshotRefreshOutcome? LastCompletedOutcome = null)
+{
+    public string Label(string name)
+    {
+        static string Stamp(DateTimeOffset value) => value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+        string label = $"V{VersionNumber} {name} - Captured at {Stamp(CapturedAtUtc)}";
+        if (LastOutcome == SnapshotRefreshOutcome.Running)
+        {
+            label += " - Last Refreshed " + (LastCompletedRefreshUtc is { } completed ? Stamp(completed) : "not recorded");
+            if (LastCompletedOutcome is not null and not (SnapshotRefreshOutcome.Changed or SnapshotRefreshOutcome.Unchanged)) label += $" ({LastCompletedOutcome})";
+            label += " - Refresh started " + (LastAttemptUtc is { } started ? Stamp(started) : "unknown") + " (completion not recorded)";
+            label += "; last successful refresh: " + (LastSuccessfulRefreshUtc is { } success ? Stamp(success) : "none");
+            return label;
+        }
+        if (LastAttemptUtc is { } attempt)
+        {
+            label += " - Last Refreshed " + Stamp(attempt);
+            if (LastOutcome is not (SnapshotRefreshOutcome.Changed or SnapshotRefreshOutcome.Unchanged))
+                label += $" ({LastOutcome}; last successful refresh: {(LastSuccessfulRefreshUtc is { } success ? Stamp(success) : "none")})";
+        }
+        else label += " - Last Refreshed: not recorded";
+        return label;
+    }
+}
 public sealed record SnapshotResourceSummary(long ResourceKey, Guid PublicId, long SnapshotKey,
     DatabaseVersionedResourceKind? Kind, string SchemaName, string ObjectName, string OriginalResourceKey,
     long RevisionKey, long SortOrdinal, byte[] RowVersion, TableRevisionSource TableSource = TableRevisionSource.Metadata);

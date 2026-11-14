@@ -27,6 +27,31 @@ public sealed class RelationalDatabaseCaptureService
         IProgress<RelationalCaptureProgress>? progress = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.ExpectedScope.Epoch != _runtime.Session.Epoch || (request.ReplaceSnapshot != null && request.ReplaceSnapshot.Epoch != _runtime.Session.Epoch))
+            throw new ArgumentException("The capture expectation belongs to another workspace.");
+        var attempt = new CaptureAttempt();
+        if (request.ReplaceSnapshot != null)
+        {
+            await _runtime.Snapshots.StartRefreshAsync(request.ReplaceSnapshot.SnapshotKey, attempt.Id, request.SourceId, ct).ConfigureAwait(false);
+            attempt.Started = true;
+        }
+        try { return await CaptureCoreAsync(request, attempt, progress, ct).ConfigureAwait(false); }
+        catch (SnapshotPublicationOutcomeUnknownException) { throw; }
+        catch (Exception error)
+        {
+            if (attempt.Started)
+            {
+                try { await _runtime.Snapshots.FailRefreshAsync(attempt.Id, error is OperationCanceledException, error.Message).ConfigureAwait(false); }
+                catch (Exception recordError) { throw new AggregateException("Capture failed and its attempt outcome could not be recorded.", error, recordError); }
+            }
+            throw;
+        }
+    }
+    private sealed class CaptureAttempt { public Guid Id { get; } = Guid.NewGuid(); public bool Started { get; set; } }
+    private async Task<RelationalCaptureResult> CaptureCoreAsync(RelationalDatabaseCaptureRequest request, CaptureAttempt attempt,
+        IProgress<RelationalCaptureProgress>? progress, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
         RequireDifferentSource(request.SourceConnectionString);
         if (request.ExpectedScope.Epoch != _runtime.Session.Epoch || string.IsNullOrWhiteSpace(request.DisplayName))
             throw new ArgumentException("Capture requires an active scope token and nonempty display name.");
@@ -35,7 +60,7 @@ public sealed class RelationalDatabaseCaptureService
         foreach (var table in request.FullDataTables)
         {
             _ = table.CreateReadQuery();
-            if (table.ObjectId <= 0 || table.SchemaName.Length is < 1 or > 128 || table.TableName.Length is < 1 or > 128 ||
+            if (table.SchemaName.Length is < 1 or > 128 || table.TableName.Length is < 1 or > 128 ||
                 !selected.TryAdd((table.SchemaName, table.TableName), table)) throw new ArgumentException("Invalid or duplicate selected source table.");
         }
         var scope = await _runtime.StateStore.ReadScopeAsync(request.ExpectedScope.Key, ct).ConfigureAwait(false) ?? throw new StateConflictException("capture scope");
@@ -47,8 +72,14 @@ public sealed class RelationalDatabaseCaptureService
         var sourceIsolation = source.Isolation;
         progress?.Report(new("Source consistency: " + sourceIsolation, 0, 0));
         string database = await source.DatabaseNameAsync(ct).ConfigureAwait(false);
+        var origin = await source.ReadOriginAsync(request.SourceId, ct).ConfigureAwait(false);
+        if (request.ExpectedOrigin?.IsComplete == true && !request.ExpectedOrigin.AgreesWith(origin))
+            throw new InvalidOperationException("The source database identity has changed. Review and confirm its origin before refreshing this snapshot.");
         var budget = new SnapshotOperationBudget(_limits); long capturedRows = 0;
         var plan = await _runtime.Snapshots.BeginRuntimeStageAsync(request.ReplaceSnapshot, request.DisplayName, database, DateTimeOffset.UtcNow, ct).ConfigureAwait(false);
+        plan.CompareCaptureContent = true; plan.Origin = origin; plan.CaptureEventId = attempt.Id;
+        if (!attempt.Started) { await _runtime.Snapshots.StartRefreshAsync(plan.SnapshotKey, attempt.Id, request.SourceId, ct).ConfigureAwait(false); attempt.Started = true; }
+        plan.FullDataSelections.AddRange(request.FullDataTables.Select(table => table.SelectionText));
         await SnapshotStaging.ReadBaselineAsync(_runtime, plan, budget, ct).ConfigureAwait(false);
         int afterObject = 0; long objectOrdinal = 0;
         while (await source.NextObjectAsync(afterObject, ct).ConfigureAwait(false) is { } item)
@@ -78,7 +109,8 @@ public sealed class RelationalDatabaseCaptureService
             foreach (var column in metadata.Columns) budget.Add(column.ColumnName, column.DataType);
             foreach (var key in metadata.Keys) budget.Add(key.ConstraintName, key.ColumnName);
             bool full = selected.TryGetValue((table.SchemaName, table.TableName), out var expectedTable);
-            if (full && expectedTable!.ObjectId != table.ObjectId) throw new InvalidOperationException("A selected source table was replaced after selection.");
+            // Bind the saved schema/name request to today's table, including a same-name replacement.
+            if (full) expectedTable = table with { RowSelection = expectedTable!.RowSelection };
             long count = 0;
             if (full)
             {
@@ -101,7 +133,7 @@ public sealed class RelationalDatabaseCaptureService
                 await _runtime.Snapshots.StageRuntimeUnitAsync(async (writer, token) =>
                 { await writer.SealRevisionAsync(staged.RevisionKey, token).ConfigureAwait(false); return 0; }, ct).ConfigureAwait(false);
                 budget.Add(64); plan.Resources.Add(staged); dataOrdinal++;
-                plan.FullDataSelections.Add(expectedTable!.SelectionText); capturedRows = checked(capturedRows + count);
+                capturedRows = checked(capturedRows + count);
                 progress?.Report(new("Captured " + table.DisplayName, budget.Units, capturedRows));
             }
             var header = new SqlTable { SchemaName = table.SchemaName, TableName = table.TableName, HasFullData = full,
@@ -110,7 +142,8 @@ public sealed class RelationalDatabaseCaptureService
             plan.Resources.Add(stagedTable.Resource); plan.Columns.AddRange(stagedTable.Columns); plan.PrimaryKeys.AddRange(stagedTable.Keys);
             progress?.Report(new("Table metadata", budget.Units, capturedRows));
         }
-        if (foundSelections.Count != selected.Count) throw new InvalidOperationException("A selected source table disappeared or is not visible.");
+        var skipped = selected.Where(pair => !foundSelections.Contains(pair.Key)).Select(pair => pair.Value.DisplayName).ToArray();
+        if (skipped.Length != 0) progress?.Report(new("Skipped confirmed absent: " + string.Join(", ", skipped), budget.Units, capturedRows));
         await source.CompleteAsync(ct).ConfigureAwait(false);
         if (plan.IsNew)
             scope.Value.Resources.Add(new()
@@ -124,7 +157,7 @@ public sealed class RelationalDatabaseCaptureService
             });
         progress?.Report(new("Publishing", budget.Units, capturedRows));
         var result = await _runtime.Snapshots.PublishRuntimeStageAsync(plan, scope.Value, request.ExpectedScope, Guid.NewGuid(), request.VersionName, ct).ConfigureAwait(false);
-        return new(result.Snapshot, result.ScopeToken!, scope.Value, capturedRows, result.VersionKey) { SourceIsolation = sourceIsolation };
+        return new(result.Snapshot, result.ScopeToken!, scope.Value, capturedRows, result.VersionKey) { SourceIsolation = sourceIsolation, SkippedTables = skipped, Origin = origin };
     }
 
     private void RequireDifferentSource(string connectionString)

@@ -17,9 +17,13 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     private readonly RelationalRuntime _runtime;
     private readonly RelationalDatabaseCaptureService _service;
     private readonly Scope _scope;
-    private readonly StateToken _scopeToken;
+    private StateToken _scopeToken;
     private readonly SnapshotSummary? _replacement;
     private readonly bool _allowTargetSelection;
+    private readonly Guid? _sourceId;
+    private DatabaseOrigin? _expectedOrigin;
+    private SnapshotSummary? _matchedTarget;
+    private bool _matchingComplete, _attachedTarget;
     private readonly PasswordBox _connection = new();
     private readonly TextBox _name = new(), _version = new();
     private readonly CheckBox _replace = new()
@@ -54,11 +58,12 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     public RelationalDatabaseCaptureWindow(RelationalRuntime runtime, Scope selected, StateToken expectedScope)
         : this(runtime, selected, expectedScope, null) { }
     public RelationalDatabaseCaptureWindow(RelationalRuntime runtime, Scope selected, StateToken expectedScope,
-        SnapshotSummary? replacement, bool allowTargetSelection = true)
+        SnapshotSummary? replacement, bool allowTargetSelection = true, string? sourceConnectionString = null, Guid? sourceId = null)
     {
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
         _scope = selected ?? throw new ArgumentNullException(nameof(selected)); _scopeToken = expectedScope; _replacement = replacement;
         _allowTargetSelection = allowTargetSelection;
+        _sourceId = sourceId;
         if (expectedScope.Epoch != runtime.Session.Epoch) throw new ArgumentException("The selected scope belongs to another epoch.");
         _service = new(runtime); Title = replacement == null ? "Database Capture" : "Update Database — " + replacement.DisplayName;
         Width = 760; Height = 620; MinWidth = 620; MinHeight = 520;
@@ -150,14 +155,36 @@ public sealed class RelationalDatabaseCaptureWindow : Window
         _snapshots.SelectionChanged += (_, _) => { if (_replace.IsChecked == true && _snapshots.SelectedItem is SnapshotSummary head) _name.Text = head.DisplayName; };
         _nextSnapshots.Click += async (_, _) => await RunAsync(() => ReadSnapshotsAsync(_snapshotNext));
         _readTables.Click += async (_, _) => await RunAsync(async () =>
-        { _selectedTables.Clear(); _previousTablePages.Clear(); await ReadTablesAsync(0); });
+        { _previousTablePages.Clear(); await ReadTablesAsync(0); });
         _nextTables.Click += async (_, _) => await RunAsync(async () =>
         { if (_tableNext is { } next) { _previousTablePages.Push(_tableStart); await ReadTablesAsync(next); } });
         _previousTables.Click += async (_, _) => await RunAsync(async () =>
         { if (_previousTablePages.Count != 0) await ReadTablesAsync(_previousTablePages.Pop()); });
         _capture.Click += async (_, _) => await RunAsync(CaptureAsync);
         _cancel.Click += (_, _) => { if (_busy) RequestCancellation(); else Close(); };
-        Loaded += async (_, _) => { if (replacement == null && allowTargetSelection) await RunAsync(() => ReadSnapshotsAsync(null)); };
+        _connection.Password = sourceConnectionString ?? "";
+        Loaded += async (_, _) => await RunAsync(async () =>
+        {
+            if (replacement == null && allowTargetSelection) await ReadSnapshotsAsync(null);
+            if (replacement != null)
+            {
+                SnapshotCursor? cursor = null;
+                do
+                {
+                    var page = await _runtime.Snapshots.ListFullDataSelectionsAsync(replacement.SnapshotKey, 128, cursor, _operation!.Token);
+                    foreach (var entry in page.Items)
+                    {
+                        var selection = FullTableDataSelection.TryParse(entry.TableName);
+                        if (selection == null) continue;
+                        string filter = selection.TopCount is int top ? "TOP " + top : selection.WhereClause != null ? "WHERE " + selection.WhereClause : "";
+                        _selectedTables[(selection.SchemaName, selection.TableName)] = new(0, selection.SchemaName, selection.TableName) { RowSelection = filter };
+                    }
+                    cursor = page.Next;
+                } while (cursor != null);
+                _expectedOrigin = await _runtime.Snapshots.ReadSnapshotOriginAsync(replacement.SnapshotKey, _operation!.Token);
+            }
+            if (!string.IsNullOrWhiteSpace(sourceConnectionString)) await ReadTablesAsync(0);
+        });
         Closing += OnClosing; Closed += (_, _) => { _closed = true; if (!_busy) CompleteClose(); };
     }
 
@@ -185,18 +212,49 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     {
         _tables.CommitEdit(DataGridEditingUnit.Cell, true); _tables.CommitEdit(DataGridEditingUnit.Row, true);
         if (string.IsNullOrWhiteSpace(_name.Text)) throw new ArgumentException("Enter a snapshot name.");
+        var token = _operation!.Token;
+        var liveOrigin = await new Surf2.Services.LiveSql.LiveSqlService(_connection.Password).OriginAsync(_sourceId, token);
+        if (!_matchingComplete && CaptureTarget() == null)
+        {
+            var choice = await SnapshotImportTargetWindow.ChooseAsync(this, _runtime, liveOrigin, ct: token);
+            if (choice.Cancelled) return;
+            _matchedTarget = choice.Target; _matchingComplete = true;
+            if (_matchedTarget != null)
+            {
+                _name.Text = _matchedTarget.DisplayName;
+                if (!_scope.Resources.Any(r => r.Kind == ResourceKind.DatabaseSnapshot && r.Path == _matchedTarget.SnapshotId))
+                {
+                    var resource = new ScopedResource { Kind = ResourceKind.DatabaseSnapshot, Path = _matchedTarget.SnapshotId,
+                        DisplayNameOverride = _matchedTarget.DisplayName, IncludeChildren = true };
+                    _scope.Resources.Add(resource); _scope.EnsureResourceContainers();
+                    try
+                    {
+                        _scopeToken = await _runtime.StateStore.SaveScopeWithSnapshotTargetAsync(_scope, _scopeToken,
+                            _scope.Resources.Count - 1, new(_runtime.Session.Epoch, _matchedTarget.SnapshotKey, _matchedTarget.RowVersion), Guid.NewGuid(), token);
+                        _attachedTarget = true;
+                    }
+                    catch { _scope.Resources.Remove(resource); _scope.EnsureResourceContainers(); throw; }
+                }
+                _expectedOrigin = await _runtime.Snapshots.ReadSnapshotOriginAsync(_matchedTarget.SnapshotKey, token);
+            }
+        }
+        if (_expectedOrigin?.IsComplete == true && !_expectedOrigin.AgreesWith(liveOrigin))
+        {
+            if (MessageBox.Show(this, $"Recorded source: {_expectedOrigin.Server}/{_expectedOrigin.Database}\nCurrent source: {liveOrigin.Server}/{liveOrigin.Database}\n\nIdentity evidence has changed. Confirm this source for the refresh? Earlier capture origins remain unchanged.", "Confirm changed database origin", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        }
+        _expectedOrigin = liveOrigin;
         SnapshotRuntimeToken? expected = CaptureTarget();
         var request = new RelationalDatabaseCaptureRequest(_connection.Password, _name.Text.Trim(), _selectedTables.Values.ToArray(),
-            _scope, _scopeToken, expected, _version.Text.Trim(), _blockingConsent.IsChecked == true);
+            _scope, _scopeToken, expected, _version.Text.Trim(), _blockingConsent.IsChecked == true, _sourceId, _expectedOrigin);
         var progress = new Progress<RelationalCaptureProgress>(value =>
             _status.Text = value.Phase + ": " + value.MetadataUnits + " metadata units, " + value.CapturedRows + " rows.");
-        var token = _operation!.Token;
         Result = await Task.Run(() => _service.CaptureAsync(request, progress, token), token);
         _connection.Clear(); DialogResult = true;
     }
     private SnapshotRuntimeToken? CaptureTarget()
     {
         if (_replacement != null) return new(_runtime.Session.Epoch, _replacement.SnapshotKey, _replacement.RowVersion);
+        if (_matchedTarget != null) return new(_runtime.Session.Epoch, _matchedTarget.SnapshotKey, _matchedTarget.RowVersion);
         if (!_allowTargetSelection || _replace.IsChecked != true) return null;
         if (_snapshots.SelectedItem is not SnapshotSummary snapshot) throw new ArgumentException("Select the snapshot to replace.");
         return new(_runtime.Session.Epoch, snapshot.SnapshotKey, snapshot.RowVersion);
@@ -208,7 +266,7 @@ public sealed class RelationalDatabaseCaptureWindow : Window
         try { await action(); }
         catch (SnapshotPublicationOutcomeUnknownException error) { RequiresReload = true; _status.Text = error.Message; }
         catch (OperationCanceledException) { _status.Text = "Cancelled."; }
-        catch (Exception error) { _status.Text = error.Message; }
+        catch (Exception error) { if (_attachedTarget) RequiresReload = true; _status.Text = error.Message; }
         finally
         {
             try { await _cancellation; }
@@ -220,6 +278,7 @@ public sealed class RelationalDatabaseCaptureWindow : Window
     }
     private void CompleteClose()
     {
+        if (_attachedTarget && Result == null) RequiresReload = true;
         if (CleanupFailure is { } failure) _closeCompletion.TrySetException(failure);
         else _closeCompletion.TrySetResult();
     }

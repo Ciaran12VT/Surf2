@@ -124,6 +124,17 @@ public sealed class DatabaseMetadataImportService
     {
         switch (entityType)
         {
+            case "DatabaseOrigin":
+                snapshot.Origin = DatabaseOriginQueryService.Parse(payloadJson) with { Acquisition = "PastedMetadataQuery" };
+                break;
+            case "FullDataSelection":
+                using (var selection = JsonDocument.Parse(payloadJson))
+                {
+                    string value = selection.RootElement.GetProperty("Selection").GetString() ?? "";
+                    if (FullTableDataSelection.TryParse(value) == null) throw new FormatException("Invalid requested table selection.");
+                    snapshot.FullDataTableNames.Add(value);
+                }
+                break;
             case "Database":
                 DatabasePayload? databasePayload = JsonSerializer.Deserialize<DatabasePayload>(payloadJson, SerializerOptions);
                 if (databasePayload != null)

@@ -746,7 +746,7 @@
                             <RowDefinition Height="*" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
-                        <TreeView x:Name="ObjectExplorer"
+                        <TreeView x:Name="ObjectExplorer" PreviewKeyDown="ObjectExplorer_PreviewKeyDown"
                                   AllowDrop="True"
                                   BorderThickness="0"
                                   ContextMenuOpening="ObjectExplorer_ContextMenuOpening"

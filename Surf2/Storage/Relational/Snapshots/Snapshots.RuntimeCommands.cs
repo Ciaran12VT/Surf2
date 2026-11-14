@@ -34,6 +34,9 @@ namespace Surf2.Storage.Relational.Snapshots
         public required byte[] ExpectedVersion { get; init; }
         public required bool IsNew { get; init; }
         public required SnapshotHeader Header { get; init; }
+        public bool CompareCaptureContent { get; set; }
+        public DatabaseOrigin? Origin { get; set; }
+        public Guid? CaptureEventId { get; set; }
         public SnapshotSummary? PreviousSnapshot { get; init; }
         public List<RuntimeSnapshotResource> Previous { get; } = [];
         public List<OrderedColumn> PreviousColumns { get; } = [];
@@ -195,19 +198,26 @@ namespace Surf2.Storage.Relational.Snapshots
             if (RuntimeStateUnchanged(plan))
             {
                 var previous = plan.PreviousSnapshot ?? throw new InvalidOperationException("Missing replacement snapshot baseline.");
+                var importedAt = plan.CompareCaptureContent ? previous.ImportedAtUtc : plan.Header.ImportedAtUtc;
                 byte[] currentVersion = bytes;
                 if (previous.DisplayName != plan.Header.DisplayName || previous.DatabaseName != plan.Header.DatabaseName ||
-                    !previous.ImportedAtUtc.EqualsExact(plan.Header.ImportedAtUtc) || previous.SortOrdinal != plan.Header.SortOrdinal)
+                    !previous.ImportedAtUtc.EqualsExact(importedAt) || previous.SortOrdinal != plan.Header.SortOrdinal)
                 {
                     await ScalarAsync(connection, transaction,
                         "UPDATE surf.SnapshotCatalogueHead SET UserKey=UserKey WHERE UserKey=1;", ct).ConfigureAwait(false);
                     await writer.UpdateSnapshotHeaderAsync(plan.SnapshotKey, plan.Header.DisplayName, plan.Header.DatabaseName,
-                        plan.Header.ImportedAtUtc, plan.Header.SortOrdinal, ct).ConfigureAwait(false);
+                        importedAt, plan.Header.SortOrdinal, ct).ConfigureAwait(false);
                     currentVersion = (byte[])(await ScalarAsync(connection, transaction,
                         "SELECT RowVersion FROM surf.DatabaseSnapshot WHERE SnapshotKey=@Snapshot;", ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false))!;
                 }
                 var unchanged = previous with { DisplayName = plan.Header.DisplayName, DatabaseName = plan.Header.DatabaseName,
-                    ImportedAtUtc = plan.Header.ImportedAtUtc, SortOrdinal = plan.Header.SortOrdinal, RowVersion = currentVersion };
+                    ImportedAtUtc = importedAt, SortOrdinal = plan.Header.SortOrdinal, RowVersion = currentVersion };
+                if (!plan.FullDataSelections.SequenceEqual(plan.PreviousFullDataSelections, StringComparer.Ordinal))
+                {
+                    await ScalarAsync(connection, transaction, "DELETE FROM surf.FullDataTableSelection WHERE SnapshotKey=@Snapshot;", ct, Key("@Snapshot", plan.SnapshotKey)).ConfigureAwait(false);
+                    for (int i = 0; i < plan.FullDataSelections.Count; i++) await writer.InsertFullDataSelectionAsync(plan.SnapshotKey, plan.FullDataSelections[i], i, ct).ConfigureAwait(false);
+                }
+                await PublishCaptureEvidenceAsync(connection, transaction, plan, previous.CurrentVersionKey, false, ct).ConfigureAwait(false);
                 try { await CommitRuntimePublicationAsync(transaction, plan.SnapshotKey, publication, ct).ConfigureAwait(false); }
                 finally { session.SnapshotMemory.Invalidate(plan.SnapshotKey); }
                 return new(unchanged, expectedScope, previous.CurrentVersionKey ?? 0);
@@ -247,6 +257,7 @@ namespace Surf2.Storage.Relational.Snapshots
             }
             long version = await writer.InsertVersionAsync(history, new(Guid.NewGuid().ToString("N"),
                 string.IsNullOrWhiteSpace(versionName) ? "V" + next : versionName, next, plan.Header.ImportedAtUtc, plan.IsNew, versionOrdinal), ct).ConfigureAwait(false);
+            await PublishCaptureEvidenceAsync(connection, transaction, plan, version, true, ct).ConfigureAwait(false);
             if (!plan.IsNew)
             {
                 // Capture the exact prior collections in this publication transaction. This

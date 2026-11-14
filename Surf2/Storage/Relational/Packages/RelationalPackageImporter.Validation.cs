@@ -30,7 +30,7 @@ public sealed partial class RelationalPackageImporter
         using var cancellation = RelationalSession.CancelCommand(command, ct);
         await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, ct);
         long countRows = 0;
-        long[]? previous = null;
+        object[]? previous = null;
         var buffer = new byte[_limits.ChunkBytes];
         while (await decoder.ReadAsync(columns, ct) is { } expected)
         {
@@ -87,6 +87,22 @@ public sealed partial class RelationalPackageImporter
 
     private static void ValidateContentRow(PackageTableSpec spec, IReadOnlyList<RelationalPackageColumn> columns, object[] row)
     {
+        if(spec.Schema=="surf"&&spec.Name=="SourceDefinition")
+        {
+            object Field(string name)=>row[columns.Select((column,index)=>(column,index)).Single(p=>p.column.Name==name).index];
+            string TextField(string name)=>System.Text.Encoding.Unicode.GetString((byte[])Field(name));
+            PortableSourceDefinition.Validate(new(){SourceId=(Guid)Field("SourceId"),Provider=(Surf2.Models.SourceProvider)(int)Field("Provider"),
+                ConfigurationRevision=(long)Field("ConfigurationRevision"),Endpoint=TextField("Endpoint"),Container=TextField("Container"),
+                Prefix=TextField("Prefix"),Ref=TextField("Ref"),Subfolder=TextField("Subfolder"),DatabaseName=TextField("DatabaseName"),AuthenticationKind=TextField("AuthenticationKind")});
+        }
+        if(spec.Schema=="surf")
+            foreach(var (column,index) in columns.Select((column,index)=>(column,index)))
+                if((spec.Name,column.Name) is ("ScopeResource","Path") or ("VirtualFolder","ParentNodeKey") or
+                    ("VirtualFolderMember","ChildNodeKey") or ("DiagramObject","MetadataLink") or
+                    ("DocumentWindowState","FilePath") or ("WorkspaceSession","LastFolderPath") or
+                    ("Workbench","ActiveDocumentPath") or ("ReferenceConnectionLine","SourceFilePath") or
+                    ("ReferenceConnectionLine","TargetFilePath"))
+                    if(row[index] is byte[] pathBytes)PortableResourcePath.Validate(System.Text.Encoding.Unicode.GetString(pathBytes));
         if (spec.Schema != "surf" || spec.Name is not ("TextContent" or "Asset")) return;
         object Value(string name) => row[columns.Select((column, ordinal) => (column, ordinal)).Single(p => p.column.Name == name).ordinal];
         byte[] bytes = (byte[])Value(spec.Name == "TextContent" ? "Text" : "Bytes");
@@ -107,7 +123,10 @@ public sealed partial class RelationalPackageImporter
         await RequireImportAsync(connection, null, import, fingerprint, database, ct);
         // A pinned, read-only Converting session is the existing specialized validation guard.
         // Normal runtime RequireReadyAsync and all domain write guards remain unchanged.
-        var validation = RelationalSession.ForMigrationValidation(_destination, import, fingerprint);
+        int schemaVersion;
+        await using(var marker=Command(connection,null,"SELECT SchemaVersion FROM surf.StorageFormatInfo WHERE Singleton=1;"))
+            schemaVersion=Convert.ToInt32(await marker.ExecuteScalarAsync(ct));
+        var validation = RelationalSession.ForMigrationValidation(_destination, import, fingerprint,schemaVersion);
         var capture = new RelationalCaptureStore(validation);
         long after = 0, total = 0;
         while (true)
@@ -202,7 +221,7 @@ UPDATE surf.MigrationRun SET Status='Complete',FinishedAtUtc=SYSDATETIMEOFFSET()
 WHERE MigrationIdentity=@Import AND SourceFingerprint=@Hash AND ConverterVersion=1 AND Status='Converting';
 IF @@ROWCOUNT<>1 THROW 51108,'The pinned import run changed before publication.',1;
 UPDATE surf.StorageFormatInfo SET State='Ready',CompletedMigrationIdentity=@Import
-WHERE Singleton=1 AND State='Migrating' AND DatabaseIdentity=@Database AND SchemaVersion=2;
+WHERE Singleton=1 AND State='Migrating' AND DatabaseIdentity=@Database AND SchemaVersion=3;
 IF @@ROWCOUNT<>1 THROW 51109,'The pinned format marker changed before publication.',1;
 """, ct, RelationalSession.Parameter("@Import", SqlDbType.UniqueIdentifier, import),
         RelationalSession.Parameter("@Schema", SqlDbType.Int, package.Manifest.DatabaseSchemaVersion),

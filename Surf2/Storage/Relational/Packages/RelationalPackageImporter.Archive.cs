@@ -51,9 +51,10 @@ public sealed partial class RelationalPackageImporter
                 ?? throw PackageRowDecoding.Bad("Null manifest");
         }
         catch (JsonException) { throw PackageRowDecoding.Bad("Malformed or unsupported manifest fields"); }
-        if (manifest.PackageIdentifier != RelationalPackageFormat.Identifier || manifest.PackageVersion != 2 ||
+        if (manifest.PackageIdentifier != RelationalPackageFormat.Identifier ||
+            !((manifest.PackageVersion==2 && manifest.DatabaseSchemaVersion is 1 or 2) || (manifest.PackageVersion==3 && manifest.DatabaseSchemaVersion==3)) ||
             manifest.ExporterVersion != 1 || manifest.RowEncodingVersion != 1 ||
-            manifest.DatabaseFormatIdentifier != PersistenceFormatProbe.FormatIdentifier || manifest.DatabaseSchemaVersion is < 1 or > 2 ||
+            manifest.DatabaseFormatIdentifier != PersistenceFormatProbe.FormatIdentifier ||
             manifest.MinimumReaderVersion != manifest.DatabaseSchemaVersion || manifest.MinimumWriterVersion != manifest.DatabaseSchemaVersion || manifest.SourceDatabaseIdentity == Guid.Empty ||
             manifest.SourceCreatedAtUtc == default || manifest.ExportedAtUtc == default ||
             manifest.Consistency is not ("SqlSnapshot-v1" or "SqlSerializableBlocking-v1") ||

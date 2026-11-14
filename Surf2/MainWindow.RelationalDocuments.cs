@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -70,6 +70,7 @@ public partial class MainWindow
         if (_relational == null) throw new InvalidOperationException("Select a ready relational runtime first.");
         if (_relationalDocuments != null) throw new InvalidOperationException("Dispose the previous document access before reconnecting.");
         InitializeRelationalComparisons();
+        Services.SourceResources.ResourceWorkspace.AdmissionRejected += SourceAdmissionRejected;
         _relationalDocuments = new(_relational);
         _relationalDocumentFlights = new(8, 64);
         _relationalPreviewLifetime = new(_relational.Session.Epoch, _relationalExplorerScope?.Context.ScopeKey);
@@ -117,6 +118,8 @@ public partial class MainWindow
 
     private async Task DisposeRelationalDocumentAccessAsync()
     {
+        Services.SourceResources.ResourceWorkspace.AdmissionRejected -= SourceAdmissionRejected;
+        await StopSourcePreparationsAsync();
         _relationalDocumentContextGeneration++;
         _relationalDocumentOpener = null;
         var preview = _relationalPreviewLifetime; _relationalPreviewLifetime = null;
@@ -133,6 +136,8 @@ public partial class MainWindow
         if (navigation != null) await navigation.DisposeAsync();
         foreach (var owner in owners) await owner.DisposeAsync();
         if (documents != null) await documents.DisposeAsync();
+        Services.SourceResources.ResourceWorkspace.ReleaseExcept();
+        Services.SourceResources.LiveSourceWorkspace.ReleaseExcept();
     }
 
     private Task<bool> TryOpenRelationalFileAsync(string filePath, OpenDocumentState? existingState = null,
@@ -226,7 +231,7 @@ public partial class MainWindow
                         await documents.ValidateTextPlanAsync(current, scope, token);
                         await ValidateIndexReferenceAsync(current, token);
                     }
-                    if (CanPublishRelationalDocument(runtime, scope, owner, request))
+                    if (CanPublishRelationalDocument(runtime, scope, owner, request, contextGeneration))
                         RevealRelationalDocument(opened, targetLine, targetColumn, targetReference, suppressHistory);
                     return true;
                 }
@@ -235,7 +240,7 @@ public partial class MainWindow
                     var presenter = RelationalGridDocumentPresenter ?? throw new InvalidOperationException("The paged spreadsheet presenter is not connected.");
                     if (_openSpreadsheetWindows.TryGetValue(address.DocumentPath, out var grid))
                     {
-                        if (CanPublishRelationalDocument(runtime, scope, owner, request))
+                        if (CanPublishRelationalDocument(runtime, scope, owner, request, contextGeneration))
                         { SetActiveCodeWindow(null, syncOpenTabsSelection: false); BringToFront(grid); RevealWindow(grid); }
                         return true;
                     }
@@ -243,7 +248,7 @@ public partial class MainWindow
                     try
                     {
                         await documents.ValidateAddressAsync(address, scope, token);
-                        if (!CanPublishRelationalDocument(runtime, scope, owner, request)) return true;
+                        if (!CanPublishRelationalDocument(runtime, scope, owner, request, contextGeneration)) return true;
                         bool restored = existingState != null;
                         var state = existingState ?? CreateNewDocumentState(address.DocumentPath, sourceWindow);
                         BindRelationalState(state, address);
@@ -258,7 +263,7 @@ public partial class MainWindow
                 }
                 var plan = await documents.DescribeTextAsync(address, token);
                 if (expectedTextKey != null && expectedTextKey != plan.Key) throw new DocumentReferenceChangedException();
-                if (!CanPublishRelationalDocument(runtime, scope, owner, request)) return true;
+                if (!CanPublishRelationalDocument(runtime, scope, owner, request, contextGeneration)) return true;
                 if (plan.EstimatedTextBytes >= documents.Limits.WarningBytes && MessageBox.Show(this,
                     $"This document may require at least {plan.EstimatedTextBytes / (1024 * 1024.0):N1} MiB of resident text, plus editor and syntax memory. Open it?",
                     "Large Document", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return true;
@@ -269,7 +274,7 @@ public partial class MainWindow
                 using var textPublication = expectedSymbol == null ? null : await EnterRelationalReferenceReadAsync(token);
                 await documents.ValidateTextPlanAsync(plan, scope, token);
                 await ValidateIndexReferenceAsync(plan, token);
-                if (!CanPublishRelationalDocument(runtime, scope, owner, request)) return true;
+                if (!CanPublishRelationalDocument(runtime, scope, owner, request, contextGeneration)) return true;
                 if (sourceWindow != null && !_openWindows.Values.Contains(sourceWindow)) return true;
                 if (existingState != null) BindRelationalState(existingState, address);
                 // This existing helper performs synchronous dispatcher publication and preserves every window handler.
@@ -351,12 +356,15 @@ public partial class MainWindow
             contextGeneration == _relationalDocumentContextGeneration ? address.TextFileNameSeed : null;
     }
 
-    private bool CanPublishRelationalDocument(Services.RelationalRuntime runtime, ExplorerScope? scope, QueryLifetime owner, QueryRequest request) =>
-        ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) && owner.IsCurrent(request.Stamp);
+    private bool CanPublishRelationalDocument(Services.RelationalRuntime runtime, ExplorerScope? scope, QueryLifetime owner, QueryRequest request, long contextGeneration) =>
+        contextGeneration == _relationalDocumentContextGeneration && ReferenceEquals(_relational, runtime) && RelationalRuntime.SameExplorerSelection(_relationalExplorerScope, scope) && owner.IsCurrent(request.Stamp);
 
     private static void BindRelationalState(OpenDocumentState state, RelationalDocumentAddress address)
     {
         state.FilePath = address.DocumentPath; state.DisplayName = address.DisplayName;
+        state.PersistentSourcePath = address.PersistentDocumentPath?.StartsWith("source://", StringComparison.OrdinalIgnoreCase) == true ||
+            address.PersistentDocumentPath?.StartsWith("livesql://", StringComparison.OrdinalIgnoreCase) == true
+            ? address.PersistentDocumentPath : null;
         state.BoundSnapshotKey = address.Resource?.SnapshotKey; state.BoundResourceKey = address.Resource?.ResourceKey;
         state.TargetState = address.Resource == null ? SavedDocumentTargetState.External : SavedDocumentTargetState.Resolved;
     }
@@ -655,9 +663,16 @@ public partial class MainWindow
         finally { e.ContextMenu.Closed -= closed; }
     }
 
-    private static IEnumerable<ExplorerResource> RelationalSourceMemberships(ExplorerScope scope, OpenDocumentState state) =>
-        scope.Resources.Where(r => r.IsLoaded && (state.BoundSnapshotKey.HasValue ? r.Snapshot?.SnapshotKey == state.BoundSnapshotKey :
-            r.Kind == ResourceKind.File && IsSameFile(r.Path, state.FilePath) || r.Kind == ResourceKind.Folder && ExplorerCompatibility.IsWithinPhysicalRoot(state.FilePath, r.Path)));
+    private static bool TrySourceResourceIdentity(string path, out Guid member) =>
+        Services.SourceResources.ResourceWorkspace.TryParse(path, out member, out _) ||
+        Services.SourceResources.LiveSourceWorkspace.TryParse(path, out member, out _);
+
+    private static IEnumerable<ExplorerResource> RelationalSourceMemberships(ExplorerScope scope, OpenDocumentState state)
+    {
+        bool source = TrySourceResourceIdentity(state.PersistentSourcePath ?? state.FilePath, out var member);
+        return scope.Resources.Where(r => r.IsLoaded && (source ? r.PublicId == member : state.BoundSnapshotKey.HasValue ? r.Snapshot?.SnapshotKey == state.BoundSnapshotKey :
+            r.Kind == ResourceKind.File && IsSameFile(r.Path, state.FilePath) || r.Kind == ResourceKind.Folder && Path.IsPathFullyQualified(r.Path) && ExplorerCompatibility.IsWithinPhysicalRoot(state.FilePath, r.Path)));
+    }
 
     private static ImmutableArray<RelationalMenuToken> ReadRelationalMenuTokens(string text, bool sql, bool vb, int maximum, CancellationToken ct)
     {

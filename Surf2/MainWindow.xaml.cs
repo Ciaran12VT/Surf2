@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
@@ -2718,10 +2718,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         NormalizeUnloadedResourceIds();
         List<string> unloadedResourceIds = _workspaceState.UnloadedResourceIds;
-        unloadedResourceIds.RemoveAll(id => string.Equals(id, resource.ResourceId, StringComparison.OrdinalIgnoreCase));
+        if (isLoaded && !await PrepareSourceResourceAsync(_activeScope, resource, true, CancellationToken.None))
+        { await SaveWorkspaceStateAsync(); await LoadRelationalRootsAsync(); return; }
+        unloadedResourceIds.RemoveAll(id => string.Equals(id, resource.ResourceId, StringComparison.OrdinalIgnoreCase) || id == Services.SourceResources.ResourceWorkspace.UnloadedToken(resource));
         if (!isLoaded)
         {
-            unloadedResourceIds.Add(resource.ResourceId);
+            if (_sourcePreparations.TryGetValue(resource.ContainerId, out var preparation)) preparation.Cancel();
+            unloadedResourceIds.Add(Services.SourceResources.ResourceWorkspace.UnloadedToken(resource));
+            foreach (var member in _activeScope.Resources.Where(r => r.ContainerId == resource.ContainerId))
+            { CloseResourceViews(member); Services.SourceResources.ResourceWorkspace.Block(member, release: true); }
         }
 
         NormalizeUnloadedResourceIds();
@@ -2935,6 +2940,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             targetLink = uri.LocalPath;
         }
 
+        if (TrySourceResourceIdentity(targetLink, out var sourceMember)) return sourceMember == resource.PublicId;
         if (resource.Kind == ResourceKind.DatabaseSnapshot)
         {
             return DatabaseLinkTargetsScopedResource(targetLink, resource);
@@ -2965,9 +2971,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private HashSet<string> GetUnloadedResourceIds()
     {
-        return (_workspaceState.UnloadedResourceIds ?? [])
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return (_workspaceState.UnloadedResourceIds ?? []).Where(id => !string.IsNullOrWhiteSpace(id)).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private bool IsScopeResourceLoaded(ScopedResource resource)
@@ -2977,8 +2981,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private static bool IsScopeResourceLoaded(ScopedResource resource, IReadOnlySet<string> unloadedResourceIds)
     {
-        return string.IsNullOrWhiteSpace(resource.ResourceId) ||
-               !unloadedResourceIds.Contains(resource.ResourceId);
+        return !Services.SourceResources.ResourceWorkspace.IsMarkedUnloaded(resource, unloadedResourceIds);
     }
 
     private void NormalizeUnloadedResourceIds()
@@ -3476,10 +3479,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void ObjectExplorer_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private async void ObjectExplorer_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || ObjectExplorer.SelectedItem is not FileSystemNode node || !_sourceActions.TryGetValue(node, out var action)) return;
+        e.Handled = true;
+        try { await action(); }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { StatusText = error.Message; }
+    }
+
+    private async void ObjectExplorer_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         _objectExplorerDragStartPoint = e.GetPosition(ObjectExplorer);
         TreeViewItem? item = FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject);
+        if (item?.DataContext is FileSystemNode actionNode && _sourceActions.TryGetValue(actionNode, out var action))
+        {
+            e.Handled = true; _pendingObjectExplorerDragNode = null;
+            try { await action(); } catch (Exception error) { StatusText = error.Message; }
+            return;
+        }
         _pendingObjectExplorerDragNode = item?.DataContext as FileSystemNode;
     }
 
@@ -6501,7 +6519,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return true;
             }
 
-            if (File.Exists(filePath) || DatabaseDocumentService.IsDatabaseDocumentPath(filePath))
+            if (File.Exists(filePath) || DatabaseDocumentService.IsDatabaseDocumentPath(filePath) ||
+                filePath.StartsWith("source://", StringComparison.OrdinalIgnoreCase) || filePath.StartsWith("livesql://", StringComparison.OrdinalIgnoreCase))
             {
                 if (_relational != null) return await OpenRelationalMetadataLinkAsync(filePath, target);
                 EnsureCodeViewVisible();

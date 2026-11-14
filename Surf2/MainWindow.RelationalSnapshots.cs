@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -103,6 +103,7 @@ public partial class MainWindow
     {
         var snapshot = await RequireRelationalSnapshotNodeAsync(work, node);
         var window = new RelationalSnapshotHistoryWindow(work.Runtime, snapshot) { Owner = this, VerifyWriteAccess = RequireRelationalWrite };
+        TrackResourceWindow(window, snapshot.SnapshotKey);
         window.OpenRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => OpenRelationalHistoricalResourceAsync(w, e.Target), window, readFromMemory: true);
         window.CompareWithRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CompareRelationalHistoryWithAsync(w, e.Target), window, readFromMemory: true);
         window.CopyRequested += (_, e) => QueueRelationalSnapshotWorkflow(w => CopyRelationalHistoricalResourceAsync(w, e.Target), window);
@@ -150,7 +151,7 @@ public partial class MainWindow
         if (window.RequiresReload) { await LoadRelationalLastActiveScopeAsync(); return; }
         if (window.Result is not { } result) return;
         await AdoptRelationalSnapshotScopeAsync(work, result);
-        StatusText = "Captured " + result.CapturedRows.ToString("N0", CultureInfo.CurrentCulture) + " rows into " + result.Snapshot.DisplayName + ".";
+        StatusText = "Captured " + result.CapturedRows.ToString("N0", CultureInfo.CurrentCulture) + " rows into " + result.Snapshot.DisplayName + "." + (result.SkippedTables.Count == 0 ? "" : " Skipped missing tables: " + string.Join(", ", result.SkippedTables));
     }
 
     private async Task EditRelationalSnapshotAsync(SnapshotWorkflow work, ExplorerNodeSummary node)
@@ -194,10 +195,20 @@ public partial class MainWindow
         OwnRelationalSnapshotWindow(work, window, () => { window.Close(); return Task.CompletedTask; });
         if (window.ShowDialog() != true || window.Snapshot is not { } edited) return;
         RequireRelationalSnapshotContext(work);
+        if (edited.Origin?.IsComplete != true)
+        {
+            var origin = new SnapshotOriginWindow(edited.Origin, edited.DatabaseName) { Owner = this };
+            if (origin.ShowDialog() != true) return;
+            edited.Origin = origin.Origin;
+        }
+        if ((await SnapshotImportTargetWindow.ChooseAsync(this, work.Runtime, edited.Origin, selected, work.Token)).Cancelled) return;
+        RequireRelationalSnapshotContext(work);
         StatusText = "Saving " + edited.DisplayName + "…";
         var result = await Task.Run(() => service.SaveAsync(edited, work.Scope!.Snapshot(), work.Scope.ExpectedToken,
             new SnapshotRuntimeToken(work.Runtime.Session.Epoch, selected.SnapshotKey, selected.RowVersion), work.Token), work.Token);
         RequireRelationalSnapshotContext(work);
+        if (await Services.SourceResources.SourceSnapshotLinker.LinkMatchingAsync(work.Runtime, result.UpdatedScope, ct: work.Token) != 0)
+            result = result with { UpdatedScopeToken = await work.Runtime.StateStore.SaveScopeAsync(result.UpdatedScope, result.UpdatedScopeToken, Guid.NewGuid(), work.Token) };
         await AdoptRelationalSnapshotScopeAsync(work, result);
         StatusText = "Saved " + result.Snapshot.DisplayName + ".";
     }
@@ -321,6 +332,9 @@ public partial class MainWindow
         }
         catch { TrackRelationalSnapshotRetirement(close()); throw; }
         _relationalSnapshotWindows.Add(window, close);
+        if (work.Source != null)
+            foreach (var owner in _sourceWindows.Where(pair => pair.Value.Contains(work.Source)).Select(pair => pair.Key).ToArray())
+                if (Services.SourceResources.ResourceWorkspace.Find(owner) is { } member) TrackSourceWindow(member, window);
         window.Closed += (_, _) =>
         {
             _relationalSnapshotWindows.Remove(window);

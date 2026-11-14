@@ -8,12 +8,19 @@ namespace Surf2.Services.RelationalExplorer;
 public enum ExplorerAvailability { Present, Missing, Inaccessible, Failed }
 public enum ExplorerChildrenState { Unloaded, Loading, Loaded, Failed }
 public enum ExplorerCategory { Procedures, Views, Functions, Triggers, Tables }
-public enum ExplorerNodeRole { Resource, Category, PhysicalDirectory, PhysicalFile, DatabaseDocument, Diagram, DiagramRoot, VirtualFolder }
+public enum ExplorerNodeRole { Resource, Category, PhysicalDirectory, PhysicalFile, DatabaseDocument, Diagram, DiagramRoot, VirtualFolder, LiveDatabaseDocument }
 
 public sealed record ExplorerResource(long ScopeResourceKey, long SortOrdinal, string ResourceId,
     ResourceKind Kind, string Path, string Alias, bool IncludeChildren, bool IsLoaded,
     SnapshotSummary? Snapshot, long? DiagramKey, long? DiagramRevisionKey, string? DiagramName,
-    bool HasUnresolvedQueries);
+    bool HasUnresolvedQueries)
+{
+    public Guid PublicId { get; init; }
+    public Guid ContainerId { get; init; }
+    public ResourceSourceDefinition? Source { get; init; }
+    public string? LogicalPath { get; init; }
+    public string? Status { get; init; }
+}
 public sealed record ExplorerVirtualFolder(long Key, long SortOrdinal, string Id, string Name,
     string ParentNodeKey, ImmutableArray<string> ChildNodeKeys);
 public sealed record ExplorerScope(IndexRequestContext Context, string ScopeId, string Name,
@@ -49,7 +56,7 @@ public sealed record ExplorerAddress(ExplorerNodeSummary Node, string CanonicalL
 public sealed record ExplorerDatabaseItem(SnapshotResourceSummary Resource, SqlDatabaseObjectKind? ObjectKind,
     bool HasFullData = false, long ReportedRowCount = 0);
 public sealed record PhysicalExplorerEntry(string Path, bool IsDirectory, ExplorerAvailability Availability,
-    bool IsReparsePoint = false);
+    bool IsReparsePoint = false, string? DisplayName = null, string? LogicalKey = null);
 
 public sealed record ExplorerLimits(int PageSize = 64, int MaximumMetadataRows = 100_000,
     long MaximumMetadataCharacters = 4 * 1024 * 1024, int MaximumDepth = 128,

@@ -187,7 +187,8 @@ ORDER BY l.LocatorKey;
             count++; after = reader.GetInt64(0);
             string found = MetadataString(reader, 4);
             chars += found.Length; MetadataBudget(chars);
-            if (string.Equals(locator, found, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(locator, found, locator.StartsWith("livesql://", StringComparison.Ordinal) || locator.StartsWith("source://", StringComparison.Ordinal)
+                ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase))
                 items.Add(new(after, reader.GetInt64(1), reader.GetInt64(2), reader.GetInt32(3), found));
         }
         return new(items.ToImmutable(), after, count < pageSize);

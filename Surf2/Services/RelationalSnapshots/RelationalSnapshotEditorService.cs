@@ -16,6 +16,7 @@ public sealed class RelationalSnapshotEditorService(RelationalRuntime runtime)
         _captureBaselines.Clear();
         var result = new DatabaseMetadataSnapshot { SnapshotId = snapshot.SnapshotId, DisplayName = snapshot.DisplayName,
             DatabaseName = snapshot.DatabaseName, ImportedAtUtc = snapshot.ImportedAtUtc };
+        result.Origin = await runtime.Snapshots.ReadSnapshotOriginAsync(snapshot.SnapshotKey, ct).ConfigureAwait(false);
         await foreach (var resource in SnapshotStaging.Pages(cursor => runtime.Snapshots.ListResourcesAsync(snapshot.SnapshotKey,
             pageSize: 128, cursor: cursor, ct: ct), ct))
         {
@@ -48,6 +49,23 @@ public sealed class RelationalSnapshotEditorService(RelationalRuntime runtime)
         StateToken expectedScope, SnapshotRuntimeToken? replacement, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(edited);
+        if (expectedScope.Epoch != runtime.Session.Epoch || (replacement != null && replacement.Epoch != runtime.Session.Epoch))
+            throw new ArgumentException("The snapshot edit belongs to another workspace.");
+        var attempt = new EditorCaptureAttempt();
+        if (replacement != null) { await runtime.Snapshots.StartRefreshAsync(replacement.SnapshotKey, attempt.Id, edited.Origin?.RegisteredSourceId, ct).ConfigureAwait(false); attempt.Started = true; }
+        try { return await SaveCoreAsync(edited, selectedScope, expectedScope, replacement, attempt, ct).ConfigureAwait(false); }
+        catch (SnapshotPublicationOutcomeUnknownException) { throw; }
+        catch (Exception e)
+        {
+            if (attempt.Started) await runtime.Snapshots.FailRefreshAsync(attempt.Id, e is OperationCanceledException, e.Message).ConfigureAwait(false);
+            throw;
+        }
+    }
+    private sealed class EditorCaptureAttempt { public Guid Id { get; } = Guid.NewGuid(); public bool Started { get; set; } }
+    private async Task<RelationalCaptureResult> SaveCoreAsync(DatabaseMetadataSnapshot edited, Scope selectedScope,
+        StateToken expectedScope, SnapshotRuntimeToken? replacement, EditorCaptureAttempt attempt, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(edited);
         var scope = await runtime.StateStore.ReadScopeAsync(expectedScope.Key, ct).ConfigureAwait(false)
             ?? throw new StateConflictException("snapshot editor scope");
         if (scope.Token.Epoch != expectedScope.Epoch || scope.Token.Key != expectedScope.Key ||
@@ -55,6 +73,9 @@ public sealed class RelationalSnapshotEditorService(RelationalRuntime runtime)
             !StringComparer.Ordinal.Equals(scope.Value.ScopeId, selectedScope.ScopeId)) throw new StateConflictException("snapshot editor scope");
         var plan = await runtime.Snapshots.BeginRuntimeStageAsync(replacement, edited.DisplayName, edited.DatabaseName,
             edited.ImportedAtUtc, ct).ConfigureAwait(false);
+        plan.CompareCaptureContent = true; plan.Origin = edited.Origin;
+        if (!attempt.Started) { await runtime.Snapshots.StartRefreshAsync(plan.SnapshotKey, attempt.Id, edited.Origin?.RegisteredSourceId, ct).ConfigureAwait(false); attempt.Started = true; }
+        plan.CaptureEventId = attempt.Id;
         var budget = new SnapshotOperationBudget(new());
         await SnapshotStaging.ReadBaselineAsync(runtime, plan, budget, ct).ConfigureAwait(false);
         long ordinal = 0;

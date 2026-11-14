@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
@@ -29,7 +29,7 @@ public partial class MainWindow
         if (!ReferenceEquals(_relationalAvailableNamesIndex, _referenceIndex))
         {
             _relationalAvailableNames = _referenceIndex.Entities
-                .Where(entity => entity.Kind == ReferenceEntityKind.File || DatabaseDocumentService.IsDatabaseDocumentPath(entity.FilePath))
+                .Where(entity => entity.Kind == ReferenceEntityKind.File || (DatabaseDocumentService.IsDatabaseDocumentPath(entity.FilePath) || entity.FilePath.StartsWith("livesql://", StringComparison.OrdinalIgnoreCase)))
                 .Select(entity => entity.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
             _relationalAvailableNamesIndex = _referenceIndex;
         }
@@ -54,6 +54,7 @@ public partial class MainWindow
             });
             var watch = new PhysicalReferenceWatch(scope, notification => Dispatcher.BeginInvoke(new Action(() =>
             {
+                if (!AcceptsRelationalExplorer(owner, runtime) || GatePairedLocalChanges(notification)) return;
                 if (AcceptsRelationalExplorer(owner, runtime) &&
                     (notification.Reason & (PhysicalReferenceInvalidationReason.Changed | PhysicalReferenceInvalidationReason.WatcherError)) != 0)
                     QueueRelationalMemoryRefresh();
@@ -143,7 +144,7 @@ public partial class MainWindow
     {
         IEnumerable<ReferenceEntity> candidates = _referenceIndex.Resolve(token, arguments);
         if (!_relationalFileReferencesReady)
-            candidates = candidates.Where(r => r.Kind == ReferenceEntityKind.File || DatabaseDocumentService.IsDatabaseDocumentPath(r.FilePath));
+            candidates = candidates.Where(r => r.Kind == ReferenceEntityKind.File || (DatabaseDocumentService.IsDatabaseDocumentPath(r.FilePath) || r.FilePath.StartsWith("livesql://", StringComparison.OrdinalIgnoreCase)));
         return SortReferencesForSource(candidates.ToArray(), sourcePath);
     }
 
@@ -241,15 +242,16 @@ public partial class MainWindow
                 foreach (var target in index.Resolve(token.Query.Token, token.Query.ArgumentCount))
                 {
                     pending.CancellationToken.ThrowIfCancellationRequested();
-                    if (!ready && target.Kind != ReferenceEntityKind.File && !DatabaseDocumentService.IsDatabaseDocumentPath(target.FilePath)) continue;
+                    if (!ready && target.Kind != ReferenceEntityKind.File && !(DatabaseDocumentService.IsDatabaseDocumentPath(target.FilePath) || target.FilePath.StartsWith("livesql://", StringComparison.OrdinalIgnoreCase))) continue;
                     if (sql && (!SqlContextMenuReferenceKinds.Contains(target.Kind) ||
                         token.SqlToken != null && IsSqlDefinitionToken(text, token.SqlToken, target.Kind))) continue;
                     long snapshot = DatabaseDocumentService.TryParseDocumentPath(target.FilePath, out var parsed) &&
                         ExplorerCompatibility.TryParseDatabaseIdentity(parsed, out _, out long key, out _) ? key : 0;
+                    bool sourceLink = TrySourceResourceIdentity(target.FilePath, out var memberId);
                     var resources = scope.Resources.Where(resource => resource.IsLoaded &&
-                        (snapshot != 0 ? resource.Snapshot?.SnapshotKey == snapshot :
+                        (sourceLink ? resource.PublicId == memberId : snapshot != 0 ? resource.Snapshot?.SnapshotKey == snapshot :
                             resource.Kind == ResourceKind.File && IsSameFile(resource.Path, target.FilePath) ||
-                            resource.Kind == ResourceKind.Folder && ExplorerCompatibility.IsWithinPhysicalRoot(target.FilePath, resource.Path)));
+                            resource.Kind == ResourceKind.Folder && System.IO.Path.IsPathFullyQualified(resource.Path) && ExplorerCompatibility.IsWithinPhysicalRoot(target.FilePath, resource.Path)));
                     var member = resources.FirstOrDefault(resource => sourceKeys.Contains(resource.ScopeResourceKey)) ?? resources.FirstOrDefault();
                     if (member == null) continue;
                     var context = new ReferenceResourceContext(member.ScopeResourceKey.ToString(System.Globalization.CultureInfo.InvariantCulture),

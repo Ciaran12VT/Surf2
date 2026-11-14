@@ -99,7 +99,7 @@ public sealed class LegacySchemaInspector
         }
 
         if (effective == typeof(string) || effective.IsPrimitive || effective.IsEnum ||
-            effective == typeof(DateTimeOffset) || effective == typeof(DateTime) || effective == typeof(decimal))
+            effective == typeof(DateTimeOffset) || effective == typeof(DateTime) || effective == typeof(decimal) || effective == typeof(Guid))
         {
             JsonElement scalar = await cursor.ReadValueAsync(ct);
             object? value;

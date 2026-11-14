@@ -83,7 +83,8 @@ public partial class MainWindow
             {
                 var scope = state.Catalogue.Scope;
                 state.Watch = await Task.Run(() => new PhysicalReferenceWatch(scope,
-                    _ => Dispatcher.BeginInvoke(() => QueueRelationalNameCatalogueRefresh(state)), namesOnly: true), ct);
+                    notification => Dispatcher.BeginInvoke(() =>
+                    { if (ReferenceEquals(_relationalNameCatalogue, state) && !GatePairedLocalChanges(notification)) QueueRelationalNameCatalogueRefresh(state); }), namesOnly: true), ct);
                 ct.ThrowIfCancellationRequested();
                 // Reconcile the interval before the watcher was attached and recover from dropped events.
                 state.Reconciliation = new DispatcherTimer(TimeSpan.FromMinutes(5), DispatcherPriority.Background,

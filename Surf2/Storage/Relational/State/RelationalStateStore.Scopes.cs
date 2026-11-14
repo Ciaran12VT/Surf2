@@ -49,14 +49,14 @@ public sealed partial class RelationalStateStore
         }, cancellationToken);
     }
 
-    private sealed record ExistingScopeChild(long Key, long Ordinal, string LegacyId, int Kind = -1, string? Path = null);
+    private sealed record ExistingScopeChild(long Key, long Ordinal, string LegacyId, int Kind = -1, string? Path = null, Guid? PublicId = null);
 
     private async Task<List<ExistingScopeChild>> ExistingScopeChildrenAsync(SqlConnection connection, SqlTransaction transaction,
         long scope, bool folders, CancellationToken ct)
     {
         string sql = folders
             ? "SELECT TOP (@Limit) VirtualFolderKey, SortOrdinal, CONVERT(bigint, DATALENGTH(VirtualFolderId)), VirtualFolderId FROM surf.VirtualFolder WHERE ScopeKey=@Key ORDER BY SortOrdinal;"
-            : "SELECT TOP (@Limit) ScopeResourceKey, SortOrdinal, CONVERT(bigint, DATALENGTH(ResourceId)), ResourceId, Kind, CONVERT(bigint, DATALENGTH(Path)), Path FROM surf.ScopeResource WHERE ScopeKey=@Key ORDER BY SortOrdinal;";
+            : "SELECT TOP (@Limit) ScopeResourceKey, SortOrdinal, CONVERT(bigint, DATALENGTH(ResourceId)), ResourceId, Kind, CONVERT(bigint, DATALENGTH(Path)), Path, PublicId FROM surf.ScopeResource WHERE ScopeKey=@Key ORDER BY SortOrdinal;";
         await using var command = Command(connection, transaction, sql, Key(scope), Key((long)_limits.MaximumRows + 1, "@Limit"));
         using var cancel = RelationalSession.CancelCommand(command, ct);
         await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
@@ -70,7 +70,7 @@ public sealed partial class RelationalStateStore
             string id = (await StringAsync(reader, 2, budget, ct))!;
             int kind = folders ? -1 : reader.GetInt32(4);
             string? path = folders ? null : await StringAsync(reader, 5, budget, ct);
-            result.Add(new(key, ordinal, id, kind, path));
+            result.Add(new(key, ordinal, id, kind, path, folders ? null : reader.GetGuid(7)));
         }
         return result;
     }
@@ -89,6 +89,7 @@ public sealed partial class RelationalStateStore
 
     private async Task ReplaceScopeChildrenAsync(SqlConnection connection, SqlTransaction transaction, long scope, Scope value, CancellationToken ct)
     {
+        await WriteResourceContainersAsync(connection,transaction,scope,value,ct);
         var resources = await ExistingScopeChildrenAsync(connection, transaction, scope, false, ct);
         var folders = await ExistingScopeChildrenAsync(connection, transaction, scope, true, ct);
         // Derived links must not prevent removal/reordering of selected children; resolve again after all rows exist.
@@ -107,8 +108,7 @@ UPDATE surf.VirtualFolderMember SET ChildVirtualFolderKey=NULL, ChildScopeResour
                 await ExecuteAsync(connection, transaction,
                     $"UPDATE surf.[{table}] SET SortOrdinal=@Ordinal WHERE [{keyColumn}]=@Key;", ct, Key(child.Key), Key(temporary++, "@Ordinal"));
         }
-        var resourceIds = resources.GroupBy(x => x.LegacyId, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => new Queue<ExistingScopeChild>(g), StringComparer.Ordinal);
+        var resourceIds = resources.ToDictionary(x => x.PublicId!.Value);
         var folderIds = folders.GroupBy(x => x.LegacyId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => new Queue<ExistingScopeChild>(g), StringComparer.Ordinal);
         var keptResources = new HashSet<long>();
@@ -118,7 +118,7 @@ UPDATE surf.VirtualFolderMember SET ChildVirtualFolderKey=NULL, ChildScopeResour
         for (int i = 0; i < value.Resources.Count; i++)
         {
             var resource = value.Resources[i];
-            if (resourceIds.TryGetValue(resource.ResourceId, out var matches) && matches.TryDequeue(out var old))
+            if (resourceIds.TryGetValue(resource.PublicId, out var old))
             {
                 bool changedTarget = old.Kind != (int)resource.Kind || !string.Equals(old.Path, resource.Path, StringComparison.Ordinal);
                 await UpdateScopeChildAsync(connection, transaction, StateMaps.Resource, resource, old.Key, i, changedTarget, ct);
@@ -155,10 +155,13 @@ DELETE FROM surf.VirtualFolderMember WHERE VirtualFolderKey=@Key;
 DELETE FROM surf.VirtualFolder WHERE VirtualFolderKey=@Key;
 """, ct, Key(old.Key));
         await WriteFolderRelationshipsAsync(connection, transaction, scope, value, folderKeys, resourceKeys, ct);
+        await PruneResourceContainersAsync(connection,transaction,scope,ct);
+        await RelationalResourceSchemaUpgrade.ValidateAsync(connection,transaction,ct);
     }
 
     private async Task ScopeChildrenAsync(SqlConnection connection, SqlTransaction transaction, long key, Scope scope, CancellationToken ct)
     {
+        await WriteResourceContainersAsync(connection,transaction,key,scope,ct);
         var folderKeys = new List<long>();
         var resourceKeys = new List<long>();
         for (int i = 0; i < scope.Resources.Count; i++)
@@ -176,6 +179,7 @@ DELETE FROM surf.VirtualFolder WHERE VirtualFolderKey=@Key;
                     ct, Key(key, "@Scope"), Key(folderKey), Key(m, "@Ordinal"), Text(folder.ChildNodeKeys[m], "@Node"));
         }
         await WriteFolderRelationshipsAsync(connection, transaction, key, scope, folderKeys, resourceKeys, ct);
+        await RelationalResourceSchemaUpgrade.ValidateAsync(connection,transaction,ct);
     }
 
     public Task<SelectedState<Scope>?> ReadScopeAsync(long scopeKey, CancellationToken cancellationToken = default) =>
@@ -186,6 +190,7 @@ DELETE FROM surf.VirtualFolder WHERE VirtualFolderKey=@Key;
             if (selected == null) return null;
             foreach (var (_, value) in await ChildrenAsync(connection, transaction, StateMaps.Resource, "ScopeKey", scopeKey, budget, cancellationToken))
                 selected.Value.Resources.Add(value);
+            await ReadResourceContainersAsync(connection,transaction,scopeKey,selected.Value,budget,cancellationToken);
             foreach (var (key, value) in await ChildrenAsync(connection, transaction, StateMaps.Folder, "ScopeKey", scopeKey, budget, cancellationToken))
             {
                 await using var command = Command(connection, transaction,

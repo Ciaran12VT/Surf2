@@ -46,8 +46,18 @@ public sealed partial class DatabaseExportFolderImportService
         if (files.Count == 0) throw Bad("The folder contains no exported database resources.");
         var state = new ImportState { Snapshot = new() { DisplayName = string.IsNullOrWhiteSpace(displayName) ? new DirectoryInfo(root).Name : displayName.Trim(),
             DatabaseName = string.Empty, ImportedAtUtc = DateTimeOffset.UtcNow } };
-        state.Warn("This is a display export, not a database backup. The source database name, capture timestamps, original snapshot/history identities and TOP/WHERE selections are not restored. Imported content is dated with the current time.");
-        var resources = relational ? await ReadRelationalResourcesAsync(files, state, ct).ConfigureAwait(false) : ReadLegacyResources(files);
+        var metadataFile = files.SingleOrDefault(f => f.Relative == SnapshotExportMetadata.FileName);
+        if (metadataFile != null)
+        {
+            var metadata = SnapshotExportMetadata.Parse(await ReadAsync(metadataFile, state, ct).ConfigureAwait(false));
+            state.Snapshot.Origin = metadata.Origin; state.Snapshot.DatabaseName = metadata.DatabaseName;
+            state.Snapshot.ImportedAtUtc = metadata.CapturedAtUtc; state.Snapshot.FullDataTableNames.AddRange(metadata.RequestedTables);
+        }
+        state.Warn(metadataFile == null
+            ? "This display export has no origin manifest. Source identity, original capture dates and requested TOP/WHERE selections are unknown; imported content is dated now."
+            : "This is a display export, not a database backup. Origin and capture selections are preserved, but original snapshot/history identities are not restored.");
+        var resourceFiles = files.Where(f => f != metadataFile).ToList();
+        var resources = relational ? await ReadRelationalResourcesAsync(resourceFiles, state, ct).ConfigureAwait(false) : ReadLegacyResources(resourceFiles);
         foreach (var resource in resources.Where(r => !r.Data))
         {
             ct.ThrowIfCancellationRequested();
@@ -87,7 +97,9 @@ public sealed partial class DatabaseExportFolderImportService
             }
             else state.Warn("Some CSV datasets have no table metadata. Their headers and rows are retained without inventing column types or primary keys.");
             state.Snapshot.TableDataSets.Add(data);
-            state.Snapshot.FullDataTableNames.Add(Display(identity));
+            // A provenance sidecar is authoritative for the capture recipe, including TOP/WHERE
+            // and requested tables absent from this export. Do not add an unrestricted duplicate.
+            if (metadataFile == null) state.Snapshot.FullDataTableNames.Add(Display(identity));
         }
         if (state.Snapshot.TableDataSets.Count != 0)
             state.Warn("CSV preserves displayed cell text only. Imported cells are strings: original JSON/SQL types, NULL versus empty/missing values, non-object rows and properties omitted by the exporter cannot be recovered.");
@@ -113,6 +125,12 @@ public sealed partial class DatabaseExportFolderImportService
         {
             ct.ThrowIfCancellationRequested(); RejectLink(directory);
             string category = Path.GetFileName(directory);
+            if (File.Exists(directory) && category == SnapshotExportMetadata.FileName)
+            {
+                var manifest = new FileInfo(directory);
+                if (manifest.Length > 4 * 1024 * 1024) throw Bad("Snapshot origin manifest exceeds its limit.");
+                bytes += manifest.Length; result.Add(new(directory, category, manifest.Length)); continue;
+            }
             if (!Directory.Exists(directory) || (relational ? !category.Equals("resources", StringComparison.OrdinalIgnoreCase) : !LegacyFolders.Contains(category, StringComparer.OrdinalIgnoreCase)))
                 throw Bad("Unexpected entry in the export root: " + category + ". Select the extracted database export folder.");
             foreach (string path in Directory.EnumerateFileSystemEntries(directory).Order(StringComparer.Ordinal))

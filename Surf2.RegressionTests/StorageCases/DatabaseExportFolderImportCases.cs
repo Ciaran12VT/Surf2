@@ -37,10 +37,10 @@ public static partial class StorageRegressionSuite
             JsonSerializer.SerializeToElement(new Dictionary<string, string> { ["Id"] = "", ["La]bel"] = "", ["Amount"] = "" }),
             JsonSerializer.SerializeToElement(new Dictionary<string, object?> { ["Id"] = 7, ["La]bel"] = null, ["Amount"] = true }) ] },
             new() { SchemaName = "dbo", TableName = "Blank", RowCount = 1, ImportedAtUtc = EvidenceTime, Rows = [JsonSerializer.SerializeToElement(new { Value = "" })] }],
-        FullDataTableNames = ["[audit.v2].[Items.rows] TOP 3", "[dbo].[Blank] WHERE Value IS NOT NULL"]
+        FullDataTableNames = ["[audit.v2].[Items.rows] TOP 3", "[dbo].[Blank] WHERE Value IS NOT NULL", "[dbo].[NotExported] WHERE Id > 0"]
     };
 
-    private static void VerifyImportedFolder(DatabaseMetadataSnapshot source, DatabaseExportFolderImportResult result, Action<bool, string> check, string label)
+    private static void VerifyImportedFolder(DatabaseMetadataSnapshot source, DatabaseExportFolderImportResult result, Action<bool, string> check, string label, bool hasOriginManifest = true)
     {
         var snapshot = result.Snapshot;
         check(source.Objects.All(expected => snapshot.Objects.Any(actual => actual.SchemaName == expected.SchemaName && actual.ObjectName == expected.ObjectName &&
@@ -57,10 +57,19 @@ public static partial class StorageRegressionSuite
             rows[2].GetProperty("Id").GetString() == "7" && rows[2].GetProperty("La]bel").GetString() == "" && rows[2].GetProperty("Amount").GetString() == "True" &&
             snapshot.GetTableDataSet("dbo", "Blank")!.Rows.Single().GetProperty("Value").GetString() == "",
             label + " reads quoted commas/quotes/newlines, leading zeros, all-empty records and display-only CSV types");
-        check(snapshot.DatabaseName == "" && snapshot.ImportedAtUtc != source.ImportedAtUtc && snapshot.PrimaryKeys.Single().ConstraintName == "" &&
-            snapshot.PrimaryKeys.Single().KeyOrdinal == 0 && columns.Select(x => x.Ordinal).SequenceEqual(new[] { 1, 2, 3 }) &&
-            snapshot.FullDataTableNames.All(x => !x.Contains(" TOP ") && !x.Contains(" WHERE ")) && result.Warnings.Count >= 3,
-            label + " reports missing export metadata without inventing source timestamps, PK names/order, predicates or JSON types");
+        check(snapshot.PrimaryKeys.Single().ConstraintName == "" && snapshot.PrimaryKeys.Single().KeyOrdinal == 0 &&
+            columns.Select(x => x.Ordinal).SequenceEqual(new[] { 1, 2, 3 }) && result.Warnings.Count >= 3,
+            label + " reports display-export losses without inventing PK names/order, source column ordinals or JSON types");
+        if (hasOriginManifest)
+            check(snapshot.DatabaseName == source.DatabaseName && snapshot.ImportedAtUtc == source.ImportedAtUtc &&
+                snapshot.FullDataTableNames.SequenceEqual(source.FullDataTableNames) &&
+                (source.Origin == null ? snapshot.Origin == null : snapshot.Origin?.AgreesWith(source.Origin) == true),
+                label + " preserves declared origin, capture date and exact TOP/WHERE/absent-table recipes without unrestricted duplicates");
+        else
+            check(snapshot.DatabaseName == "" && snapshot.ImportedAtUtc != source.ImportedAtUtc && snapshot.Origin == null &&
+                snapshot.FullDataTableNames.All(x => !x.Contains(" TOP ") && !x.Contains(" WHERE ")) &&
+                snapshot.FullDataTableNames.Count == source.TableDataSets.Count && result.Warnings.Any(w => w.Contains("no origin manifest")),
+                label + " keeps legacy origin/date/predicates unknown and infers only the tables actually represented by CSV");
     }
 
     public static async Task RunDatabaseExportFolderImportChecksAsync(Action<bool, string> check)
@@ -71,6 +80,9 @@ public static partial class StorageRegressionSuite
         try
         {
             var model = ExportFolderModel(); var importer = new DatabaseExportFolderImportService();
+            model.Origin = new DatabaseOrigin { Engine = "SqlServer", Server = "ExportFixture", Database = model.DatabaseName,
+                IdentifierKind = "database_guid", Identifier = "b8a03cc2-bdbd-44d8-b44e-3d82724a9a82", Availability = "Available",
+                Acquisition = "DirectCapture", ObservedAtUtc = EvidenceTime };
             string archive = Path.Combine(directory, "master.zip");
             new DatabaseExportService(new DatabaseDocumentService()).Export(model, archive);
             string Extract(string suffix) { string folder = Path.Combine(directory, suffix); ZipFile.ExtractToDirectory(archive, folder); return folder; }
@@ -78,6 +90,9 @@ public static partial class StorageRegressionSuite
             var before = Directory.GetFiles(valid, "*", SearchOption.AllDirectories).ToDictionary(x => x, x => SHA256.HashData(File.ReadAllBytes(x)));
             var imported = await importer.ImportAsync(valid, "Selected label");
             VerifyImportedFolder(model, imported, check, "Master export-folder roundtrip");
+            string legacy = Extract("legacy-no-origin");
+            File.Delete(Path.Combine(legacy, SnapshotExportMetadata.FileName));
+            VerifyImportedFolder(model, await importer.ImportAsync(legacy), check, "Legacy named-folder import", hasOriginManifest: false);
             check(imported.Snapshot.DisplayName == "Selected label" && before.All(x => SHA256.HashData(File.ReadAllBytes(x.Key)).SequenceEqual(x.Value)),
                 "Folder import uses the requested label and leaves every source file byte-for-byte unchanged");
             foreach (var (suffix, content) in new[] {
@@ -140,6 +155,12 @@ public static partial class StorageRegressionSuite
             ZipFile.ExtractToDirectory(zip, folder);
             var result = await importer.ImportAsync(folder);
             VerifyImportedFolder(model, result, check, "V2 " + label + " export-folder roundtrip");
+            string originSidecar = Path.Combine(folder, SnapshotExportMetadata.FileName);
+            byte[] originBytes = await File.ReadAllBytesAsync(originSidecar);
+            File.Delete(originSidecar);
+            var legacyWithoutOrigin = await importer.ImportAsync(folder);
+            VerifyImportedFolder(model, legacyWithoutOrigin, check, "Legacy V2 " + label + " without origin sidecar", hasOriginManifest: false);
+            await File.WriteAllBytesAsync(originSidecar, originBytes);
             if (!historical)
             {
                 long scopeKey = Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT ScopeKey FROM surf.Scope WHERE ScopeId=N'migration-scope';"));
@@ -147,15 +168,21 @@ public static partial class StorageRegressionSuite
                 var saved = await new RelationalSnapshotEditorService(runtime).SaveAsync(result.Snapshot, scope.Value, scope.Token, null);
                 var persistedScope = Required(await runtime.StateStore.ReadScopeAsync(scopeKey), "imported database scope");
                 var membership = persistedScope.Value.Resources.Single(resource => resource.Path == saved.Snapshot.SnapshotId);
-                check(saved.Snapshot.DatabaseName.Length == 0 && membership.DisplayName == label && membership.Details == label,
-                    "An export-folder snapshot without a database name displays its folder title in both scope columns");
+                check(saved.Snapshot.DatabaseName == model.DatabaseName && membership.DisplayName == label && membership.Details == model.DatabaseName,
+                    "An export-folder snapshot preserves the declared database name while keeping its selected display title");
                 var reopened = await new RelationalSnapshotEditorService(runtime).ReadAsync(saved.Snapshot);
                 check(reopened.Objects.Count == 4 && reopened.GetTableDataSet("dbo", "Blank")!.Rows.Count == 1 && saved.Snapshot.SnapshotKey != summary.SnapshotKey,
                     "Imported display export can be published as a distinct SQL snapshot with blank rows intact");
+                var legacySaved = await new RelationalSnapshotEditorService(runtime).SaveAsync(legacyWithoutOrigin.Snapshot,
+                    saved.UpdatedScope, saved.UpdatedScopeToken, null);
+                var legacyScope = Required(await runtime.StateStore.ReadScopeAsync(scopeKey), "legacy imported database scope");
+                var legacyMembership = legacyScope.Value.Resources.Single(resource => resource.Path == legacySaved.Snapshot.SnapshotId);
+                check(legacySaved.Snapshot.DatabaseName.Length == 0 && legacyMembership.DisplayName == label && legacyMembership.Details == label,
+                    "A legacy export without a database name still displays its folder title in both scope columns");
                 var editedSource = model.Clone(); editedSource.Objects[0].Definition += "-- edited after export\r\n";
                 editedSource.Objects.Add(new() { SchemaName = "dbo", ObjectName = "EmptyView", Kind = SqlDatabaseObjectKind.View, Definition = "" });
                 editedSource.Objects.Add(new() { SchemaName = "dbo", ObjectName = "OpaqueProc", Kind = SqlDatabaseObjectKind.StoredProcedure, Definition = "-- exported original text without a SQL declaration\r\n" });
-                opaqueVersionKey = (await new RelationalSnapshotEditorService(runtime).SaveAsync(editedSource, saved.UpdatedScope, saved.UpdatedScopeToken,
+                opaqueVersionKey = (await new RelationalSnapshotEditorService(runtime).SaveAsync(editedSource, legacySaved.UpdatedScope, legacySaved.UpdatedScopeToken,
                     new(runtime.Session.Epoch, summary.SnapshotKey, summary.RowVersion))).VersionKey;
                 string metadata = Directory.GetFiles(Path.Combine(folder, "resources"), "*.json").First();
                 string originalMetadata = await File.ReadAllTextAsync(metadata);

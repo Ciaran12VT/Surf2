@@ -13,6 +13,8 @@ public sealed class DatabaseMetadataSnapshot
 
     public DateTimeOffset ImportedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
+    public DatabaseOrigin? Origin { get; set; }
+
     public List<SqlDatabaseObject> Objects { get; set; } = [];
 
     public List<SqlTable> Tables { get; set; } = [];
@@ -43,6 +45,7 @@ public sealed class DatabaseMetadataSnapshot
             DisplayName = DisplayName,
             DatabaseName = DatabaseName,
             ImportedAtUtc = ImportedAtUtc,
+            Origin = Origin,
             Objects = Objects.Select(item => new SqlDatabaseObject
             {
                 SchemaName = item.SchemaName,

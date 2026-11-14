@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Windows;
@@ -19,7 +19,7 @@ namespace Surf2;
 /// <summary>Resource-only STA checks: no Window.Show, SQL, connection settings or application startup.</summary>
 public static class RelationalScopePickerUiChecks
 {
-    private static readonly string[] NewResourceCommands = ["Folder", "File", "Database"];
+    private static readonly string[] NewResourceCommands = ["Folder", "File", "Database", "Git Repo", "Add Blob", "Live SQL"];
     private static readonly string[] ScopeCommands = ["New", "Save", "Delete", "Add Scope Resources", "Open", "Close"];
 
     // Hook: call on an STA with App.InitializeComponent(), without Application.Run/OnStartup.

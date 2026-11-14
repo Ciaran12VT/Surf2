@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.IO;
 using Surf2.Models;
 using Surf2.Services.RelationalDocuments;
@@ -91,7 +91,44 @@ public sealed partial class RelationalExplorerService
         var chain = new List<ExplorerNodeSummary>();
         string canonical = locator, readable = locator;
         bool tableData = false;
-        if (DatabaseDocumentService.TryParseDocumentPath(locator, out var reference))
+        string sourceLocator = SourceResources.ResourceWorkspace.ToPersistentPath(locator,
+            preferredScopeResourceKey.HasValue ? memberships.FirstOrDefault()?.PublicId : null);
+        if (SourceResources.ResourceWorkspace.TryParse(sourceLocator, out var memberId, out var relative))
+        {
+            var resource = memberships.FirstOrDefault(r => r.PublicId == memberId && r.IsLoaded);
+            if (resource == null || relative.Length == 0) return null;
+            var root = await ResourceNodeAsync(resource, ExplorerCompatibility.RootKey, ct).ConfigureAwait(false);
+            chain.Add(root);
+            string[] parts = relative.Split('/');
+            if (parts.Length >= _limits.MaximumDepth) throw new ExplorerLimitException("The source address exceeds its ancestry depth limit.");
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string logical = string.Join('/', parts.Take(i + 1));
+                bool directory = i < parts.Length - 1;
+                string key = directory ? SourceResources.ResourceWorkspace.DirectoryLocator(memberId, logical) : SourceResources.ResourceWorkspace.Locator(memberId, logical);
+                string physical = SourceResources.ResourceWorkspace.Resolve(key);
+                var availability = await _physical.ProbeAsync(physical, directory, ct).ConfigureAwait(false);
+                if (availability != ExplorerAvailability.Present) return null;
+                chain.Add(PhysicalNode(resource, chain[^1].NodeKey, new(physical, directory, availability,
+                    DisplayName: parts[i], LogicalKey: key)));
+            }
+            canonical = sourceLocator; readable = resource.Alias + "/" + relative;
+        }
+        else if (SourceResources.LiveSourceWorkspace.TryParse(locator, out memberId, out _))
+        {
+            var resource = memberships.FirstOrDefault(r => r.PublicId == memberId && r.IsLoaded);
+            if (resource == null) return null;
+            chain.Add(await ResourceNodeAsync(resource, ExplorerCompatibility.RootKey, ct).ConfigureAwait(false));
+            foreach (var category in SourceResources.LiveSourceWorkspace.Categories(resource))
+            {
+                var item = SourceResources.LiveSourceWorkspace.Objects(resource, category).FirstOrDefault(n => n.FullPath == locator);
+                if (item == null) continue;
+                chain.Add(category); chain.Add(item); break;
+            }
+            if (chain.Count == 1) return null;
+            canonical = locator; readable = resource.Alias + "/" + chain[^1].MatchName;
+        }
+        else if (DatabaseDocumentService.TryParseDocumentPath(locator, out var reference))
         {
             string segment = reference.SnapshotId;
             var candidates = memberships.Where(r => r.Kind == ResourceKind.DatabaseSnapshot && r.Snapshot != null).ToArray();

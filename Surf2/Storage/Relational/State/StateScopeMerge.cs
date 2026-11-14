@@ -32,6 +32,8 @@ internal static class StateScopeMerge
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
         var targetNodes = result.Resources.Select(r => r.Path).Concat(result.Resources.Select(r => r.ResourceId))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var publicIds=additions.Resources.ToDictionary(r=>r.PublicId,_=>Guid.NewGuid());
+        var containerIds=additions.ResourceContainers.ToDictionary(c=>c.ContainerId,_=>Guid.NewGuid());
         string Missing(string raw, bool folder)
         {
             if (!missing.TryGetValue(raw, out string? replacement))
@@ -41,6 +43,13 @@ internal static class StateScopeMerge
         string Remap(string raw)
         {
             if (raw.Equals("__root__", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(raw)) return raw;
+            if(raw.StartsWith("source://",StringComparison.OrdinalIgnoreCase) || raw.StartsWith("livesql://",StringComparison.OrdinalIgnoreCase))
+            {
+                int start=raw.IndexOf("://",StringComparison.Ordinal)+3,end=raw.IndexOf('/',start);
+                if(end>start&&Guid.TryParse(raw[start..end],out var old)&&publicIds.TryGetValue(old,out var current))
+                    return raw[..start]+current.ToString("N")+raw[end..];
+                return raw;
+            }
             if (raw.StartsWith(FolderPrefix, StringComparison.OrdinalIgnoreCase))
                 return folders.TryGetValue(raw[FolderPrefix.Length..], out string? folder) ? FolderPrefix + folder : Missing(raw, true);
             if (resources.TryGetValue(raw, out string? resource)) return resource;
@@ -53,7 +62,19 @@ internal static class StateScopeMerge
             // A missing source node must not acquire an unrelated destination node by coincidence.
             return targetNodes.Contains(raw) ? Missing(raw, false) : raw;
         }
-        foreach (var resource in additions.Resources) resource.ResourceId = resources[resource.ResourceId];
+        foreach (var resource in additions.Resources)
+        {
+            resource.ResourceId = resources[resource.ResourceId];
+            resource.PublicId=publicIds[resource.PublicId];
+            resource.ContainerId=containerIds[resource.ContainerId];
+            resource.PairedResourceId=resource.PairedResourceId is Guid pair && publicIds.TryGetValue(pair,out var mapped)?mapped:null;
+        }
+        foreach(var container in additions.ResourceContainers)
+        {
+            container.ContainerId=containerIds[container.ContainerId];
+            container.DefaultResourceId=publicIds[container.DefaultResourceId];
+            result.ResourceContainers.Add(container);
+        }
         foreach (var folder in additions.VirtualFolders)
         {
             folder.VirtualFolderId = folders[folder.VirtualFolderId];

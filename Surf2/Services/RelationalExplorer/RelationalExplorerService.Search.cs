@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
@@ -199,7 +199,7 @@ public sealed partial class RelationalExplorerService
                     else if (currentScans.TryGetValue(node.OccurrenceKey, out var currentScan))
                         value = new(currentScan.Status == IndexScanStatus.Matched, currentScan.Status == IndexScanStatus.Matched,
                             [], currentScan.Status, currentScan.IndexFreshness, currentScan.CurrentSourceEvaluated);
-                    else if (node.Category == ExplorerCategory.Tables)
+                    else if (node.Category == ExplorerCategory.Tables && node.Role == ExplorerNodeRole.DatabaseDocument)
                     {
                         var table = sources is IExplorerCurrentContentSearch currentTables
                             ? await currentTables.SearchTableAsync(request.Scope, node, matcher, _limits.MaximumDocumentCharacters, ct).ConfigureAwait(false)
@@ -280,6 +280,6 @@ public sealed partial class RelationalExplorerService
         foreach (var child in children)
             await foreach (var candidate in WalkNodeAsync(scope, child, path, retainedCharacters, limits, ct).ConfigureAwait(false)) yield return candidate;
     }
-    private static bool IsDocument(ExplorerNodeSummary node) => node.Role is ExplorerNodeRole.DatabaseDocument or ExplorerNodeRole.Diagram ||
+    private static bool IsDocument(ExplorerNodeSummary node) => node.Role is ExplorerNodeRole.DatabaseDocument or ExplorerNodeRole.LiveDatabaseDocument or ExplorerNodeRole.Diagram ||
         RelationalExplorerSearchSources.IsPhysicalFile(node);
 }

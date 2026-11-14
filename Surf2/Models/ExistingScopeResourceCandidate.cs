@@ -9,7 +9,8 @@ public sealed record ExistingScopeResourceCandidate(
     string Path,
     string DisplayNameOverride,
     string DetailsOverride,
-    bool IncludeChildren)
+    bool IncludeChildren,
+    ResourceSourceDefinition? SourceConfiguration = null)
 {
     public ScopedResource CreateScopedResource()
     {
@@ -20,6 +21,7 @@ public sealed record ExistingScopeResourceCandidate(
             DisplayNameOverride = DisplayNameOverride,
             DetailsOverride = DetailsOverride,
             IncludeChildren = IncludeChildren,
+            Source = SourceConfiguration?.Copy(),
             AddedAtUtc = DateTimeOffset.UtcNow
         };
     }

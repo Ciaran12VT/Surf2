@@ -201,6 +201,7 @@ WHERE ScopeKey=@Key AND SortOrdinal=@Ordinal AND Kind=@Kind;
         byte[] scopes = Version(origin.ScopeCatalogueVersion), snapshots = Version(origin.SnapshotCatalogueVersion), diagrams = Version(origin.DiagramCatalogueVersion);
         var budget = new StateBudget(_limits);
         var copy = StateCopies.Scope(value, budget); var member = StateMaps.Resource.Copy(resource, budget);
+        member.Source=resource.Source?.Copy();
         int ordinal = copy.Resources.Count; copy.Resources.Add(member);
         return ReadyAsync(async (c, t) =>
         {
@@ -220,7 +221,7 @@ LEFT JOIN surf.StateCatalogueGeneration d ON d.ProfileKey=h.UserKey AND d.Kind=1
             {
                 await using var source = Command(c, t, """
 SELECT r.Kind,r.IncludeChildren,r.SnapshotKey,r.DiagramKey,CONVERT(bigint,DATALENGTH(r.Path)),r.Path,
- CONVERT(bigint,DATALENGTH(r.DisplayNameOverride)),r.DisplayNameOverride,CONVERT(bigint,DATALENGTH(d.Text)),d.Text
+ CONVERT(bigint,DATALENGTH(r.DisplayNameOverride)),r.DisplayNameOverride,CONVERT(bigint,DATALENGTH(d.Text)),d.Text,r.SourceId
 FROM surf.ScopeResource r JOIN surf.Scope s ON s.ScopeKey=r.ScopeKey
 JOIN surf.TextContent d ON d.ContentKey=r.DetailsOverrideContentKey
 WHERE r.ScopeKey=@SourceScope AND r.ScopeResourceKey=@SourceResource AND s.ProfileKey=1;
@@ -232,8 +233,9 @@ WHERE r.ScopeKey=@SourceScope AND r.ScopeResourceKey=@SourceResource AND s.Profi
                 long? snapshot = NullableKey(reader, 2), diagram = NullableKey(reader, 3);
                 string path = (await StringAsync(reader, 4, budget, ct))!, alias = (await StringAsync(reader, 6, budget, ct))!,
                     details = (await StringAsync(reader, 8, budget, ct))!;
+                Guid? sourceId=reader.IsDBNull(10)?null:reader.GetGuid(10);
                 if (kind != (int)member.Kind || children != member.IncludeChildren || snapshot != origin.SnapshotKey || diagram != origin.DiagramKey ||
-                    path != member.Path || alias != member.DisplayNameOverride || details != member.DetailsOverride)
+                    path != member.Path || alias != member.DisplayNameOverride || details != member.DetailsOverride || sourceId!=member.Source?.SourceId)
                     throw new StateConflictException("source scope membership");
             }
             if (origin.SnapshotKey.HasValue || origin.DiagramKey.HasValue)
@@ -270,6 +272,7 @@ AND DATALENGTH(DiagramId)=DATALENGTH(@Original) AND DiagramId COLLATE Latin1_Gen
         var budget = new StateBudget(_limits); var copy = StateCopies.Scope(value, budget);
         if (resourceOrdinal < 0 || resourceOrdinal >= copy.Resources.Count || scopeResourceKey < 1) throw new ArgumentException("Invalid selected membership.");
         var removed = copy.Resources[resourceOrdinal]; copy.Resources.RemoveAt(resourceOrdinal);
+        foreach(var remaining in copy.Resources.Where(r=>r.PairedResourceId==removed.PublicId))remaining.PairedResourceId=null;
         DiagramState? graph = null;
         if (selectedDiagram != null)
         {
@@ -322,6 +325,7 @@ DELETE FROM surf.ScopeResource WHERE ScopeKey=@Key AND ScopeResourceKey=@Resourc
             if (source == null || !SameRuntimeToken(source.Token, expectedSource)) throw new StateConflictException("merge source scope");
             foreach (var (_, resource) in await ChildrenAsync(c, t, StateMaps.Resource, "ScopeKey", expectedSource.Key, budget, ct))
                 source.Value.Resources.Add(resource);
+            await ReadResourceContainersAsync(c,t,expectedSource.Key,source.Value,budget,ct);
             foreach (var (key, folder) in await ChildrenAsync(c, t, StateMaps.Folder, "ScopeKey", expectedSource.Key, budget, ct))
             {
                 await using var command = Command(c, t,
@@ -506,6 +510,7 @@ DELETE FROM surf.VirtualFolderMember WHERE ScopeKey=@Key;
 UPDATE surf.VirtualFolder SET ParentVirtualFolderKey=NULL,ParentScopeResourceKey=NULL,ParentResourceKind=NULL,ParentResolution=0 WHERE ScopeKey=@Key;
 DELETE FROM surf.VirtualFolder WHERE ScopeKey=@Key;
 DELETE FROM surf.ScopeResource WHERE ScopeKey=@Key;
+DELETE FROM surf.ResourceContainer WHERE ScopeKey=@Key;
 DELETE FROM surf.Scope WHERE ScopeKey=@Key AND Version=@Version;
 """, ct, Key(expected.Key), RelationalSession.Parameter("@Version", SqlDbType.Binary, expected.Version, 8));
             await BumpAsync(c, t, 0, publication, ct); await BumpAsync(c, t, 2, publication, ct);
@@ -584,6 +589,9 @@ UPDATE s SET PublicationId=@Publication FROM surf.Scope s WHERE EXISTS(SELECT 1 
 UPDATE f SET ParentScopeResourceKey=NULL,ParentResourceKind=NULL,ParentResolution=2 FROM surf.VirtualFolder f JOIN surf.ScopeResource r ON r.ScopeResourceKey=f.ParentScopeResourceKey WHERE r.DiagramKey=@Key;
 UPDATE m SET ChildScopeResourceKey=NULL,ChildResourceKind=NULL,ChildResolution=2 FROM surf.VirtualFolderMember m JOIN surf.ScopeResource r ON r.ScopeResourceKey=m.ChildScopeResourceKey WHERE r.DiagramKey=@Key;
 DELETE FROM surf.ScopeResource WHERE DiagramKey=@Key;
+DELETE c FROM surf.ResourceContainer c WHERE NOT EXISTS(SELECT 1 FROM surf.ScopeResource r WHERE r.ContainerId=c.ContainerId);
+UPDATE c SET DefaultResourceId=(SELECT TOP(1) r.PublicId FROM surf.ScopeResource r WHERE r.ContainerId=c.ContainerId ORDER BY r.SortOrdinal)
+FROM surf.ResourceContainer c WHERE NOT EXISTS(SELECT 1 FROM surf.ScopeResource r WHERE r.ContainerId=c.ContainerId AND r.PublicId=c.DefaultResourceId);
 UPDATE d SET PublicationId=@Publication FROM surf.Diagram d WHERE EXISTS(SELECT 1 FROM surf.DiagramPortalTarget p JOIN surf.DiagramRevision r ON r.DiagramRevisionKey=p.DiagramRevisionKey WHERE r.DiagramKey=d.DiagramKey AND p.TargetDiagramKey=@Key);
 UPDATE w SET PublicationId=@Publication FROM surf.Workbench w WHERE EXISTS(SELECT 1 FROM surf.DiagramPortalTarget p JOIN surf.DiagramRevision r ON r.DiagramRevisionKey=p.DiagramRevisionKey WHERE r.WorkbenchKey=w.WorkbenchKey AND p.TargetDiagramKey=@Key);
 UPDATE surf.DiagramPortalTarget SET TargetDiagramKey=NULL,Resolution=2 WHERE TargetDiagramKey=@Key;

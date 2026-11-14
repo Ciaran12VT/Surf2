@@ -252,6 +252,8 @@ SELECT f.OriginalPath FROM surf.Document d JOIN surf.FileSource f ON f.FileSourc
 """);
         IndexSql.Add(command, "@Document", SqlDbType.BigInt, documentKey);
         using var cancel = RelationalSession.CancelCommand(command, token);
-        return await command.ExecuteScalarAsync(token) as string;
+        string? path = await command.ExecuteScalarAsync(token) as string;
+        return path?.StartsWith("livesql://", StringComparison.Ordinal) == true
+            ? Services.SourceResources.LiveSourceWorkspace.ResolveMaterialized(path) : path;
     }
 }

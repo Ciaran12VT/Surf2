@@ -102,6 +102,7 @@
                 <ListBoxItem Content="Persistence" />
                 <ListBoxItem Content="Diagnostics" />
                 <ListBoxItem Content="Preferences" />
+                <ListBoxItem Content="Local Cache" />
             </ListBox>
         </Grid>
 

@@ -6,6 +6,7 @@ public enum SavedDocumentTargetState { External, Resolved, Missing, Ambiguous }
 
 public sealed class OpenDocumentState
 {
+    [JsonIgnore] public string? PersistentSourcePath { get; set; }
     [JsonIgnore] public long? BoundSnapshotKey { get; set; }
     [JsonIgnore] public long? BoundResourceKey { get; set; }
     [JsonIgnore] public SavedDocumentTargetState TargetState { get; set; }

@@ -15,6 +15,11 @@ public sealed class RelationalCaptureSchemaUpgrade
     {
         var session = new RelationalSession(connectionString);
         await using var connection = await session.OpenAsync(cancellationToken);
+        await UpgradeOwnedAsync(connection,session,progress,cancellationToken);
+    }
+
+    internal async Task UpgradeOwnedAsync(SqlConnection connection,RelationalSession session,IProgress<string>? progress,CancellationToken cancellationToken)
+    {
         await using var lease = Command(connection, null, """
 DECLARE @Result int;
 EXEC @Result=sys.sp_getapplock @Resource=N'Surf2.FullTableData.Upgrade',
@@ -26,7 +31,7 @@ IF @Result < 0 THROW 51100, 'Could not acquire the table-data migration lock.', 
         try
         {
             await lease.ExecuteNonQueryAsync(cancellationToken);
-            var format = await new PersistenceFormatProbe().ProbeAsync(connectionString, cancellationToken);
+            var format = await new PersistenceFormatProbe().ProbeConnectionAsync(connection, cancellationToken);
             if (format.Format is not (PersistenceFormat.Relational or PersistenceFormat.Incomplete) ||
                 format.SchemaVersion is not (1 or 2))
                 throw new InvalidOperationException("The selected database has an unsupported table-data schema.");
@@ -181,7 +186,7 @@ IF NOT EXISTS(SELECT 1 FROM surf.SchemaMigration WHERE SchemaVersion=2)
 UPDATE surf.StorageFormatInfo SET SchemaVersion=2,MinimumReaderVersion=2,MinimumWriterVersion=2 WHERE Singleton=1;
 """;
         command.Parameters.Add(RelationalSession.Parameter("@Checksum", SqlDbType.Binary,
-            RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts()), 32));
+            RelationalSchemaInstaller.ScriptChecksum(RelationalSchemaInstaller.ReadScripts(2)), 32));
         await command.ExecuteNonQueryAsync(ct);
         await transaction.CommitAsync(ct);
     }

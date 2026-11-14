@@ -119,6 +119,11 @@ SELECT
         SELECT DB_NAME() AS [DatabaseName]
         FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
     );
+
+DECLARE @Surf2Origin TABLE (Result nvarchar(max));
+INSERT INTO @Surf2Origin EXEC sys.sp_executesql N{{ToSqlStringLiteral(DatabaseOriginQueryService.Query)}};
+INSERT INTO #Surf2Payloads(EntityType,EntityKey,PayloadJson)
+SELECT N'DatabaseOrigin',DB_NAME(),Result FROM @Surf2Origin;
 """;
     }
 
@@ -417,8 +422,11 @@ WHERE kc.type = 'PK'
         string tableLiteral = ToSqlStringLiteral(table.TableName);
         string topClause = table.TopCount is int topCount ? $" TOP ({topCount})" : string.Empty;
         string whereClause = table.WhereClause == null ? string.Empty : $"\n    WHERE {table.WhereClause}";
+        string selectionText = bracketedTableName + (table.TopCount is int cap ? " TOP " + cap : table.WhereClause != null ? " WHERE " + table.WhereClause : "");
 
         return $$"""
+INSERT INTO #Surf2Payloads(EntityType,EntityKey,PayloadJson)
+SELECT N'FullDataSelection',N{{tableKeyLiteral}},(SELECT N{{ToSqlStringLiteral(selectionText)}} AS Selection FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);
 IF OBJECT_ID(N{{tableObjectIdLiteral}}, N'U') IS NOT NULL
 BEGIN
     DECLARE @Surf2RowCount_{{table.VariableSuffix}} bigint;

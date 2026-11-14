@@ -62,6 +62,10 @@ public static partial class StorageRegressionSuite
         // Private serializers avoid reopening a legacy database through the runtime guard.
         var metadataMethod = typeof(RelationalPackageExporter).GetMethod("ReadMetadataAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var rowsMethod = typeof(RelationalPackageExporter).GetMethod("WriteTableAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await using var frozen=await SqlFixture.CreateAsync();
+        foreach(string script in RelationalSchemaInstaller.ReadScripts(1))await frozen.DestinationSqlAsync(script);
+        await using var frozenConnection=new SqlConnection(frozen.DestinationConnectionString);await frozenConnection.OpenAsync();
+        await using var frozenTransaction=(SqlTransaction)await frozenConnection.BeginTransactionAsync(IsolationLevel.Serializable);
         await using (var file = File.Create(packagePath))
         using (var archive = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
         {
@@ -69,14 +73,14 @@ public static partial class StorageRegressionSuite
             foreach (var spec in PackageTableCatalogue.ForSchema(1).Concat(layouts.Values.OrderBy(spec => spec.CaptureLayoutKey)))
             {
                 var table = await (Task<RelationalPackageTable>)metadataMethod.Invoke(exporter,
-                    [connection, transaction, spec, budget, CancellationToken.None])!;
+                    [spec.CaptureLayoutKey.HasValue?connection:frozenConnection, spec.CaptureLayoutKey.HasValue?transaction:frozenTransaction, spec, budget, CancellationToken.None])!;
                 streams.Add(await (Task<RelationalPackageTableStream>)rowsMethod.Invoke(exporter,
                     [connection, transaction, spec, table, archive, budget, CancellationToken.None])!);
             }
             await transaction.CommitAsync();
             var manifest = currentPackage.Manifest with
             {
-                DatabaseSchemaVersion = 1, MinimumReaderVersion = 1, MinimumWriterVersion = 1,
+                PackageVersion = 2, DatabaseSchemaVersion = 1, MinimumReaderVersion = 1, MinimumWriterVersion = 1,
                 Tables = streams, LocalFiles = [], Consistency = "SqlSerializableBlocking-v1"
             };
             await using var output = archive.CreateEntry(RelationalPackageFormat.ManifestEntry).Open();
@@ -91,10 +95,10 @@ public static partial class StorageRegressionSuite
         check(imported.CapturedRows > 0 && imported.CapturedRows ==
             Convert.ToInt64(await source.DestinationSqlAsync("SELECT SUM(ActualRowCount) FROM surf.DataSet;")),
             "Schema 1 package restores and validates all captured current and historical rows");
-        check(Equals(await restored.DestinationSqlAsync("SELECT SchemaVersion FROM surf.StorageFormatInfo WHERE State='Ready';"), 2) &&
+        check(Equals(await restored.DestinationSqlAsync("SELECT SchemaVersion FROM surf.StorageFormatInfo WHERE State='Ready';"), 3) &&
             Convert.ToInt64(await restored.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.FullTableData;")) == datasetKeys.Count &&
             Convert.ToInt64(await restored.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM sys.tables WHERE schema_id=SCHEMA_ID(N'capture');")) == 0,
-            "Schema 1 package publishes schema 2 with JSON captures and removes generated capture tables");
+            "Schema 1 package publishes schema 3 with JSON captures and removes generated capture tables");
         await restored.VerifySourceUnchangedAsync(check);
 
         foreach (long layoutKey in layouts.Keys)

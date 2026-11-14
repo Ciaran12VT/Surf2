@@ -91,7 +91,10 @@ public static partial class StorageRegressionSuite
             // Only persisted writable fields. In particular, never invoke ScopedResource.Exists
             // or other computed getters that can inspect filesystem paths.
             for (int i = info.Properties.Count - 1; i >= 0; i--)
-                if (info.Properties[i].Set == null) info.Properties.RemoveAt(i);
+                if (info.Properties[i].Set == null ||
+                    info.Type==typeof(Surf2.Models.Scope)&&info.Properties[i].Name==nameof(Surf2.Models.Scope.ResourceContainers) ||
+                    info.Type==typeof(Surf2.Models.ScopedResource)&&info.Properties[i].Name is "PublicId" or "ContainerId" or "Source" or "PairedResourceId")
+                    info.Properties.RemoveAt(i);
         });
         return new JsonSerializerOptions { TypeInfoResolver = resolver };
     }

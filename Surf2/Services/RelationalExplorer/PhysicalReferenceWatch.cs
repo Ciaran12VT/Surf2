@@ -234,9 +234,13 @@ public sealed class PhysicalReferenceWatch : IDisposable
 
     private bool Affects(ExplorerResource root, string path, bool topology)
     {
-        if (SamePath(root.Path, path)) return topology || root.Kind == ResourceKind.File;
+        bool paired = Surf2.Services.SourceResources.ResourceWorkspace.Find(root.PublicId)?.PairedResourceId.HasValue == true;
+        if (SamePath(root.Path, path)) return topology || root.Kind == ResourceKind.File || paired;
         if (topology && IsWithin(root.Path, path)) return true;
         if (root.Kind == ResourceKind.File || !IsWithin(path, root.Path)) return false;
+        // Reconciliation compares every paired file, including generated files and Git metadata.
+        // Its admission gate must therefore observe changes beyond the parser's eligibility set.
+        if (paired) return true;
         // Name search includes generated files and folders, and topology events need no probe.
         if (_namesOnly) return true;
         if (!RelationalScopeIndexRefresher.ReferenceFileEligible(root, path)) return false;

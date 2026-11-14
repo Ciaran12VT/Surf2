@@ -22,10 +22,21 @@ internal static class PackageTableCatalogue
     private static PackageTableSpec SnapshotOwned(string name) => new("surf", name, a => Snapshot(a + ".SnapshotKey"), "PublishedSnapshot-v1");
     private static PackageTableSpec RevisionOwned(string name) => new("surf", name, a => Revision(a + ".RevisionKey"), "SealedPublishedRevision-v1");
 
-    internal static readonly PackageTableSpec[] Authoritative = Build();
+    private static readonly PackageTableSpec[] SchemaTwo = Build();
+    private static readonly PackageTableSpec[] SchemaOne = SchemaTwo.Where(t=>t.Name!="FullTableData").ToArray();
+    internal static readonly PackageTableSpec[] Authoritative = BuildCurrent();
 
     internal static IEnumerable<PackageTableSpec> ForSchema(int version) =>
-        Authoritative.Where(table => version >= 2 || table.Name != "FullTableData");
+        version switch { 1=>SchemaOne,2=>SchemaTwo,3=>Authoritative,_=>throw new ArgumentOutOfRangeException(nameof(version)) };
+
+    private static PackageTableSpec[] BuildCurrent()
+    {
+        var tables=Build().ToList();
+        tables.InsertRange(tables.FindIndex(t=>t.Name=="ScopeResource"),[All("SourceDefinition"),All("ResourceContainer")]);
+        tables.Add(SnapshotOwned("SnapshotCaptureEvent"));
+        tables.Add(new("surf","SnapshotVersionOrigin",a=>$"EXISTS (SELECT 1 FROM surf.SnapshotVersion v WHERE v.VersionKey={a}.VersionKey AND {Snapshot("v.SnapshotKey")})","PublishedSnapshotVersionOrigin-v1"));
+        return tables.ToArray();
+    }
 
     private static PackageTableSpec[] Build()
     {

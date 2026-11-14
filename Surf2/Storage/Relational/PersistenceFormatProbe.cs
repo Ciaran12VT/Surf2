@@ -27,7 +27,7 @@ public sealed record PersistenceFormatResult(
 public sealed class PersistenceFormatProbe
 {
     public const string FormatIdentifier = "Surf2.RelationalV2";
-    public const int SupportedSchemaVersion = 2;
+    public const int SupportedSchemaVersion = 3;
 
     public async Task<PersistenceFormatResult> ProbeAsync(
         string connectionString,
@@ -35,9 +35,15 @@ public sealed class PersistenceFormatProbe
     {
         var options = SqlServerConnectionOptions.FromConnectionString(connectionString);
         await using var connection = new SqlConnection(options.ConnectionString);
+        return await ProbeConnectionAsync(connection,cancellationToken);
+    }
+
+    internal async Task<PersistenceFormatResult> ProbeConnectionAsync(SqlConnection connection,CancellationToken cancellationToken=default)
+    {
+        string databaseNameFallback=new SqlConnectionStringBuilder(connection.ConnectionString).InitialCatalog;
         try
         {
-            await connection.OpenAsync(cancellationToken);
+            if(connection.State!=ConnectionState.Open)await connection.OpenAsync(cancellationToken);
             await using var command = connection.CreateCommand();
             command.CommandText = """
 SELECT CONVERT(nvarchar(256), SERVERPROPERTY('ServerName')), CONVERT(int, DB_ID()), DB_NAME(),
@@ -181,12 +187,12 @@ WHERE c.object_id = OBJECT_ID(N'app.Surf2Documents', N'U');
         catch (SqlException) when (!cancellationToken.IsCancellationRequested)
         {
             // An inaccessible database is not proof that it is absent or empty.
-            return new(PersistenceFormat.Unavailable, options.DatabaseName,
+            return new(PersistenceFormat.Unavailable, databaseNameFallback,
                 Reason: "The database or its format metadata could not be read. Check connection and read permissions.");
         }
         catch (Exception ex) when (ex is InvalidCastException or InvalidDataException or SqlNullValueException)
         {
-            return new(PersistenceFormat.Unsupported, options.DatabaseName,
+            return new(PersistenceFormat.Unsupported, databaseNameFallback,
                 Reason: "The storage format metadata is malformed.");
         }
     }

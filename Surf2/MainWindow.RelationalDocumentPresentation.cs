@@ -14,6 +14,11 @@ public partial class MainWindow
 
     private void RememberRelationalDocumentPresentation(RelationalDocumentAddress address)
     {
+        if (address.Resource == null && address.PersistentDocumentPath is { } source)
+        {
+            _relationalDocumentLinks[address.DocumentPath] = (source, source);
+            _relationalDocumentToolTips[address.DocumentPath] = source;
+        }
         if (address.Resource == null || address.Snapshot == null) return;
         var membership = address.ExplorerAddress?.Node.ScopeResourceKey is long key
             ? _relationalExplorerScope?.Resources.FirstOrDefault(resource => resource.ScopeResourceKey == key)
@@ -29,6 +34,10 @@ public partial class MainWindow
     private string GetRelationalPersistentDocumentPath(string path)
     {
         if (_relationalDocumentLinks.TryGetValue(path, out var link)) return link.PersistentPath;
+        string source = Services.SourceResources.ResourceWorkspace.ToPersistentPath(path);
+        if (source != path) return source;
+        source = Services.SourceResources.LiveSourceWorkspace.ToPersistent(path);
+        if (source != path) return source;
         var scope = _relationalExplorerScope;
         if (scope?.DatabaseCatalogue == null || !DurableDocumentLink.TryParseSessionPath(path, out var selected) ||
             selected.Epoch != scope.Context.Epoch || selected.Epoch != _relational?.Session.Epoch) return path;

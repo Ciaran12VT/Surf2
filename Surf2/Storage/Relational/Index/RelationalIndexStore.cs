@@ -27,7 +27,8 @@ public sealed partial class RelationalIndexStore
         switch (registration.Owner)
         {
             case FileDocumentOwner file:
-                string path = System.IO.Path.GetFullPath(file.Path);
+                bool logicalSql = file.Path.StartsWith("livesql://", StringComparison.Ordinal);
+                string path = logicalSql ? file.Path : System.IO.Path.GetFullPath(file.Path);
                 byte[] hash = IndexSql.Hash(path.ToUpperInvariant());
                 await using (var find = IndexSql.Command(connection, transaction,
                     "SELECT FileSourceKey,OriginalPath FROM surf.FileSource WHERE @Ascii=0 OR PathIsAscii=0 OR PathHash=@Hash;"))
@@ -37,7 +38,7 @@ public sealed partial class RelationalIndexStore
                     using var cancel = RelationalSession.CancelCommand(find, token);
                     await using var reader = await find.ExecuteReaderAsync(token);
                     while (await reader.ReadAsync(token))
-                        if (string.Equals(path, reader.GetString(1), StringComparison.OrdinalIgnoreCase)) fileKey = reader.GetInt64(0);
+                        if (string.Equals(path, reader.GetString(1), logicalSql ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase)) fileKey = reader.GetInt64(0);
                 }
                 if (fileKey == null)
                 {
@@ -125,8 +126,11 @@ DELETE surf.ResourceDocument WHERE DocumentKey=@Document;
             await using var command = IndexSql.Command(connection, transaction, """
 IF NOT EXISTS(SELECT 1 FROM surf.ScopeResource sr CROSS JOIN surf.Document d
  LEFT JOIN surf.DiagramRevision dr ON dr.DiagramRevisionKey=d.DiagramRevisionKey
+ LEFT JOIN surf.FileSource fs ON fs.FileSourceKey=d.FileSourceKey
  WHERE sr.ScopeResourceKey=@Resource AND d.DocumentKey=@Document AND
- ((d.Kind=0 AND sr.Kind IN (0,1)) OR (d.Kind IN (1,2) AND sr.SnapshotKey=d.SnapshotKey)
+ ((d.Kind=0 AND (sr.Kind IN (0,1) OR (sr.Kind=4 AND fs.OriginalPath LIKE
+    N'livesql://'+REPLACE(CONVERT(nvarchar(36),sr.PublicId),N'-',N'')+N'/%')))
+ OR (d.Kind IN (1,2) AND sr.SnapshotKey=d.SnapshotKey)
  OR (d.Kind=3 AND sr.DiagramKey=dr.DiagramKey)))
  THROW 51100,'Document membership has a different typed owner.',1;
 INSERT surf.ResourceDocument(ScopeResourceKey,DocumentKey,DisplayName,Locator,NodeKey,ParentNodeKey,SortOrdinal)

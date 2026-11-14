@@ -28,6 +28,7 @@ WITH Physical AS (
     CROSS APPLY (VALUES(LEFT(slashed.Path,LEN(slashed.Path+N'x')-
         PATINDEX(N'%[^\]%',REVERSE(slashed.Path)+N'x')))) trimmed(Path)
     WHERE s.ProfileKey=1 AND r.Kind={{(int)kind}}
+      AND (r.SourceId IS NULL OR EXISTS(SELECT 1 FROM surf.SourceDefinition sd WHERE sd.SourceId=r.SourceId AND sd.Provider=0))
 ), Choices AS (
     SELECT candidate.ScopeResourceKey,
            ROW_NUMBER() OVER(PARTITION BY candidate.PathIdentity ORDER BY candidate.ScopeResourceKey) AS DuplicateOrdinal

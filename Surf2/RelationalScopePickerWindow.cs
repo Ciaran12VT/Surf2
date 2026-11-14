@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -8,6 +8,7 @@ using Microsoft.Win32;
 using Surf2.Models;
 using Surf2.Services;
 using Surf2.Services.RelationalSnapshots;
+using Surf2.Services.SourceResources;
 using Surf2.Storage.Relational.Access.State;
 using Surf2.Storage.Relational.State;
 using Surf2.Storage.Relational.Snapshots;
@@ -170,6 +171,24 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         AddButton("Folder", existing => existing ? AddExistingPhysicalResourceAsync(ResourceKind.Folder) : AddPhysicalResourceAsync(ResourceKind.Folder));
         AddButton("File", existing => existing ? AddExistingPhysicalResourceAsync(ResourceKind.File) : AddPhysicalResourceAsync(ResourceKind.File));
         AddButton("Database", existing => existing ? AddExistingSnapshotAsync() : EditDatabaseAsync(replaceSelected: false));
+        AddButton("Git Repo", async existing =>
+        {
+            if (existing) { await AddExistingSourceResourceAsync(SourceProvider.Git); return; }
+            if (_model != null) { await ScopeSourceActions.AddGitAsync(this, _model, ct: Lifetime); _resources.Items.Refresh(); }
+        });
+        AddButton("Add Blob", async existing =>
+        {
+            if (existing) { await AddExistingSourceResourceAsync(SourceProvider.AzureBlob); return; }
+            if (_model != null) { await ScopeSourceActions.AddBlobAsync(this, _model, ct: Lifetime); _resources.Items.Refresh(); }
+        });
+        AddButton("Live SQL", async existing =>
+        {
+            if (existing) { await AddExistingSourceResourceAsync(SourceProvider.LiveSql); return; }
+            if (_model == null) return;
+            if (ScopeSourceActions.AddLiveSql(this, _model) is { } live)
+                await SourceSnapshotLinker.LinkMatchingAsync(_runtime, _model, live, Lifetime);
+            _resources.Items.Refresh();
+        });
         Button diagram = AddButton("Diagram", _ => AddExistingDiagramAsync());
         diagram.Visibility = Visibility.Collapsed;
         mode.SelectionChanged += (_, _) =>
@@ -186,6 +205,34 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
             commands.Children.Add(button);
             return button;
         }
+    }
+
+    private async Task AddExistingSourceResourceAsync(SourceProvider provider)
+    {
+        if (_edit == null || _model == null) return;
+        await SaveFieldsAsync(Lifetime);
+        long target = _edit.SubjectKey;
+        var picker = new RelationalQueryPickerWindow<PhysicalResourceChoice>($"Existing {provider} Resources", async (cursor, ct) =>
+        {
+            var page = await _runtime.StateStore.ListSourceResourceChoicesAsync(provider, target, 100, cursor as StateCursor, ct);
+            return new(page.Items, page.Next);
+        }, r => $"{r.Resource.DisplayName} — {r.Resource.Details} ({r.ScopeName})") { Owner = this };
+        picker.LinkOwnerLifetime(Lifetime);
+        bool? accepted;
+        try { accepted = picker.ShowDialog(); } finally { await picker.DrainQueriesAsync(); }
+        Lifetime.ThrowIfCancellationRequested();
+        if (accepted != true || picker.SelectedSummary is not { } choice || _model == null) return;
+        var source = choice.Resource.Source ?? throw new InvalidDataException("The selected source descriptor is missing.");
+        var canonical = _model.Resources.FirstOrDefault(r => r.Source?.SourceId == source.SourceId);
+        if (canonical == null)
+        {
+            var member = new ScopedResource { Kind = choice.Resource.Kind, Path = choice.Resource.Path,
+                DisplayNameOverride = choice.Resource.DisplayNameOverride, DetailsOverride = choice.Resource.DetailsOverride,
+                IncludeChildren = choice.Resource.IncludeChildren, Source = source.Copy() };
+            canonical = await ScopeSourceActions.AddMemberAsync(_model, member, ct: Lifetime, owner: this);
+        }
+        if (provider == SourceProvider.LiveSql) await SourceSnapshotLinker.LinkMatchingAsync(_runtime, _model, canonical, Lifetime);
+        _resources.Items.Refresh(); _resources.SelectedItem = canonical;
     }
 
     private void AddResourceActionColumn()
@@ -234,34 +281,28 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         }
     }
 
-    private Task AddPhysicalResourceAsync(ResourceKind kind)
+    private async Task AddPhysicalResourceAsync(ResourceKind kind)
     {
-        if (_model == null) return Task.CompletedTask;
+        if (_model == null) return;
         if (kind == ResourceKind.Folder)
         {
             var dialog = new OpenFolderDialog { Title = "Add a folder reference" };
-            if (dialog.ShowDialog(this) == true) AddPhysical(new() { Kind = kind, Path = dialog.FolderName });
+            if (dialog.ShowDialog(this) == true) await AddPhysicalAsync(new() { Kind = kind, Path = dialog.FolderName });
         }
         else
         {
             var dialog = new OpenFileDialog { Title = "Add file references", Multiselect = true, CheckFileExists = true };
             if (dialog.ShowDialog(this) == true)
-                foreach (string path in dialog.FileNames) AddPhysical(new() { Kind = kind, Path = Path.GetFullPath(path) });
+                foreach (string path in dialog.FileNames) await AddPhysicalAsync(new() { Kind = kind, Path = Path.GetFullPath(path) });
         }
-        return Task.CompletedTask;
     }
 
-    private void AddPhysical(ScopedResource resource)
+    private async Task AddPhysicalAsync(ScopedResource resource)
     {
         if (_model == null) return;
-        static string Identity(string path)
-        {
-            try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); }
-            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return path.Trim(); }
-        }
-        if (_model.Resources.Any(r => r.Kind == resource.Kind && string.Equals(Identity(r.Path), Identity(resource.Path), StringComparison.OrdinalIgnoreCase)))
-        { SetStatus("That resource is already in this scope."); return; }
-        _model.Resources.Add(resource); _resources.SelectedItem = resource;
+        var canonical = await ScopeSourceActions.AddMemberAsync(_model, resource, ct: Lifetime, owner: this);
+        _resources.SelectedItem = canonical;
+        if (!ReferenceEquals(canonical, resource)) SetStatus("That location is already registered. Selected its existing resource.");
     }
 
     private async Task AddExistingPhysicalResourceAsync(ResourceKind kind)
@@ -280,8 +321,8 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         if (accepted == true && picker.SelectedSummary is { } selected)
         {
             var resource = selected.Resource;
-            AddPhysical(new() { Kind = kind, Path = resource.Path, DisplayNameOverride = resource.DisplayNameOverride,
-                DetailsOverride = resource.DetailsOverride, IncludeChildren = resource.IncludeChildren });
+            await AddPhysicalAsync(new() { Kind = kind, Path = resource.Path, DisplayNameOverride = resource.DisplayNameOverride,
+                DetailsOverride = resource.DetailsOverride, IncludeChildren = resource.IncludeChildren, Source = resource.Source?.Copy() });
         }
     }
 
@@ -301,7 +342,12 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         bool confirmed = ConfirmResourceRemoval?.Invoke(resource) ?? MessageBox.Show(this,
             $"Remove '{resource.DisplayName}' from this scope?\n\nThe underlying resource will be retained.", "Remove Resource",
             MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes;
-        if (confirmed) _model.Resources.Remove(resource);
+        if (confirmed)
+        {
+            foreach (var remaining in _model.Resources.Where(r => r.PairedResourceId == resource.PublicId)) remaining.PairedResourceId = null;
+            _model.Resources.Remove(resource);
+            _model.EnsureResourceContainers();
+        }
     }
 
     private bool CommitResourceEdits() => _resources.CommitEdit(DataGridEditingUnit.Cell, true) &&
@@ -359,6 +405,30 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         dialog.Owner = this;
         using var cancellation = Lifetime.Register(() => _ = Dispatcher.InvokeAsync(dialog.Close));
         if (dialog.ShowDialog() != true || dialog.Snapshot is not { } edited) return;
+        if (edited.Origin == null || !edited.Origin.IsComplete)
+        {
+            var origin = new SnapshotOriginWindow(edited.Origin, edited.DatabaseName) { Owner = this };
+            if (origin.ShowDialog() != true) return;
+            edited.Origin = origin.Origin;
+        }
+        var targetChoice = await SnapshotImportTargetWindow.ChooseAsync(this, _runtime, edited.Origin, replacement, Lifetime);
+        if (targetChoice.Cancelled) return;
+        if (targetChoice.Target is { } chosenTarget)
+        {
+            replacement = chosenTarget;
+            var targets = await _runtime.StateStore.ReadRuntimeScopeTargetsAsync(_edit!.ExpectedToken, Lifetime);
+            if (!targets.Any(t => t.SnapshotKey == chosenTarget.SnapshotKey))
+            {
+                var updatedScope = _edit.Snapshot(); int ordinal = updatedScope.Resources.Count;
+                updatedScope.Resources.Add(new ScopedResource { Kind = ResourceKind.DatabaseSnapshot, Path = chosenTarget.SnapshotId,
+                    DisplayNameOverride = chosenTarget.DisplayName, DetailsOverride = chosenTarget.DatabaseName });
+                var targetToken = new SnapshotRuntimeToken(_runtime.Session.Epoch, chosenTarget.SnapshotKey, chosenTarget.RowVersion);
+                var updatedToken = await _runtime.StateStore.SaveScopeWithSnapshotTargetAsync(updatedScope, _edit.ExpectedToken,
+                    ordinal, targetToken, Guid.NewGuid(), Lifetime);
+                await ReloadScopeOwnerAsync(updatedToken, updatedScope); ChangedScopeKeys.Add(updatedToken.Key);
+            }
+            edited.SnapshotId = chosenTarget.SnapshotId;
+        }
         Lifetime.ThrowIfCancellationRequested();
         SnapshotRuntimeToken? expected = replacement == null ? null :
             new(_runtime.Session.Epoch, replacement.SnapshotKey, replacement.RowVersion);
@@ -378,6 +448,8 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         }
         Lifetime.ThrowIfCancellationRequested();
         ChangedScopeKeys.Add(result.UpdatedScopeToken.Key);
+        if (await SourceSnapshotLinker.LinkMatchingAsync(_runtime, result.UpdatedScope, ct: Lifetime) != 0)
+            result = result with { UpdatedScopeToken = await _runtime.StateStore.SaveScopeAsync(result.UpdatedScope, result.UpdatedScopeToken, Guid.NewGuid(), Lifetime) };
         await ReloadScopeOwnerAsync(result.UpdatedScopeToken, result.UpdatedScope);
     }
 
@@ -397,8 +469,11 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
         }
         Lifetime.ThrowIfCancellationRequested();
         if (accepted != true || capture.Result == null) return;
-        ChangedScopeKeys.Add(capture.Result.UpdatedScopeToken.Key);
-        await ReloadScopeOwnerAsync(capture.Result.UpdatedScopeToken, capture.Result.UpdatedScope);
+        var result = capture.Result;
+        ChangedScopeKeys.Add(result.UpdatedScopeToken.Key);
+        if (await SourceSnapshotLinker.LinkMatchingAsync(_runtime, result.UpdatedScope, ct: Lifetime) != 0)
+            result = result with { UpdatedScopeToken = await _runtime.StateStore.SaveScopeAsync(result.UpdatedScope, result.UpdatedScopeToken, Guid.NewGuid(), Lifetime) };
+        await ReloadScopeOwnerAsync(result.UpdatedScopeToken, result.UpdatedScope);
     }
 
     private async Task AddExistingSnapshotAsync()
@@ -423,6 +498,8 @@ internal sealed class RelationalScopePickerWindow : RelationalQueryPickerWindow<
             DetailsOverride = string.IsNullOrWhiteSpace(selected.DatabaseName) ? selected.DisplayName : selected.DatabaseName });
         var expectedTarget = new SnapshotRuntimeToken(_runtime.Snapshots.Epoch, selected.SnapshotKey, selected.RowVersion);
         var token = await _runtime.StateStore.SaveScopeWithSnapshotTargetAsync(scope, _edit.ExpectedToken, ordinal, expectedTarget, Guid.NewGuid(), Lifetime);
+        if (await SourceSnapshotLinker.LinkMatchingAsync(_runtime, scope, ct: Lifetime) != 0)
+            token = await _runtime.StateStore.SaveScopeAsync(scope, token, Guid.NewGuid(), Lifetime);
         ChangedScopeKeys.Add(token.Key); await ReloadScopeOwnerAsync(token, scope);
     }
 

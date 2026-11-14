@@ -26,7 +26,10 @@ public sealed record IndexWorkLease(long WorkItemKey, long DocumentKey, Guid Pub
 public sealed record IndexPublication(IndexWorkLease Lease, string Text, string Language,
     ImmutableArray<SymbolInput> Symbols, long? SourceRevisionKey = null, FileFingerprint? FileFingerprint = null);
 public sealed record PreparedIndexSource(string Text, string Fingerprint, string Language,
-    ImmutableArray<SymbolInput> Symbols, long? SourceRevisionKey = null);
+    ImmutableArray<SymbolInput> Symbols, long? SourceRevisionKey = null)
+{
+    public FileFingerprint? PhysicalFingerprint { get; init; }
+}
 public sealed record SymbolInput(string Name, string QualifiedName, ReferenceEntityKind Kind, string Locator,
     int LineNumber, int ColumnNumber, int EndLineNumber, int EndColumnNumber, int? ParameterCount,
     int? MinimumArgumentCount, int? MaximumArgumentCount, string Language, string ContainerName)

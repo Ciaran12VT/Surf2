@@ -19,6 +19,11 @@ public sealed partial class RelationalSnapshotHistoryService
         await AtomicExportAsync(destinationPath, async output =>
         {
             using var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true); long ordinal = 0;
+            var requests = new List<string>();
+            await foreach (var selection in SnapshotStaging.Pages(c => _runtime.Snapshots.ListFullDataSelectionsAsync(expected.SnapshotKey, 128, c, ct), ct)) requests.Add(selection.TableName);
+            var origin = header.CurrentVersionKey is long currentVersion ? await _runtime.Snapshots.ReadOriginAsync(currentVersion, ct).ConfigureAwait(false) : null;
+            await using (var manifest = zip.CreateEntry(SnapshotExportMetadata.FileName).Open())
+                await JsonSerializer.SerializeAsync(manifest, SnapshotExportMetadata.Create(origin, header.DatabaseName, header.ImportedAtUtc, requests), cancellationToken: ct).ConfigureAwait(false);
             await foreach (var resource in SnapshotStaging.Pages(c => _runtime.Snapshots.ListResourcesAsync(expected.SnapshotKey,
                 pageSize: 128, cursor: c, ct: ct), ct))
             {
@@ -74,6 +79,11 @@ public sealed partial class RelationalSnapshotHistoryService
         await AtomicExportAsync(destinationPath, async output =>
         {
             using var zip = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true);
+            var requests = new List<string>();
+            await foreach (var selection in version.StreamAsync(HistoricalCollection.FullDataTableNames, ct).ConfigureAwait(false)) requests.Add(selection.Name);
+            var origin = await _runtime.Snapshots.ReadOriginAsync(versionKey, ct).ConfigureAwait(false);
+            await using (var manifest = zip.CreateEntry(SnapshotExportMetadata.FileName).Open())
+                await JsonSerializer.SerializeAsync(manifest, SnapshotExportMetadata.Create(origin, version.Header.DatabaseName, version.Header.ImportedAtUtc, requests), cancellationToken: ct).ConfigureAwait(false);
             long ordinal = 0;
             foreach (var collection in new[] { HistoricalCollection.Objects, HistoricalCollection.Tables, HistoricalCollection.TableDataSets })
                 await foreach (var entry in version.StreamAsync(collection, ct).ConfigureAwait(false))

@@ -48,7 +48,8 @@ WHERE {predicate};
                 {
                     string original = reader.GetString(2);
                     if (original.Length > 65536) throw new ExplorerLimitException("A physical index locator exceeds its metadata limit.");
-                    if (!string.Equals(path, original, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.Equals(path, original, path.StartsWith("livesql://", StringComparison.Ordinal)
+                        ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase)) continue;
                 }
                 if (found != null) throw new InvalidOperationException("The typed document identity is ambiguous.");
                 found = new(new(reader.GetInt64(0), IndexSql.Hex((byte[])reader[1])), ReadPublished(reader, 3));
@@ -178,8 +179,11 @@ UPDATE surf.ScopeIndexState SET ReconciledScopeVersion=NULL,ReconciledAtUtc=NULL
             await using var command = IndexSql.Command(connection, transaction, """
 IF NOT EXISTS(SELECT 1 FROM surf.ScopeResource sr CROSS JOIN surf.Document d
  LEFT JOIN surf.DiagramRevision dr ON dr.DiagramRevisionKey=d.DiagramRevisionKey
+ LEFT JOIN surf.FileSource fs ON fs.FileSourceKey=d.FileSourceKey
  WHERE sr.ScopeResourceKey=@Resource AND sr.ScopeKey=@Scope AND d.DocumentKey=@Document AND
- ((d.Kind=0 AND sr.Kind IN (0,1)) OR (d.Kind IN (1,2) AND sr.SnapshotKey=d.SnapshotKey)
+ ((d.Kind=0 AND (sr.Kind IN (0,1) OR (sr.Kind=4 AND fs.OriginalPath LIKE
+    N'livesql://'+REPLACE(CONVERT(nvarchar(36),sr.PublicId),N'-',N'')+N'/%')))
+ OR (d.Kind IN (1,2) AND sr.SnapshotKey=d.SnapshotKey)
  OR (d.Kind=3 AND sr.DiagramKey=dr.DiagramKey)))
  THROW 51100,'Document membership has a different typed owner.',1;
 INSERT surf.ResourceDocument(ScopeResourceKey,DocumentKey,DisplayName,Locator,NodeKey,ParentNodeKey,SortOrdinal)

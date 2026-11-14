@@ -44,6 +44,17 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
     {
         RejectUnresolvedSavedTarget(saved);
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
+        if (SourceResources.ResourceWorkspace.IsBlockedPath(path)) throw Missing("The resource is unloaded. Load it before opening its documents.");
+        string? sourceLocator = path.StartsWith("source://", StringComparison.OrdinalIgnoreCase) || path.StartsWith("livesql://", StringComparison.OrdinalIgnoreCase) ? path : null;
+        if (sourceLocator != null)
+        {
+            Guid member;
+            bool known = SourceResources.ResourceWorkspace.TryParse(path, out member, out _) || SourceResources.LiveSourceWorkspace.TryParse(path, out member, out _);
+            if (!known || scope?.Resources.Any(r => r.PublicId == member && r.IsLoaded) != true)
+                throw Missing("The linked source is not loaded in this scope.");
+        }
+        path = await SourceResources.LiveSourceWorkspace.MaterializeAsync(path, ct).ConfigureAwait(false);
+        path = SourceResources.ResourceWorkspace.Resolve(path);
         SnapshotResourceSummary? resource;
         if (saved?.TargetState == SavedDocumentTargetState.Resolved)
         {
@@ -57,9 +68,10 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
         if (!DatabaseDocumentService.IsDatabaseDocumentPath(path))
         {
             string fullPath = Path.GetFullPath(path);
-            var address = scope == null ? null : await _runtime.Explorer.ResolveAddressAsync(scope, fullPath, ct: ct).ConfigureAwait(false);
+            var address = scope == null ? null : await _runtime.Explorer.ResolveAddressAsync(scope, sourceLocator ?? fullPath, ct: ct).ConfigureAwait(false);
             return new(PhysicalDocumentIdentity.From(Epoch, fullPath), fullPath, fullPath,
-                Path.GetFileName(fullPath), address?.TextFileNameSeed, null, address);
+                address?.Node.Name ?? Path.GetFileName(fullPath), address?.TextFileNameSeed, null, address,
+                PersistentDocumentPath: sourceLocator ?? SourceResources.ResourceWorkspace.ToPersistentPath(fullPath));
         }
         if (!DatabaseDocumentService.TryParseDocumentPath(path, out var reference)) throw Missing("The database document address is invalid.");
         if (path.StartsWith("db://!", StringComparison.OrdinalIgnoreCase))
@@ -150,6 +162,10 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
     {
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
         var member = DocumentExplorerSelection.SelectedMembership(scope, selected);
+        if (!member.IsLoaded || member.PublicId != Guid.Empty && !SourceResources.ResourceWorkspace.IsAdmitted(member.PublicId))
+            throw Missing("The selected resource is unloaded.");
+        if (selected.Role == ExplorerNodeRole.LiveDatabaseDocument)
+            return await ResolveAsync(selected.FullPath, scope, ct: ct).ConfigureAwait(false);
         if (selected.Role == ExplorerNodeRole.DatabaseDocument)
         {
             if (selected.SnapshotKey is not > 0 || selected.SnapshotResourceKey is not > 0)
@@ -167,8 +183,9 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
         if (explorer == null || explorer.Node.ScopeResourceKey != member.ScopeResourceKey)
             throw Missing("The selected file is no longer in its explorer membership.");
         await RequireCurrentAsync(scope, ct).ConfigureAwait(false);
-        return new(PhysicalDocumentIdentity.From(Epoch, path), path, path, Path.GetFileName(path),
-            explorer.TextFileNameSeed, null, explorer);
+        return new(PhysicalDocumentIdentity.From(Epoch, path), path, path, selected.Name,
+            explorer.TextFileNameSeed, null, explorer,
+            PersistentDocumentPath: SourceResources.ResourceWorkspace.ToPersistentPath(path, member.PublicId == Guid.Empty ? null : member.PublicId));
     }
 
     private async Task<RelationalDocumentAddress> AddressAsync(SnapshotResourceSummary resource, ExplorerScope? scope,
@@ -177,6 +194,8 @@ public sealed partial class RelationalDocumentService : IAsyncDisposable
         var membership = scope == null ? null : DocumentExplorerSelection.SnapshotMembership(scope, resource.SnapshotKey, preferredScopeResourceKey);
         var snapshot = membership?.Snapshot ?? await _runtime.Snapshots.GetSnapshotAsync(resource.SnapshotKey, ct).ConfigureAwait(false)
             ?? throw Missing("The snapshot is not published.");
+        if (membership is { IsLoaded: false } || SourceResources.ResourceWorkspace.IsSnapshotBlocked(snapshot.SnapshotId))
+            throw Missing("The snapshot resource is unloaded. Load it before opening its objects.");
         var category = Category(resource.Kind);
         bool data = resource.Kind == DatabaseVersionedResourceKind.TableData;
         ExplorerAddress? explorer = null;

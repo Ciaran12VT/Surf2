@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+﻿using System.Collections.Immutable;
 using System.IO;
 using System.Runtime.CompilerServices;
 using Surf2.Models;
@@ -16,7 +16,7 @@ public sealed partial class RelationalExplorerService
     public RelationalExplorerService(IExplorerMetadataQueries metadata, IPhysicalExplorerQueries? physical = null,
         ExplorerLimits? limits = null, Func<ExplorerScope, bool>? selectedScope = null)
     {
-        _metadata = metadata; _physical = physical ?? new PhysicalExplorerQueries(); _selectedScope = selectedScope;
+        _metadata = metadata; _physical = physical ?? new SourceResources.SourcePhysicalExplorerQueries(); _selectedScope = selectedScope;
         _limits = limits ?? new(); _limits.Validate();
     }
     public Task<ExplorerScope> OpenScopeAsync(long scopeKey, IReadOnlySet<string>? unloadedResourceIds = null,
@@ -107,6 +107,9 @@ public sealed partial class RelationalExplorerService
                 .Select(r => DiagramNode(r, parent.NodeKey)).ToImmutableArray();
         }
         var resource = scope.Resources.FirstOrDefault(r => r.ScopeResourceKey == parent.ScopeResourceKey);
+        if (resource?.Kind == ResourceKind.LiveDatabase)
+            return parent.Role == ExplorerNodeRole.Resource ? SourceResources.LiveSourceWorkspace.Categories(resource)
+                : SourceResources.LiveSourceWorkspace.Objects(resource, parent);
         if (parent.ResourceKind == ResourceKind.DatabaseSnapshot && parent.Role == ExplorerNodeRole.Resource)
             return Enum.GetValues<ExplorerCategory>().Select(c => CategoryNode(resource!, c)).ToImmutableArray();
         if (parent.Role == ExplorerNodeRole.Category)
@@ -141,6 +144,7 @@ public sealed partial class RelationalExplorerService
     {
         var availability = resource.Kind == ResourceKind.DatabaseSnapshot
             ? resource.Snapshot == null ? ExplorerAvailability.Missing : ExplorerAvailability.Present
+            : resource.Kind == ResourceKind.LiveDatabase || resource.Source?.Provider is SourceProvider.Git or SourceProvider.AzureBlob && !resource.IsLoaded ? ExplorerAvailability.Present
             : await _physical.ProbeAsync(resource.Path, resource.Kind == ResourceKind.Folder, ct).ConfigureAwait(false);
         return ResourceNode(resource, parent, availability);
     }
@@ -148,10 +152,12 @@ public sealed partial class RelationalExplorerService
     private static ExplorerNodeSummary ResourceNode(ExplorerResource resource, string parent, ExplorerAvailability availability)
     {
         string name = ExplorerCompatibility.ResourceDisplayName(resource);
-        bool directory = resource.Kind is ResourceKind.Folder or ResourceKind.DatabaseSnapshot;
-        return new("resource:" + resource.ScopeResourceKey, name + (availability == ExplorerAvailability.Missing ? " (missing)" : ""),
-            name, resource.Path, resource.Path, parent, parent, ExplorerNodeRole.Resource, resource.Kind,
-            resource.Kind == ResourceKind.DatabaseSnapshot ? FileSystemNodeIconKind.Database : directory ? FileSystemNodeIconKind.Folder : FileSystemNodeIconKind.File,
+        bool directory = resource.Kind is ResourceKind.Folder or ResourceKind.DatabaseSnapshot or ResourceKind.LiveDatabase;
+        string label = resource.Snapshot?.RefreshDisplay?.Label(name) ?? name;
+        return new("resource:" + resource.ScopeResourceKey, label + (availability == ExplorerAvailability.Missing ? " (missing)" : ""),
+            name, resource.Path, SourceNodeKey(resource, resource.Path), parent, parent, ExplorerNodeRole.Resource, resource.Kind,
+            resource.Kind == ResourceKind.DatabaseSnapshot ? FileSystemNodeIconKind.Database : resource.Kind == ResourceKind.LiveDatabase
+                ? FileSystemNodeIconKind.LiveDatabase : directory ? FileSystemNodeIconKind.Folder : FileSystemNodeIconKind.File,
             availability, directory, false, true, resource.IsLoaded,
             directory && resource.IsLoaded && availability == ExplorerAvailability.Present ? ExplorerChildrenState.Unloaded : ExplorerChildrenState.Loaded,
             resource.ScopeResourceKey, resource.ResourceId, resource.Snapshot?.SnapshotKey, SourceOrdinal: resource.SortOrdinal);
@@ -194,12 +200,16 @@ public sealed partial class RelationalExplorerService
             HasFullData: item.HasFullData, ReportedRowCount: item.ReportedRowCount);
     }
     private static ExplorerNodeSummary PhysicalNode(ExplorerResource? resource, string parent, PhysicalExplorerEntry entry) => new(
-        "physical:" + resource?.ScopeResourceKey + ":" + entry.Path, Path.GetFileName(entry.Path), Path.GetFileName(entry.Path), entry.Path,
-        entry.Path, parent, parent, entry.IsDirectory ? ExplorerNodeRole.PhysicalDirectory : ExplorerNodeRole.PhysicalFile,
+        "physical:" + resource?.ScopeResourceKey + ":" + entry.Path, entry.DisplayName ?? Path.GetFileName(entry.Path), entry.DisplayName ?? Path.GetFileName(entry.Path), entry.Path,
+        entry.LogicalKey ?? SourceNodeKey(resource, entry.Path), parent, parent, entry.IsDirectory ? ExplorerNodeRole.PhysicalDirectory : ExplorerNodeRole.PhysicalFile,
         entry.IsDirectory ? ResourceKind.Folder : ResourceKind.File,
         entry.IsDirectory ? FileSystemNodeIconKind.Folder : FileSystemNodeIconKind.File, entry.Availability, entry.IsDirectory, false, false,
         resource?.IsLoaded ?? true, entry.IsDirectory ? ExplorerChildrenState.Unloaded : ExplorerChildrenState.Loaded,
         resource?.ScopeResourceKey, IsReparsePoint: entry.IsReparsePoint);
+
+    private static string SourceNodeKey(ExplorerResource? resource, string path) => resource?.PublicId is { } id && id != Guid.Empty &&
+        (resource.Source?.Provider is SourceProvider.Git or SourceProvider.AzureBlob || SourceResources.ResourceWorkspace.Prepared(id) != null)
+            ? SourceResources.ResourceWorkspace.ToPersistentPath(path, id) : path;
 
     private async Task<ExplorerNodeSummary?> FindParentAsync(ExplorerScope scope, string key, CancellationToken ct, long? preferredResourceKey = null)
     {
@@ -208,15 +218,30 @@ public sealed partial class RelationalExplorerService
         foreach (var resource in scope.Resources.Where(r => r.Kind != ResourceKind.Diagram &&
                      (preferredResourceKey == null || r.ScopeResourceKey == preferredResourceKey)))
         {
-            if (resource.Path.Equals(key, StringComparison.OrdinalIgnoreCase)) return await ResourceNodeAsync(resource, ExplorerCompatibility.RootKey, ct).ConfigureAwait(false);
+            if (resource.Path.Equals(key, StringComparison.OrdinalIgnoreCase) || SourceNodeKey(resource, resource.Path).Equals(key, StringComparison.Ordinal))
+                return await ResourceNodeAsync(resource, ExplorerCompatibility.RootKey, ct).ConfigureAwait(false);
+            if (SourceResources.ResourceWorkspace.TryParse(key, out var memberId, out var relative) && memberId == resource.PublicId)
+            {
+                string physical = SourceResources.ResourceWorkspace.Resolve(key);
+                relative = relative.TrimEnd('/');
+                int slash = relative.LastIndexOf('/');
+                string parentKey = SourceResources.ResourceWorkspace.DirectoryLocator(memberId, slash < 0 ? "" : relative[..slash]);
+                return PhysicalNode(resource, parentKey, new(physical, true, ExplorerAvailability.Present,
+                    DisplayName: relative[(slash + 1)..], LogicalKey: key));
+            }
+            if (resource.Kind == ResourceKind.LiveDatabase)
+            {
+                var category = SourceResources.LiveSourceWorkspace.Categories(resource).FirstOrDefault(n => n.NodeKey == key);
+                if (category != null) return category;
+            }
             if (resource.Snapshot != null)
                 foreach (var category in Enum.GetValues<ExplorerCategory>())
                 {
                     var node = CategoryNode(resource, category);
                     if (node.NodeKey.Equals(key, StringComparison.OrdinalIgnoreCase)) return node;
                 }
-            if (resource.Kind == ResourceKind.Folder && !key.StartsWith("surf2://", StringComparison.OrdinalIgnoreCase) &&
-                !key.StartsWith("db://", StringComparison.OrdinalIgnoreCase) && ExplorerCompatibility.IsWithinPhysicalRoot(key, resource.Path))
+            if (resource.Kind == ResourceKind.Folder && Path.IsPathFullyQualified(resource.Path) && !key.StartsWith("surf2://", StringComparison.OrdinalIgnoreCase) &&
+                !key.StartsWith("db://", StringComparison.OrdinalIgnoreCase) && !key.StartsWith("source://", StringComparison.OrdinalIgnoreCase) && ExplorerCompatibility.IsWithinPhysicalRoot(key, resource.Path))
                 return PhysicalNode(resource, Path.GetDirectoryName(key)!, new(key, true, ExplorerAvailability.Present));
         }
         var folder = scope.VirtualFolders.FirstOrDefault(f => ExplorerCompatibility.VirtualKey(f.Id).Equals(key, StringComparison.OrdinalIgnoreCase));

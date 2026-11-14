@@ -8,6 +8,7 @@ public sealed class RelationalSession
     private readonly string _connectionString;
     private Guid? _validationMigration;
     private byte[]? _validationFingerprint;
+    private int _validationSchemaVersion = PersistenceFormatProbe.SupportedSchemaVersion;
     private readonly object _identityGate = new();
     private Guid? _databaseIdentity;
     private bool _identityChanged;
@@ -24,6 +25,7 @@ public sealed class RelationalSession
     }
 
     public Guid Epoch { get; } = Guid.NewGuid();
+    internal string ConnectionString => _connectionString;
     public RelationalSqlMetrics Metrics { get; }
     public Snapshots.SnapshotMemoryCache SnapshotMemory { get; }
     public Guid? DatabaseIdentity { get { lock (_identityGate) return _databaseIdentity; } }
@@ -61,10 +63,12 @@ public sealed class RelationalSession
         finally { _preferenceSchemaGate.Release(); }
     }
 
-    internal static RelationalSession ForMigrationValidation(string connectionString, Guid migration, byte[] fingerprint)
+    internal static RelationalSession ForMigrationValidation(string connectionString, Guid migration, byte[] fingerprint,
+        int schemaVersion = PersistenceFormatProbe.SupportedSchemaVersion)
     {
         if (migration == Guid.Empty || fingerprint.Length != 32) throw new ArgumentException("A pinned migration identity is required.");
-        return new(connectionString) { _validationMigration = migration, _validationFingerprint = fingerprint.ToArray() };
+        if(schemaVersion is <1 or >PersistenceFormatProbe.SupportedSchemaVersion)throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+        return new(connectionString) { _validationMigration = migration, _validationFingerprint = fingerprint.ToArray(),_validationSchemaVersion=schemaVersion };
     }
 
     public async Task<SqlConnection> OpenAsync(CancellationToken cancellationToken = default)
@@ -151,7 +155,7 @@ AND m.ScriptChecksum=@Checksum AND (SELECT COUNT_BIG(*) FROM surf.StorageFormatI
             return;
         }
         var result = await new PersistenceFormatProbe().ProbeAsync(_connectionString, cancellationToken);
-        if (result.SchemaVersion != PersistenceFormatProbe.SupportedSchemaVersion)
+        if (result.SchemaVersion != (_validationMigration.HasValue?_validationSchemaVersion:PersistenceFormatProbe.SupportedSchemaVersion))
             throw new InvalidOperationException("The relational database needs its startup schema migration before use.");
         if (result.Format != PersistenceFormat.Relational)
         {
@@ -167,7 +171,7 @@ AND r.Status='Converting' AND f.State='Migrating' AND f.SchemaVersion=@Version A
                 command.Parameters.Add(Parameter("@Migration", SqlDbType.UniqueIdentifier, _validationMigration.Value));
                 command.Parameters.Add(Parameter("@Fingerprint", SqlDbType.Binary, _validationFingerprint, 32));
                 command.Parameters.Add(Parameter("@Database", SqlDbType.UniqueIdentifier, result.DatabaseIdentity));
-                command.Parameters.Add(Parameter("@Version", SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion));
+                command.Parameters.Add(Parameter("@Version", SqlDbType.Int, _validationSchemaVersion));
                 if ((long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L) == 1)
                 {
                     PinIdentity(result.DatabaseIdentity ?? Guid.Empty);

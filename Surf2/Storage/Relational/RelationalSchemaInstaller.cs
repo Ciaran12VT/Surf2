@@ -12,7 +12,7 @@ namespace Surf2.Storage.Relational;
 public sealed class RelationalSchemaInstaller
 {
     private static readonly string[] ScriptNames =
-        ["001.Core.sql", "001.Snapshots.sql", "001.Capture.sql", "001.State.sql", "001.Indexes.sql", "002.FullTableData.sql"];
+        ["001.Core.sql", "001.Snapshots.sql", "001.Capture.sql", "001.State.sql", "001.Indexes.sql", "002.FullTableData.sql", "003.Resources.sql"];
 
     public async Task InitializeDestinationAsync(string sourceConnectionString,
         string destinationConnectionString, Guid migrationIdentity, byte[] sourceFingerprint,
@@ -50,13 +50,14 @@ public sealed class RelationalSchemaInstaller
 
     /// <summary>Installs an unpublished import destination; the importer must validate before activation.</summary>
     public async Task InitializePackageDestinationAsync(string destinationConnectionString,
-        Guid importIdentity, byte[] packageFingerprint, CancellationToken cancellationToken = default)
+        Guid importIdentity, byte[] packageFingerprint, CancellationToken cancellationToken = default,
+        int schemaVersion = PersistenceFormatProbe.SupportedSchemaVersion)
     {
         if (importIdentity == Guid.Empty || packageFingerprint is not { Length: 32 })
             throw new ArgumentException("An import identity and exact package fingerprint are required.");
         await RequireEmptyAsync(destinationConnectionString, cancellationToken);
         await InstallAsync(destinationConnectionString,
-            new(importIdentity, packageFingerprint, "Relational package"), cancellationToken);
+            new(importIdentity, packageFingerprint, "Relational package"), cancellationToken, schemaVersion);
     }
 
     private static async Task RequireEmptyAsync(string connectionString, CancellationToken ct)
@@ -79,10 +80,10 @@ public sealed class RelationalSchemaInstaller
     private sealed record MigrationSeed(Guid Identity, byte[] Fingerprint, string SourceName);
 
     private static async Task InstallAsync(string destinationConnectionString, MigrationSeed? seed,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int schemaVersion = PersistenceFormatProbe.SupportedSchemaVersion)
     {
 
-        var scripts = ReadScripts();
+        var scripts = ReadScripts(schemaVersion);
         var session = new RelationalSession(destinationConnectionString);
         await using var connection = await session.OpenAsync(cancellationToken);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
@@ -118,7 +119,7 @@ VALUES (1, @Format, @Version, @Version, @Version, @State, NEWID());
 INSERT surf.SchemaMigration(SchemaVersion, ScriptChecksum) VALUES (@Version, @Checksum);
 """;
             command.Parameters.Add(RelationalSession.Parameter("@Format", SqlDbType.NVarChar, PersistenceFormatProbe.FormatIdentifier, 64));
-            command.Parameters.Add(RelationalSession.Parameter("@Version", SqlDbType.Int, PersistenceFormatProbe.SupportedSchemaVersion));
+            command.Parameters.Add(RelationalSession.Parameter("@Version", SqlDbType.Int, schemaVersion));
             command.Parameters.Add(RelationalSession.Parameter("@Checksum", SqlDbType.Binary, ScriptChecksum(scripts), 32));
             command.Parameters.Add(RelationalSession.Parameter("@State", SqlDbType.VarChar, seed == null ? "Ready" : "Migrating", 24));
             await command.ExecuteNonQueryAsync(cancellationToken);
@@ -210,7 +211,7 @@ EXEC sys.sp_executesql @Sql;
             throw new ArgumentOutOfRangeException(nameof(schemaVersion));
         Assembly assembly = typeof(RelationalSchemaInstaller).Assembly;
         string[] resources = assembly.GetManifestResourceNames();
-        return ScriptNames.Take(schemaVersion == 1 ? 5 : ScriptNames.Length).Select(name =>
+        return ScriptNames.Take(schemaVersion switch { 1 => 5, 2 => 6, 3 => 7, _ => throw new ArgumentOutOfRangeException(nameof(schemaVersion)) }).Select(name =>
         {
             string resource = resources.SingleOrDefault(resource => resource.EndsWith("." + name, StringComparison.Ordinal))
                 ?? throw new InvalidOperationException("The relational schema installation is incomplete.");

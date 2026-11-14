@@ -32,12 +32,15 @@ public sealed record RelationalSourceTable(int ObjectId, string SchemaName, stri
 public sealed record RelationalSourceTablePage(IReadOnlyList<RelationalSourceTable> Items, int? NextObjectId);
 public sealed record RelationalDatabaseCaptureRequest(string SourceConnectionString, string DisplayName,
     IReadOnlyList<RelationalSourceTable> FullDataTables, Scope SelectedScope, StateToken ExpectedScope,
-    SnapshotRuntimeToken? ReplaceSnapshot = null, string? VersionName = null, bool AllowSerializableFallback = false);
+    SnapshotRuntimeToken? ReplaceSnapshot = null, string? VersionName = null, bool AllowSerializableFallback = false,
+    Guid? SourceId = null, DatabaseOrigin? ExpectedOrigin = null);
 public sealed record RelationalCaptureProgress(string Phase, long MetadataUnits, long CapturedRows);
 public sealed record RelationalCaptureResult(SnapshotSummary Snapshot, StateToken UpdatedScopeToken,
     Scope UpdatedScope, long CapturedRows, long VersionKey)
 {
     public IsolationLevel SourceIsolation { get; init; } = IsolationLevel.Unspecified;
+    public IReadOnlyList<string> SkippedTables { get; init; } = [];
+    public DatabaseOrigin? Origin { get; init; }
 }
 public sealed class SourceSnapshotUnavailableException() : InvalidOperationException(
     "Snapshot isolation is unavailable on the source. Explicitly allow blocking capture to use a serializable source transaction.");

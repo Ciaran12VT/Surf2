@@ -60,7 +60,7 @@ public sealed partial class RelationalScopeIndexRefresher
         RelationalSnapshotStore snapshots, IPhysicalExplorerQueries? physical = null, ExplorerLimits? limits = null)
     {
         _session = session; _index = index; _snapshots = snapshots; _metadata = new(session, index);
-        _physical = physical ?? new PhysicalExplorerQueries(); _limits = limits ?? new(); _limits.Validate();
+        _physical = physical ?? new SourceResources.SourcePhysicalExplorerQueries(); _limits = limits ?? new(); _limits.Validate();
     }
 
     public async Task<ExplorerIndexRefreshProgress> RefreshAsync(ExplorerScope scope, ExplorerIndexLanguagePolicy languagePolicy,
@@ -142,7 +142,7 @@ public sealed partial class RelationalScopeIndexRefresher
             if (reusable.TryGetValue(resource.ScopeResourceKey, out long count))
             {
                 reusedResources++;
-                if (!reusedPhysical && reusedOwners.Add((resource.Kind, resource.Snapshot?.SnapshotKey ?? resource.DiagramRevisionKey!.Value))) unchanged += count;
+                if (!reusedPhysical && reusedOwners.Add((resource.Kind, resource.Snapshot?.SnapshotKey ?? resource.DiagramRevisionKey ?? resource.ScopeResourceKey))) unchanged += count;
                 continue;
             }
             await RequireDomainAsync(scope, ct).ConfigureAwait(false);
@@ -157,6 +157,31 @@ public sealed partial class RelationalScopeIndexRefresher
                     await FileAsync(resource.Path).ConfigureAwait(false);
                 else if (resource.Kind == ResourceKind.Folder)
                     await WalkAsync(resource.Path, 0).ConfigureAwait(false);
+                else if (resource.Kind == ResourceKind.LiveDatabase)
+                {
+                    var objects = await SourceResources.LiveSourceWorkspace.RefreshObjectsAsync(resource.PublicId, ct).ConfigureAwait(false);
+                    foreach (var item in objects)
+                    {
+                        string locator = SourceResources.LiveSourceWorkspace.Locator(resource.PublicId, item);
+                        string name = item.Schema + "." + item.Name;
+                        var membership = ImmutableArray.Create(new DocumentMembership(resource.ScopeResourceKey, name,
+                            locator, locator, resource.Path, resource.SortOrdinal));
+                        await DocumentAsync(new FileDocumentOwner(locator), name, CodeWindowSettings.SqlServerLanguage,
+                            new("definitions-v1", "live-sql-v1", "explorer-v1"), membership,
+                            [new IndexLocator(resource.ScopeResourceKey, 0, locator)], null, async () =>
+                            {
+                                string materialized = await SourceResources.LiveSourceWorkspace.MaterializeForIndexAsync(locator, ct).ConfigureAwait(false);
+                                await using var read = await IndexedFileRead.OpenAsync(materialized, _limits.MaximumDocumentCharacters, ct).ConfigureAwait(false);
+                                var definitions = RelationalIndexStore.ExtractFileSymbols(locator, read.Text,
+                                    ParserFor(CodeWindowSettings.SqlServerLanguage), ct);
+                                if (!SourceResources.LiveSourceWorkspace.Available(resource.PublicId))
+                                    throw new IOException("The live SQL resource was unloaded during indexing.");
+                                return new PreparedIndexSource(read.Text, read.Fingerprint.Sha256,
+                                    CodeWindowSettings.SqlServerLanguage, definitions) { PhysicalFingerprint = read.Fingerprint };
+                            }, null, true).ConfigureAwait(false);
+                    }
+                    await SourceResources.LiveSourceWorkspace.VerifyObjectsAsync(resource.PublicId, objects, ct).ConfigureAwait(false);
+                }
                 else if (resource.Kind == ResourceKind.DatabaseSnapshot)
                 {
                     if (resource.Snapshot == null) { failed++; rootComplete = false; await ReportAsync("MissingSnapshot").ConfigureAwait(false); }
@@ -231,7 +256,8 @@ public sealed partial class RelationalScopeIndexRefresher
             {
                 if (depth >= _limits.MaximumDepth) throw new ExplorerLimitException("Physical discovery exceeds its depth budget.");
                 // Reparse-point trees cannot be declared fully discovered, including a reparse root.
-                bool reparse = await Task.Run(() => (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0, ct).ConfigureAwait(false);
+                bool reparse = SourceResources.ResourceWorkspace.FindDirectory(directory) == null &&
+                    await Task.Run(() => (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0, ct).ConfigureAwait(false);
                 if (reparse) { failed++; rootComplete = false; await ReportAsync("ReparsePoint").ConfigureAwait(false); return; }
                 var children = await _physical.ReadDirectoryAsync(directory, scope.SortCultureName, _limits, ct).ConfigureAwait(false);
                 foreach (var entry in children)
@@ -368,7 +394,7 @@ public sealed partial class RelationalScopeIndexRefresher
                     }
                     ct.ThrowIfCancellationRequested();
                     await RequireDomainAsync(scope, ct).ConfigureAwait(false);
-                    await _index.PublishAsync(new(lease, source.Text, source.Language, source.Symbols, source.SourceRevisionKey, file?.Fingerprint), ct).ConfigureAwait(false);
+                    await _index.PublishAsync(new(lease, source.Text, source.Language, source.Symbols, source.SourceRevisionKey, file?.Fingerprint ?? source.PhysicalFingerprint), ct).ConfigureAwait(false);
                     published++;
                 }
                 catch (Exception ex) when (ex is OperationCanceledException || IsSourceFailure(ex))

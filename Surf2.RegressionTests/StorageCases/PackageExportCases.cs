@@ -197,7 +197,7 @@ public static partial class StorageRegressionSuite
         await using (var input = manifestEntry.Open())
             check(string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(input)), result.ManifestSha256, StringComparison.OrdinalIgnoreCase),
                 "ZIP manifest checksum independently matches its actual entry bytes");
-        check(manifest.PackageIdentifier == RelationalPackageFormat.Identifier && manifest.PackageVersion == 2 &&
+        check(manifest.PackageIdentifier == RelationalPackageFormat.Identifier && manifest.PackageVersion == 3 &&
             manifest.RowEncodingVersion == 1 && manifest.DatabaseSchemaVersion == PersistenceFormatProbe.SupportedSchemaVersion &&
             manifest.DatabaseFormatIdentifier == PersistenceFormatProbe.FormatIdentifier &&
             Equals(await fixture.DestinationSqlAsync("SELECT DatabaseIdentity FROM surf.StorageFormatInfo;"), manifest.SourceDatabaseIdentity),
@@ -328,7 +328,8 @@ public static partial class StorageRegressionSuite
         "surf.DiagramWorkflowBinding", "surf.WorkflowItemMarker", "surf.DiagramPortalTarget", "surf.QueryItem",
         "surf.WorkspaceSession", "surf.DocumentWindowState", "surf.DocumentWindowFilter", "surf.WorkspaceUnloadedResource",
         "surf.ReferenceConnectionLine", "surf.ApplicationPreference", "surf.ExtensionAppearance", "surf.ReferenceStyle",
-        "surf.DiagramImageDefinition", "surf.TextContent", "surf.Asset"
+        "surf.DiagramImageDefinition", "surf.TextContent", "surf.Asset", "surf.SourceDefinition", "surf.ResourceContainer",
+        "surf.SnapshotCaptureEvent", "surf.SnapshotVersionOrigin"
     ];
 
     private static void ValidatePackageFixtureTable(RelationalPackageTable table)

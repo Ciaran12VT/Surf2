@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using Surf2.Models;
 using Surf2.Services;
@@ -105,7 +105,7 @@ public partial class MainWindow
                         OpenRelationalComparisonCoreAsync(s, row.Left, row.Right, currentScope, g, cancellation), token),
                     (updated, token) => service.CompareCollectionsAsync(left, right, scope, updated, token), options);
                 result = null; // The session owns cleanup, including a failed Show.
-                OwnRelationalComparisonWindow(session.View, session); return;
+                OwnRelationalComparisonWindow(session.View, session, left, right); return;
             }
             finally { if (result != null) await result.DisposeAsync(); }
         }
@@ -135,7 +135,7 @@ public partial class MainWindow
                     left?.Resource ?? CreateMissingComparisonResource(table, "(missing left)"),
                     right?.Resource ?? CreateMissingComparisonResource(table, "(missing right)"), keys);
                 result = null;
-                OwnRelationalComparisonWindow(session.View, session); return;
+                OwnRelationalComparisonWindow(session.View, session, left, right); return;
             }
             finally { if (result != null) await result.DisposeAsync(); }
         }
@@ -149,12 +149,14 @@ public partial class MainWindow
         var template = (left ?? right)!.Resource;
         OwnRelationalComparisonWindow(new ResourceFileDiffWindow(left?.Resource ?? CreateMissingComparisonResource(template, "(missing left)"),
             right?.Resource ?? CreateMissingComparisonResource(template, "(missing right)"), leftText, rightText,
-            options.IgnoreWhitespace, options.IgnoreCase));
+            options.IgnoreWhitespace, options.IgnoreCase), left: left, right: right);
         StatusText = title + ".";
     }
-    private void OwnRelationalComparisonWindow(Window window, RelationalComparisonResultSession? session = null)
+    private void OwnRelationalComparisonWindow(Window window, RelationalComparisonResultSession? session = null, RelationalComparisonTarget? left = null, RelationalComparisonTarget? right = null)
     {
         _relationalComparisonWindows.Add(window, session);
+        if (left != null) TrackResourceWindow(window, left.SnapshotKey, left.Resource.Path);
+        if (right != null) TrackResourceWindow(window, right.SnapshotKey, right.Resource.Path);
         window.Closed += (_, _) =>
         {
             _relationalComparisonWindows.Remove(window);

@@ -101,6 +101,10 @@ internal static class StateText
 
 internal static class StateField
 {
+    public static StateField<T> Identity<T>(string name, Func<T, Guid> get, Action<T, Guid> set) =>
+        new(name, name, SqlDbType.UniqueIdentifier, v => get(v), (v, x) => set(v, (Guid)x!));
+    public static StateField<T> NullableIdentity<T>(string name, Func<T, Guid?> get, Action<T, Guid?> set) =>
+        new(name, name, SqlDbType.UniqueIdentifier, v => get(v), (v, x) => set(v, (Guid?)x), Nullable: true);
     public static StateField<T> ImageText<T>(Func<T, string> get, Action<T, string> set) =>
         new("ImageDataBase64", "ImageDataBase64ContentKey", SqlDbType.NVarChar,
             v => get(v), (v, x) => set(v, (string)x!), Content: true, Image: true);

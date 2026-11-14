@@ -44,7 +44,8 @@ public sealed partial class RelationalPackageImporter
         await using var lease = await MigrationTargetLease.AcquireAsync(_session, ct);
         if ((await new PersistenceFormatProbe().ProbeAsync(_destination, ct)).Format != PersistenceFormat.Empty)
             throw new RelationalPackageImportException("Package import requires a verified Empty destination. A failed/cancelled import is not resumable; select another fresh destination.");
-        await new RelationalSchemaInstaller().InitializePackageDestinationAsync(_destination, import, fingerprint, ct);
+        await new RelationalSchemaInstaller().InitializePackageDestinationAsync(_destination, import, fingerprint, ct,
+            schemaVersion:package.Manifest.DatabaseSchemaVersion<=2?2:3);
         await lease.EnsureHeldAsync(ct);
         await using var connection = await _session.OpenAsync(ct);
         Guid database = await RequireImportAsync(connection, null, import, fingerprint, null, ct);
@@ -98,6 +99,8 @@ public sealed partial class RelationalPackageImporter
             if (await ValidateCaptureModelsAsync(connection, import, fingerprint, database, ct) != capturedRows)
                 throw PackageRowDecoding.Bad("Converted JSON capture count differs from the package");
         }
+        if(package.Manifest.DatabaseSchemaVersion<=2)
+            await RelationalResourceSchemaUpgrade.ApplyAsync(connection,database,allowUnpublished:true,ct);
         await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct))
         {
             await RequireImportAsync(connection, transaction, import, fingerprint, database, ct);
@@ -107,6 +110,7 @@ IF EXISTS(SELECT 1 FROM surf.DataSet d WHERE NOT EXISTS(SELECT 1 FROM surf.FullT
  THROW 51110,'An imported dataset has no JSON payload.',1;
 """, ct);
             await lease.EnsureHeldAsync(ct);
+            await RelationalResourceSchemaUpgrade.ValidateAsync(connection,transaction,ct);
             await PublishAsync(connection, transaction, package, import, fingerprint, database, ct);
             await transaction.CommitAsync(ct);
         }
@@ -135,7 +139,7 @@ IF EXISTS(SELECT 1 FROM surf.DataSet d WHERE NOT EXISTS(SELECT 1 FROM surf.FullT
             using var batch = new DataTable { Locale = CultureInfo.InvariantCulture, MinimumCapacity = options.BatchRows };
             foreach (var column in columns) batch.Columns.Add(column.Name, ClrType(column));
             long batchBytes = fixedBytes, count = 0;
-            long[]? previous = null;
+            object[]? previous = null;
             if (table.Spec.Name == "UserProfile" && stream.RowCount != 1) throw PackageRowDecoding.Bad("Exactly one profile must be supplied");
             await using var input = package.Entries[stream.Entry].Open();
             using var verified = new PackageEntryReadStream(input, stream.ByteCount, PackageRowDecoding.Hash(stream.Sha256));
@@ -255,8 +259,8 @@ IF EXISTS(SELECT 1 FROM surf.DataSet d WHERE NOT EXISTS(SELECT 1 FROM surf.FullT
     {
         await using var command = Command(connection, transaction, """
 SELECT f.DatabaseIdentity FROM surf.StorageFormatInfo f JOIN surf.MigrationRun r ON r.MigrationIdentity=@Import
-WHERE f.Singleton=1 AND f.FormatIdentifier=N'Surf2.RelationalV2' AND f.State='Migrating' AND f.SchemaVersion=2
-AND f.MinimumReaderVersion=2 AND f.MinimumWriterVersion=2 AND r.SourceFingerprint=@Hash
+WHERE f.Singleton=1 AND f.FormatIdentifier=N'Surf2.RelationalV2' AND f.State='Migrating' AND f.SchemaVersion IN (2,3)
+AND f.MinimumReaderVersion=f.SchemaVersion AND f.MinimumWriterVersion=f.SchemaVersion AND r.SourceFingerprint=@Hash
 AND r.ConverterVersion=1 AND r.Status='Converting';
 """, RelationalSession.Parameter("@Import", SqlDbType.UniqueIdentifier, import), RelationalSession.Parameter("@Hash", SqlDbType.Binary, fingerprint, 32));
         using var cancel = RelationalSession.CancelCommand(command, ct);

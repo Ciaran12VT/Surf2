@@ -1,4 +1,4 @@
-using System.Collections.Frozen;
+﻿using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Globalization;
@@ -288,7 +288,9 @@ public partial class MainWindow
                 {
                     if (AcceptsRelationalExplorer(owner, runtime) &&
                         (notification.Reason & (PhysicalReferenceInvalidationReason.Changed | PhysicalReferenceInvalidationReason.WatcherError)) != 0)
-                        QueueRelationalPhysicalRefresh(notification.ScopeResourceKeys);
+                    {
+                        if (!GatePairedLocalChanges(notification)) QueueRelationalPhysicalRefresh(notification.ScopeResourceKeys);
+                    }
                 })));
                 await Dispatcher.InvokeAsync(() =>
                 {
@@ -586,7 +588,7 @@ public partial class MainWindow
         int loadVersion = ++_scopeLoadVersion;
         RetireRelationalNameCatalogue();
         RetireRelationalExplorerContext();
-        RootNodes.Clear(); _relationalExplorerNodes.Clear(); _expandedObjectExplorerNodeKeys.Clear();
+        RootNodes.Clear(); _relationalExplorerNodes.Clear(); _sourceActions.Clear(); _sourceActionTargets.Clear(); _expandedObjectExplorerNodeKeys.Clear();
         _relationalTextFileNameSeeds.Clear(); _relationalTextSeedCharacters = 0; _relationalExplorerScope = null; _relationalReferenceCatalogue = null;
         _referenceIndex = ScopeReferenceIndex.Empty;
         if (!preserveSearchText) ObjectExplorerSearchTextBox.Clear();
@@ -616,6 +618,7 @@ public partial class MainWindow
                     throw new InvalidOperationException("This scope does not match the selected relational owner.");
                 showingLoading = true;
                 await ShowObjectExplorerLoadingAsync("Loading scope...", scope.Name);
+                await PrepareSourceScopeAsync(scope, GetUnloadedResourceIds(), ct);
                 var names = await ReadRelationalNameCatalogueAsync(runtime, edit.ExpectedToken.Key,
                     GetUnloadedResourceIds(), CultureInfo.CurrentCulture.Name, ct);
                 ct.ThrowIfCancellationRequested();
@@ -624,6 +627,7 @@ public partial class MainWindow
                 foreach (var root in names.Roots) RootNodes.Add(CreateRelationalExplorerNode(root));
                 CurrentFolderDisplay = "Scope: " + scope.Name;
                 BeginRelationalExplorerContext();
+                StartPendingSourceRefreshes();
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             finally
@@ -669,6 +673,7 @@ public partial class MainWindow
                 if (_relationalExplorerNodeViews.ContainsKey(node)) _relationalExplorerNodeViews[created] = scope;
             }
             node.IsLoaded = true;
+            AddSourceActionRow(node, summary);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
@@ -853,7 +858,7 @@ public partial class MainWindow
         void ClearResultTree()
         {
             RootNodes.Clear();
-            _relationalExplorerNodes.Clear();
+            _relationalExplorerNodes.Clear(); _sourceActions.Clear(); _sourceActionTargets.Clear();
             _relationalExplorerNodeViews.Clear();
         }
 
@@ -928,6 +933,7 @@ public partial class MainWindow
 
     private ContextMenu? CreateRelationalObjectExplorerContextMenu(FileSystemNode node)
     {
+        if (_sourceActions.ContainsKey(node)) return SourceActionContextMenu(node);
         var menu = new ContextMenu();
         if (!_relationalExplorerNodes.TryGetValue(node, out var summary)) return null;
         // Comparison owner supplies the actual selected-source route. These availability checks use summaries only.
@@ -954,6 +960,27 @@ public partial class MainWindow
             Separate();
             Add(summary.IsScopeResourceLoaded ? "Unload" : "Load", () => SetScopeResourceLoadedAsync(summary.ScopeResourceId, !summary.IsScopeResourceLoaded));
             Add("Remove From Scope", () => RemoveScopeResourceAsync(summary.ScopeResourceId), RelationalScopeResourceRemovalHandler != null);
+        }
+        if (SourceMember(summary) is { } sourceMember)
+        {
+            if (summary.IsScopeResourceRoot)
+            {
+                Separate();
+                if (sourceMember.Kind == ResourceKind.DatabaseSnapshot && sourceMember.PairedResourceId is { } liveId &&
+                    _activeScope?.Resources.FirstOrDefault(r => r.PublicId == liveId) is { Kind: ResourceKind.LiveDatabase } live)
+                    Add("Refresh Snapshot", () => CaptureLiveSourceSnapshotAsync(live, sourceMember));
+                else if (sourceMember.Kind == ResourceKind.LiveDatabase)
+                {
+                    Add("Create Snapshot", () => CaptureLiveSourceSnapshotAsync(sourceMember));
+                    Add("New Query", () => OpenLiveQueryAsync(sourceMember));
+                }
+                Add("Refresh", () => RefreshSourceAsync(sourceMember));
+                Add("Reconnect / edit connection", () => ReconnectSourceAsync(sourceMember), sourceMember.Source?.Provider is SourceProvider.Git or SourceProvider.AzureBlob or SourceProvider.LiveSql);
+                Add("Link alternate source", () => LinkSourceAsync(sourceMember));
+                Add("Rename resource container", () => RenameSourceContainerAsync(sourceMember));
+            }
+            else if (summary.Role == ExplorerNodeRole.LiveDatabaseDocument && summary.Category == ExplorerCategory.Tables)
+                Add("View Data", () => OpenLiveQueryAsync(sourceMember, summary.SchemaName, summary.ObjectName));
         }
         if (summary.IsVirtualFolder) { Separate(); Add("Disband", () => DisbandVirtualFolderAsync(summary.VirtualFolderId)); }
         if (_activeScope != null)
@@ -1032,7 +1059,7 @@ public partial class MainWindow
         {
             if (candidate.Header.Kind is not (ResourceKind.File or ResourceKind.Folder))
                 throw new InvalidOperationException("Adding typed snapshot/diagram targets requires the selected state command provider.");
-            if (_activeScope!.Resources.Any(r => ExplorerResourceCatalogue.SameIdentity(r.Kind, r.Path, candidate.Header.Kind, candidate.Header.Path))) return;
+            if (_activeScope!.Resources.Any(r => ExplorerResourceCatalogue.SameIdentity(r.Kind, r.Path, candidate.Header.Kind, candidate.Header.Path, r.Source, candidate.Header.SourceConfiguration))) return;
             _activeScope.Resources.Add(candidate.Header.CreateScopedResource());
             await SaveRelationalScopeAsync(token);
         }
@@ -1068,7 +1095,7 @@ public partial class MainWindow
                     : (await runtime.Explorer.ResolveAddressAsync(view, path, ct: token))?.Node;
                 if (summary?.IsDirectory != true) throw new InvalidOperationException("The selected folder cannot be resolved in this scope.");
                 if (generation != _relationalExplorerFocusGeneration || !AcceptsRelationalExplorer(owner, runtime)) return;
-                RootNodes.Clear(); _relationalExplorerNodes.Clear(); _relationalExplorerNodeViews.Clear(); ObjectExplorerSearchTextBox.Clear();
+                RootNodes.Clear(); _relationalExplorerNodes.Clear(); _sourceActions.Clear(); _sourceActionTargets.Clear(); _relationalExplorerNodeViews.Clear(); ObjectExplorerSearchTextBox.Clear();
                 var node = CreateRelationalExplorerNode(summary); _relationalExplorerNodeViews[node] = view; node.IsExpanded = true; RootNodes.Add(node);
                 await LoadRelationalChildrenAsync(node);
                 if (generation == _relationalExplorerFocusGeneration && AcceptsRelationalExplorer(owner, runtime) && node.IsLoaded)

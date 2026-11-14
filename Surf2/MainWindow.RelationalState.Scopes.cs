@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using Surf2.Models;
 using Surf2.Services;
@@ -61,8 +61,11 @@ public partial class MainWindow
                 throw new InvalidDataException("The chosen resource has an invalid source context. Refresh its catalogue.");
             var scope = StateCopies.Scope(_activeScope!, new(RelationalRuntimeStateLimits));
             var member = candidate.Header.CreateScopedResource();
-            if (member.Kind is ResourceKind.File or ResourceKind.Folder && scope.Resources.Any(r => ExplorerResourceCatalogue.SameIdentity(r.Kind, r.Path, member.Kind, member.Path)))
+            if (member.Kind is ResourceKind.File or ResourceKind.Folder && scope.Resources.Any(r => ExplorerResourceCatalogue.SameIdentity(r.Kind, r.Path, member.Kind, member.Path, r.Source, member.Source)))
                 throw new InvalidOperationException("This physical resource is already in the selected scope.");
+            var grouping = StateCopies.Scope(scope, new(RelationalRuntimeStateLimits));
+            if (!ReferenceEquals(await Services.SourceResources.ScopeSourceActions.AddMemberAsync(grouping, member, ct: ct), member))
+                throw new InvalidOperationException("That concrete source already belongs to a resource container in this scope.");
             var target = new RuntimeScopeResourceOrigin(origin.Epoch, origin.ScopeCatalogueVersion, origin.SnapshotCatalogueVersion,
                 origin.DiagramCatalogueVersion, candidate.SourceScopeKey, candidate.SourceScopeResourceKey, candidate.SnapshotKey, candidate.DiagramKey);
             StateToken saved;
@@ -93,7 +96,7 @@ public partial class MainWindow
                 !_relationalExplorerScope!.Resources.Any(r => r.ScopeResourceKey == resource.ScopeResourceKey && r.SortOrdinal == resource.SortOrdinal))
                 throw new InvalidOperationException("The selected resource occurrence changed. Reload this scope.");
             int ordinal = checked((int)resource.SortOrdinal); var member = scope.Resources[ordinal];
-            if (member.ResourceId != resource.ResourceId || member.Path != resource.Path || member.Kind != resource.Kind)
+            if (member.ResourceId != resource.ResourceId || member.Path != (resource.LogicalPath ?? resource.Path) || member.PublicId != resource.PublicId || member.Kind != resource.Kind)
                 throw new InvalidOperationException("The selected membership no longer matches its resource view.");
             bool confirmed = RelationalScopeResourceRemovalConfirmation?.Invoke(resource) ??
                 MessageBox.Show(this, "Remove this resource from the selected scope? Its source and saved workbenches remain. Unambiguous links in the selected current diagram are cleared; unresolved links remain intact.",
@@ -139,6 +142,8 @@ public partial class MainWindow
             var live = StateCopies.Scope(_activeScope!, new(RelationalRuntimeStateLimits));
             var liveMember = live.Resources.SingleOrDefault(r => r.ResourceId == member.ResourceId);
             if (liveMember != null) live.Resources.Remove(liveMember);
+            foreach (var remaining in acknowledged.Resources.Concat(live.Resources).Where(r => r.PairedResourceId == member.PublicId)) remaining.PairedResourceId = null;
+            acknowledged.EnsureResourceContainers(); live.EnsureResourceContainers();
             if (graph != null && ReferenceEquals(diagramOwner, _relationalDiagramEdit))
             {
                 _relationalDiagramEdit = NewRelationalDiagramEdit(graph, saved.Diagram!);
@@ -155,6 +160,9 @@ public partial class MainWindow
             }
             if (_relationalStateClosing || owner.Selection != _relationalSelectionGeneration) return;
             await AcknowledgeRelationalScopeCommandAsync(owner, acknowledged, live, saved.Scope);
+            if (_sourcePreparations.TryGetValue(member.ContainerId, out var preparation)) preparation.Cancel();
+            CloseResourceViews(member); Services.SourceResources.ResourceWorkspace.Block(member, release: true);
+            await LoadRelationalRootsAsync();
             if (!_relationalStateClosing) StatusText = "Removed scope membership. Other diagrams and saved workbenches were retained.";
         }
         finally { _relationalOwnerCommands.Release(); }

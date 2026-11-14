@@ -107,6 +107,12 @@ public sealed class RelationalMigrator
                 bool complete = await VerifyRecoveryAsync(session, stage, cancellationToken, destination.SchemaVersion!.Value);
                 if (destination.SchemaVersion == 1)
                     await new RelationalCaptureSchemaUpgrade().UpgradeAsync(request.DestinationConnectionString, progress, cancellationToken);
+                if(destination.SchemaVersion is 1 or 2)
+                {
+                    await using var upgradeConnection=await session.OpenAsync(cancellationToken);
+                    await RelationalResourceSchemaUpgrade.ApplyAsync(upgradeConnection,destination.DatabaseIdentity!.Value,
+                        allowUnpublished:!complete,cancellationToken);
+                }
                 if (complete)
                 {
                     reporting.Finish("This recovery migration is already validated and complete.");
