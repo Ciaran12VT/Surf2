@@ -1,6 +1,6 @@
 # Persistence, remote resources and live SQL implementation specification
 
-Status: proposed implementation specification. Date: 12 November 2026.
+Status: implementation plan and specification. The first delivery is the local Surf2 milestone in section 13.
 
 Baseline: `relationalDb_V2`, commit `b0830ddfa201758ec26c810f02cd43c60cb61014` (`history load`). Re-audited against the annotated architecture diagram supplied on 12 November.
 
@@ -12,7 +12,9 @@ The supplied mock-up, handwritten relationships and latest annotated diagram def
 
 ## 1. Scope and decisions
 
-The release includes connection editing and local storage, a single default across both grids, read-only database testing, switching the running workspace, selected-connection package export/import, and transfers between local SQL Server and Azure SQL Database in either direction. Local-to-local and Azure-to-Azure transfers use the same path. Sections 10–12 specify folder providers, local Git recognition, live SQL sources, independent snapshots and resource relocation during migration.
+The first milestone keeps the Surf2 application's own database local. It delivers Git resources, Blob resources and paired-folder reconciliation, then live SQL and linked snapshots. A live source can be local SQL Server or Azure SQL Database regardless of where Surf2 stores its own data. The Persistence connection switch, migration to shared Azure persistence, profiles, permissions, and private versus shared resources are later work. The existing transfer design remains in sections 3–9 and 12 for that milestone.
+
+The full design also includes a connection catalogue, a single startup default, read-only connection testing, workspace switching, selected-connection export/import and database transfer. The local milestone uses the resource designs in sections 10 and 11. The later transfer path supports local-to-Azure, Azure-to-local and same-platform transfers.
 
 The following choices define the behavior. Replacement of an existing target after confirmation and a recovery export is confirmed by the user; the other details complete the implementation design.
 
@@ -25,14 +27,15 @@ The following choices define the behavior. Replacement of an existing target aft
 | Existing target data | **Replace the target's Surf2 contents after explicit confirmation and a verified recovery export.** Empty and supported Ready V2 targets are eligible. Source remains unchanged. Replacement is required for this release; merging is outside scope. See section 9 for publication and recovery rules. |
 | Azure provisioning | Connect to a database provisioned outside Surf2. Surf2 may initialize its schema after explicit user confirmation, but does not provision Azure servers, databases, networking or accounts. |
 | Legacy formats | Recognize legacy Surf2 storage and explain migration requirements. Only a supported Ready relational V2 database can become current directly. Preserve the existing separate legacy migration workflow. |
-| Remote folders | Support Azure Blob Storage containers/prefixes and Git repositories/subfolders as scope resources. Configure them in the folder resource editor; the Persistence grids and FROM/TO controls continue to select SQL databases. |
-| Local Git | Recognize repositories/worktrees, show branch or detached revision, and preserve ordinary local-folder operations. Discover a corresponding remote when relocation is requested; do not assume `origin` or matching branch names proves equivalence. |
+| Blob and local folders | Add Blob resources in Scope Setup. Connect to an existing container or create one in a selected storage account. An ordinary folder and a Blob location can be used independently or explicitly paired under one node. |
+| Git repositories | Use one Object Explorer node per repository in a scope. A user can attach their working folder, a direct Git connection, or both. The direct connection uses a persistent Surf2-managed checkout and both views use the same folder reader. |
+| Local cache | Keep managed Git checkouts and Blob copies across launches. Check active Blob sources for changed files on startup. Settings exposes per-source and total storage limits, usage and cleanup. Decline downloads that would exceed those limits or available space. |
 | Live SQL source | Add an explicit live database resource for local SQL Server or Azure SQL. Browse metadata/definitions and query any accessible table without capturing it first. Its ordinary business database is not subject to the Surf2 persistence-format gate. |
 | Snapshots | Preserve generated-SQL import, direct capture and exported-folder import. A snapshot remains self-contained and requires no live connection to its original database. |
 | Resource relocation | Before SQL publication, optionally switch local Git references to verified remote Git, copy selected files to Blob, or rebind to an existing Blob location. Support the inverse materialization to local folders. Apply mappings only to destination state. |
 | Proposed query scope | First release provides generated table queries and editable, parameterized, single SELECT queries in a dedicated read-only query view. It does not provide SQL administration or write-through grid editing. Section 11 defines the limits. |
 
-Automatic synchronization/merge, Git commit/push management, Azure infrastructure provisioning and migration of arbitrary business databases are outside this change. Explicit upload/download for resource relocation is included. Moving Surf2 persistence to Azure does not deploy or relocate the WPF application.
+Surf2 supports creating a Blob container in an existing storage account. SQL servers/databases, storage accounts and networking are provisioned separately. Standalone Blob resources use local cache refresh. Paired folders use reviewed reconciliation in both directions. Explicit content transfer for persistence relocation is part of the later migration milestone.
 
 ### Interpreting the diagram
 
@@ -43,14 +46,14 @@ This table retains the original handwritten numbering. The annotated diagram ext
 | No. | Relationship | Implementation meaning |
 | --- | --- | --- |
 | 1 | Remote Git ↔ local Git folder | Identify correspondence; use a remote reference or materialize a selected remote revision locally. Local changes need an explicit preservation choice before rebinding. |
-| 2 | Blob folder ↔ local folder | Upload/download a selected file set, or rebind to verified existing content, through a reviewed relocation plan. |
+| 2 | Blob folder ↔ local folder | Pair locations under one node and switch the active view. A reviewed relocation plan can also copy files between locations. |
 | 3 | Local Git folder → local Surf2 DB | Register a local folder source; show Git branch and repository details. |
 | 4 | Local folder → local Surf2 DB | Retain existing folder parsing, rendering, search and references. |
 | 5 | Local SQL source → local Surf2 DB | Register a live SQL resource with metadata browsing and explicit table queries. |
 | 6 | Local SQL source → snapshot held locally | Capture/import independent definitions and selected data; future viewing needs no source connection. |
 | 7 | Local Surf2 DB ↔ Azure Surf2 DB | Copy all supported Surf2 state into Empty or compatible Surf2 targets; populated targets require confirmation and a verified recovery export. |
-| 8 | Remote Git → local Surf2 DB | Browse/read/index the remote repository through the Git provider. |
-| 9 | Blob folder → local Surf2 DB | Browse/read/index the container/prefix through the Blob provider. |
+| 8 | Remote Git → local Surf2 DB | Use the remote URL to prepare a managed checkout and browse, read and index it through the folder reader. |
+| 9 | Blob folder → local Surf2 DB | Cache and index the selected container or prefix on the desktop. |
 | 10 | Azure SQL source → local Surf2 DB | Use an Azure SQL business database as a live resource. |
 | 11 | Azure SQL source → Azure Surf2 DB | Same live-resource behavior with independently located persistence. |
 | 12 | Azure SQL source → snapshot held in Azure | Capture/import a portable snapshot into the active Azure Surf2 store. |
@@ -66,7 +69,8 @@ Apply the same independence to combinations not drawn explicitly: a local SQL so
 | --- | --- | --- |
 | Persistence connection | Protected local catalogue | Select the Surf2 application database; current/default and format eligibility apply here. |
 | Source definition | Surf2 relational state, without credentials | Stable source ID, provider and versioned locator/configuration for LocalFileSystem, AzureBlob, Git or LiveSql. Local Git is a detected capability of LocalFileSystem. |
-| Scope membership | Surf2 relational state | Refer to a source with scope-specific alias, IncludeChildren and loaded state. |
+| Scope membership | Surf2 relational state | One explorer node with a stable identity and scope-specific name, IncludeChildren and loaded state. Git and explicitly paired local/Blob folders can have more than one location behind that node. |
+| Local location and cache | Per-user desktop settings and app-owned storage | Record the chosen view, linked checkout or folder, and managed copies. Shared nodes default to the remote view. |
 | Authentication binding | Protected local user storage | Map a source ID to this user's connection/authentication material; never export secrets in the Surf2 package. |
 | Source item/document binding | Surf2 relational state | Typed logical locator and revision; independent of temporary cache paths. |
 | Database snapshot | Surf2 relational snapshot/history tables | Independent materialized definitions and captured rows. Optional provenance is descriptive, never a required source connection. |
@@ -96,7 +100,7 @@ Source configuration edits create a new configuration revision. Saved documents 
 
 At the baseline commit, the database format is `Surf2.RelationalV2`, **schema version 2**. The format probe recognizes schemas 1 and 2 with version-specific checksums; normal runtime requires the current schema. Schema 2 stores captured rows as JSON in `surf.FullTableData`; generated `capture.Data_*` tables belong to schema-1 compatibility. The package identifier is `Surf2.RelationalV2.Package`, package version 2. The exporter emits schema 2; the importer accepts schema 1/2 and converts schema-1 captures before Ready publication. Product V2, database schema and package versions are separate values.
 
-Plan one next schema revision (provisionally 3 if still available) for source definitions/bindings, live resources and maintenance admission. Plan package version 3 because authoritative resource tables and locator semantics change; retain explicit version-2/schema-1-or-2 import conversion. Existing files and snapshots retain their identities during upgrade. Update installer/checksums, supported reader/writer floors, package whitelist and reset/validation code together. The existing capture upgrade is not a populated-target replacement or general maintenance protocol.
+For the local milestone, version the relational schema and package as needed for authoritative source definitions, bindings and snapshot origins. Schema and package version 3 are candidates if still available. Retain explicit import conversion for version-2 packages using schema 1 or 2. Existing files and snapshots retain their identities during upgrade. Update installer checksums, reader and writer compatibility, and package validation together. Add maintenance admission and replacement metadata with their own compatibility change in the later transfer milestone.
 
 ## 3. Settings layout and editing
 
@@ -330,7 +334,7 @@ Persist intent before mutation and commit completion evidence with the new conte
 
 ### Folder configuration and user behavior
 
-Extend the scope resource editor's **Add > New > Folder** flow with **Local folder**, **Azure Blob Storage** and **Git repository** choices. New registers an existing source; it does not create a container, repository or remote directory. **Add > Existing > Folder** reuses registered sources across scopes. Retain folder aliases, IncludeChildren, loaded/unloaded state, virtual-folder organization and removal of scope membership without deleting source content.
+In **Scope Setup → Add Resource**, keep **Folder** and add **Add Blob…** and **Git Repository…**. **Add Blob…** opens the container wizard below. **Git Repository…** registers a remote and offers the direct view. **Add Existing** reuses registered resources across scopes. Retain folder aliases, IncludeChildren, loaded state and virtual folders. Removing scope membership leaves the source content in place.
 
 | Provider | Required configuration | Optional configuration |
 | --- | --- | --- |
@@ -352,41 +356,81 @@ Persist a versioned, credential-free source definition with a stable public sour
 
 Use a common source-definition identity across folder and LiveSql resources, with validated provider-specific configuration rather than a bag of interchangeable fields. Preserve existing `ResourceKind` values 0–3; append `LiveDatabase` (proposed value 4). Extend `surf.ScopeResource` kind/binding constraints and add a source reference while retaining existing snapshot/diagram bindings. Remote folders still have kind Folder. File resources and all path-bearing saved state also need typed binding migration so moving a folder can preserve its opened files.
 
-Add a folder-source interface for capabilities, access probing, bounded/paged child listing, revision resolution, stream reads and refresh. Supply LocalFileSystem, AzureBlob and Git implementations. Route discovery, document opening, name/content search, reference parsing, comparison and saved-workspace restoration through it. Preserve the existing Local provider's behavior.
+Add a folder-source interface for access checks, listing, revision resolution, reads and refresh. Both Git views supply a local directory to the existing folder reader. Blob supplies logical file names and locally cached bytes. Reuse folder parsing, name and content search, reference matching, comparison and document opening for both. Persist logical source and item identifiers. Keep the local paths of Surf2-managed caches on the desktop.
 
 A typed remote document locator contains source ID, source configuration revision/immutable origin, provider-relative item identity and a content revision token. It must identify remote content independently of any local cache filename. Persist these locators in saved windows, workbenches and reference links. Keep enough versioned source configuration to resolve older bindings without reinterpreting them against a newly edited endpoint. Extend the current non-database `External` binding path rather than treating remote documents as physical files. A saved pinned revision that is unavailable must show that fact; do not silently substitute the latest file.
 
-Use provider-specific path comparison and encoding. Preserve Blob names and Git paths exactly, including case; apply URI host normalization only to the appropriate URI components. Do not apply Windows `Path.GetFullPath`, backslash replacement, case folding or local path equality to remote item identities. Folder/file names that collide on Windows must remain distinct in the UI and cache. Generate safe cache filenames instead of interpreting remote names as disk paths.
+Use provider-specific path comparison and encoding for logical identifiers. Preserve exact case and names. Generate safe local cache names for Blob files and keep them mapped to the original names. If paths in a Git commit collide or cannot be represented in a Windows checkout, report the affected paths and keep the previous usable checkout. A failed materialization leaves the direct view unavailable or stale.
 
 ### Azure Blob folder behavior
 
-Use `Azure.Storage.Blobs` and an explicit authentication integration. Browse lazily with prefix/delimiter listing and continuation tokens; a Blob prefix can represent the displayed folder hierarchy without being a physical directory. Handle an empty root, nested prefixes, a blob and prefix with the same display name, and directory entries where the account exposes them. Prefix boundaries must be exact: selecting `src/` must not include `src-old/`. [Azure Blob listing](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-list)
+**Add Blob…** offers **Use an existing container** and **Create a container**. Select an Azure storage account, enter or select the container and sign in. For an existing container, choose the root or a folder prefix, then run **Test access**. For a new container, show the account and container name before the explicit **Create container** action and check that the user has create permission. An empty container is a valid resource. Show the selected source and estimated local storage before saving and preparing its local copy. [Create a container](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blob-container-create)
+
+Use `Azure.Storage.Blobs` for paged listing. The selected prefix defines the root and the exact set of eligible content. For example, `src/` excludes `src-old/`. Keep a local catalogue of the folder structure, including when a blob and a virtual folder have the same display name. Download eligible files to the local cache with bounded concurrency and index them as they arrive. Show progress and mark search coverage as incomplete until the index is ready. [Azure Blob listing](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-list) · [Download with .NET](https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blob-download)
 
 Support Microsoft Entra interactive access and scoped SAS credentials, plus anonymous read access where the container permits it. Store SAS material separately from the sanitized endpoint. Listing and reading need their respective permissions; possession of an Azure SQL login does not establish Blob access. Report expired SAS, forbidden listing/read, missing container and private-network failures distinctly. Do not acquire broader permissions or create resources during Test.
 
-Pin a file read to its Blob version/snapshot when available; otherwise use the observed ETag with a conditional read and verify the returned identity. If it changed, mark the item stale and offer refresh. Build a source-generation manifest from item names and observed revision tokens, but do not claim that listing an entire prefix is an atomic snapshot. If content changes during discovery/indexing, retry that generation within bounded limits or publish an explicit incomplete/stale result. ETags identify versions for conditional operations. [Blob concurrency](https://learn.microsoft.com/en-us/azure/storage/blobs/concurrency-manage)
+For standalone Blob resources, open the last complete local copy at startup and check active resources in the background. Also offer **Refresh**. Compare a fresh listing with the saved manifest by exact blob name and version ID or ETag. Show the last modified date for users. Download and reindex new or changed entries and reuse unchanged files and index entries. Remove absent entries from browse and search results only after successful listing and refresh. Pin downloads to the listed version or use a conditional read with the observed ETag. If content changes during the refresh, retry within the operation budget or keep the previous usable copy with a stale indication. Publish the new catalogue and index together. A listing is an observation of the selected prefix over the course of the scan. [Blob concurrency](https://learn.microsoft.com/en-us/azure/storage/blobs/concurrency-manage)
 
-### Local Git recognition and remote Git behavior
+### Pair a Blob location with a local folder
+
+Support three setups: an ordinary local folder, a standalone Blob resource with a Surf2-managed cache, and a Blob resource paired with a user-selected local folder. Offer **Link Blob Storage…** on a local folder and **Link local folder…** on a Blob node. Pairing uses one node with both locations identified. The selected folder supplies the browsable files and index after reconciliation. It replaces the managed copy for this pairing and is outside managed-cache cleanup. A view indicator or switch cannot bypass reconciliation or select an inconsistent copy for search.
+
+**Compare locations** lists files by exact relative path. The wizard matches versions by content and can reuse verified hashes from the last comparison for unchanged files. Last modified time and size help the user choose a version. The Blob version ID or ETag pins the reviewed object, while a content hash verifies equality across file systems. Preflight Windows name collisions, traversal, unreadable files, local disk space and required Blob permissions.
+
+| File state | Initial pairing action |
+| --- | --- |
+| Local only | Propose upload. An empty Blob location receives the local files. |
+| Blob only | Propose download. An empty local folder receives the Blob files. |
+| Same contents | Leave both copies in place. |
+| Same path, different contents | Require **Keep local** or **Keep Blob** before replacing the other copy. |
+
+Reuse `ResourceFileDiffWindow` and its bounded text diff for **Compare**, with clearly labelled Local and Blob sides, modification times and sizes. For binary or oversized content, show available metadata and the same version choices. Confirm the plan before any writes.
+
+Save a reconciliation manifest after both locations agree. On later checks, use that manifest to distinguish a newly added file from a previously matched file that is now missing on one side. Propose copying a new file to the other side. For an edit on one side, show the proposed copy direction and require review. If both copies differ, let the user compare and choose. For a previously matched file missing on one side, offer **Restore the missing copy** or **Delete the remaining copy**. Require an explicit choice for a deletion. Startup and Refresh detect changes without applying them automatically.
+
+On startup for a previously loaded pair, on manual **Refresh**, and on every **Load**, compare before admitting the resource to the scope. While checking, exclude it from browse, search and reference results. If differences are found, offer **Review changes** and only resume after the full reconciliation is applied and verified. If the user declines or cancels, verification fails, or differences remain, use the existing **Unload** behavior and keep the node visible with a reason. The next **Load** repeats the comparison. A separately registered ordinary folder retains its own load behavior.
+
+Before applying each transfer, recheck the reviewed source and destination. Use conditional Blob writes or deletes and staged local replacement with conflict checking. If a file changes, return it to review. A partial failure can leave individual transfers applied. Report which succeeded and rescan both sides before retrying. Publish a new index and reconciliation manifest only after both sides verify. For paired resources, an older index cannot make the resource available while reconciliation is pending.
+
+### Git node, connection wizard and managed checkout
 
 Extract the existing local Git detection from `FileTreeService.CreateFolderResourceToolTip`/`TryGetGitBranch` and expose it through relational explorer resource details. Support a repository root or a nested scoped folder, `.git` directories and `gitdir:` files, relative/absolute worktree metadata, branch names, detached HEAD and unborn branches. Keep filesystem reads bounded; Git detection failure must not prevent ordinary folder browsing. Refresh branch details when HEAD changes or the user refreshes. Show repository root, relative scoped subfolder, branch and abbreviated commit.
 
-Discover remotes, upstream and staged/unstaged/untracked status only when requested for source details/relocation, using a maintained Git interface or bounded Git process calls with structured arguments. Do not assume a configured remote is reachable or contains the local commit. Git's stable porcelain status format can supply machine-readable working-tree differences. [Git status](https://git-scm.com/docs/git-status)
+Show one Git node per repository in a scope. When adding a remote or a local checkout, find an existing matching node and link the new location to it. Match verified repository identity using the checkout's Git remote configuration. Ask the user to select when there are several remotes or the match is ambiguous. Preserve the scoped subfolder in both views. Show the active view, configured locations and branch or revision in the tooltip. Keep the same node name and position through a switch.
+
+| Active view | Node icon | First row when expanded |
+| --- | --- | --- |
+| Local folder with no direct connection | Folder with Git badge | **Add Git repository connection…** |
+| Local folder with a direct connection saved | Folder with Git badge | **Switch to direct Git connection** |
+| Direct connection with a local folder linked | Git icon | **Use local folder** |
+| Direct connection with no local folder linked | Git icon | **Link local folder…** |
+
+Place the focusable action row above the files and subfolders and support Enter to activate it. The connection wizard suggests the checkout's remote URL, allows the user to select a configured remote and branch or revision, and tests access with the user's credentials. Verify repository correspondence before enabling **Save**. Saving keeps the local view active. **Link local folder…** opens a folder picker and verifies the checkout's remote before adding it to the node. The node's accessible name identifies the active view.
 
 Resolve the chosen branch/tag to a commit before enumeration; every tree listing, content read, reference index and comparison within that generation uses the same commit. A commit selection remains pinned. Refresh may advance a branch or tag selection, but existing open documents retain their pinned content until deliberately reloaded. Show the symbolic ref and resolved commit in source details. [Git revision resolution](https://git-scm.com/docs/git-rev-parse)
 
-Use a private, per-user repository/object cache with a maintained Git implementation. A bare/object-store approach can enumerate committed trees without materializing a working checkout; do not assume downloading only a selected subfolder avoids all repository transfer. Bound fetched storage and display progress/cancellation. When invoking Git, pass arguments structurally, validate refs/paths as data, and keep credentials out of arguments/logs. [Git tree listing](https://git-scm.com/docs/git-ls-tree)
+**Switch to direct Git connection** reuses or prepares a private Surf2-managed working checkout of the selected commit. Use Git fetch and checkout in the managed location and the existing folder reader for browsing and indexing. Keep the managed working files and Git data on disk across launches. **Refresh** fetches when requested. Count Git data, working files and staged refresh data toward the local disk budget. A scoped subfolder can still require downloading objects outside that subfolder. Pass refs and paths as structured arguments and keep credentials out of command arguments and logs.
+
+Show progress and allow cancellation while preparing the alternate view. Change the icon, action row, file list and active search source together when the switch succeeds. On failure, retain the current view and offer retry. Your linked checkout shows working files, including uncommitted changes. Surf2’s checkout shows the committed revision it prepared. The shared database stores the remote URL, ref and subfolder. Each desktop chooses its own linked or managed checkout, with the direct view as the shared default.
 
 Handle HTTPS credentials through a credential manager and SSH through the user's configured key/agent with host verification. Missing credentials, an unknown host key, an inaccessible repository and a missing ref are separate user-visible outcomes. Do not execute repository hooks, builds or configured content filters merely to attach, browse or index a source.
 
 Expose symlink entries, submodule boundaries and Git LFS pointers explicitly. Do not follow symlinks outside the root, recurse into additional repositories or present an LFS pointer as the actual file silently. First-release browsing may show these entries as unsupported/not fetched with an explanation; fetching their content requires the applicable provider capability and separate access validation. Never modify the user's existing checkout as part of browsing a remote repository.
 
-### Refresh, indexing and local cache
+### Local cache limits, Settings and performance
 
-Browse children and fetch bodies on demand; do not load every remote body merely to expand a folder. Apply IncludeChildren consistently. Reuse the existing parsers with provider streams/logical locators, and retain bounded source size/count limits (the baseline reference scan allows 32 MiB per file and 100,000 files per scope). Apply explicit network-byte, fetch-concurrency, cache-size and operation-time budgets; show omitted/incomplete results when a limit is reached rather than claiming complete search coverage.
+Before a Blob download, page through names and sizes within the selected scope. Show the file count, estimated transfer bytes and expected local space for file data, indexing and temporary staging. Count the peak space needed during refresh, when the old and new copies may overlap. Stop the estimate early if the limit has already been exceeded. If the container is too large, offer a smaller prefix or tell the user where to free space or adjust limits. For Git, present an estimate when available and enforce the storage budget during fetch and checkout even when the final size is unknown.
 
-Use explicit Refresh initially; add periodic refresh only as a user-selected option. Refresh builds a new generation, atomically publishes a completed catalogue/index, and invalidates affected provider caches. Cancellation, authentication loss or a partial listing retains the previous usable generation with a stale/incomplete indicator. Generation and workspace-owner checks must reject late results after a source edit, scope switch or database replacement. Local filesystem watchers remain local-provider behavior.
+In **Settings → Local Cache**, show managed Git and Blob copies with their source name, disk usage, last used and last successful refresh, plus total disk usage. Users can adjust a per-source limit and a total cache limit and select **Remove local copy** to reclaim space. Keep those limits per desktop. Check actual free space and leave a reserve on the cache drive. Include index, staging and open-document data in accounting. Coordinate concurrent jobs so combined reservations fit the global budget. Measure representative workloads before selecting default limits.
 
-Cache keys include source identity/configuration revision, exact relative item identity, content revision and local user/credential partition. Use atomic writes and bounded eviction; pin content needed by open documents. Offline mode may display previously fetched content with its revision and offline status; an unavailable listing must never appear as a verified empty folder. Disconnecting an account invalidates its live handles and private cache access. Cache deletion must not delete a user's checkout or remote data.
+Refuse a new download whose estimate exceeds the available budget. Recheck limits and free space as files arrive and stop if the source grows past what fits. Keep the last published managed copy and index available with its freshness status. A paired folder stays unloaded if the reconciliation cannot complete. Check free space on the user-selected destination drive and include app-owned staging in the cache budget. For a first download, show which limit was reached and that full search is unavailable. Apply the same checks to Git checkout preparation and refresh. Keep existing parser size and file count limits and identify content omitted from an index.
+
+**Remove local copy** clears app-owned cache files and their index while retaining the source node and connection. Offer to download the copy again when the user needs it. If a copy is in use, coordinate with active downloads or open documents before deletion. Limit cleanup to paths owned by Surf2. A user’s linked checkout or folder is outside the cache. Cancellation, authentication loss or a partial listing retains the last usable published generation. Fence work after a source edit, scope switch or persistence replacement.
+
+Key cached content by source configuration, exact item identity, content revision and local user and credential. Preserve a pinned document’s content while it is in use. An authorized offline view shows the last successful revision and refresh time. Disconnecting an account invalidates its live handles and private cache access.
+
+Measure steady-state browse, open, search and reference matching for each remote view against a local folder with the same eligible content, on the same desktop. Repeat operations use the published local copy and index. Aim for comparable interactive performance and report first download, first index and refresh separately. Validate the target on representative sources before release.
 
 ### Credentials and package behavior
 
@@ -409,6 +453,17 @@ Source testing checks connection, database selection and metadata/read permissio
 When imported on another computer, show **Authentication required** until that user binds credentials. Failed authentication, changed database identity, missing object or permission loss leaves the resource visible with an actionable status; it must not silently resolve a similarly named connection or object elsewhere.
 
 ### Explorer, definitions and search
+
+Use one database node per linked live source and snapshot collection in a scope. Standalone live resources and standalone snapshots can each have their own node. A linked node retains its name and position when the user switches. Give each view a distinct database badge, tooltip and accessible name. Use the first focusable row beneath the node for the other view or for attaching it.
+
+| Active view | First row when expanded |
+| --- | --- |
+| Live with a linked snapshot | **View snapshot** |
+| Snapshot with a linked live connection | **Switch to live connection** |
+| Live only | **Capture snapshot…** |
+| Snapshot only | **Link live connection…** |
+
+Publish the selected view and its browse, search and reference context together. A failed switch keeps the current view available. Saved documents and links stay bound to their chosen source or snapshot revision. When the snapshot view is active, offer its revision selector and comparison history. Local SQL Server and Azure SQL present the same explorer, query and capture UI. Their connection setup supplies the platform-specific authentication options.
 
 Display the existing Procedures, Views, Functions, Triggers and Tables categories for live databases. Load object names/metadata in cancellable pages and definitions on demand. Extract reusable metadata queries from `SqlSnapshotSource`; do not reuse its snapshot transaction/publication lifecycle as a permanently open live connection. Use `DatabaseDocumentService` for compatible definition/table rendering.
 
@@ -448,7 +503,19 @@ If a limit is reached, stop reading/cancel and label the result Partial with the
 
 Retain `RelationalDatabaseCaptureService` for direct capture, `DatabaseMetadataImportService.ParseClipboardResult` for Surf2's generated metadata-query results, and `DatabaseExportFolderImportService` for exported snapshot folders. Generated metadata SQL is a structured capture/import format; it is not the arbitrary live SELECT-result format. Continue publishing reviewed snapshots through `RelationalSnapshotEditorService` and existing history/capture contracts.
 
-**Create Snapshot** on a live resource selects metadata/tables/capture limits, captures using the current source binding, and creates an independent snapshot resource in whichever Surf2 persistence database is active. It does not convert the live resource in place. The source must still pass the capture workflow's eligibility and source/destination separation checks. Optional provenance may record a safe source description and capture time, but no source foreign key, credential, network access or local cache is required to open/import/transfer the completed snapshot.
+**Create Snapshot** on a live resource uses the current capture workflow to select table data and capture limits. A successful capture creates a saved snapshot linked to that live source. **Refresh Snapshot** appears on the main node's context menu while the snapshot is active and on the **View snapshot** row's context menu while the live view is active. It uses the linked live connection to add a revision to that snapshot, with the existing capture selections available for review. It keeps the current view selected. Cancellation or failure keeps the previous successful revision and history available.
+
+### Snapshot origin and linking
+
+Read a versioned origin record from the source connection and include the same optional fields in the generated SQL result payload. Record the engine type, reported server and database names, and the engine-specific identifier when readable. SQL Server can expose `sys.database_recovery_status.database_guid`. Azure SQL Database can expose `sys.databases.physical_database_name` for the current physical database. Use the logical server as additional evidence. Attach, restore and Azure service changes can duplicate or change identifiers. These values serve as matching evidence. [SQL Server recovery metadata](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-database-recovery-status-transact-sql) · [Azure SQL database metadata](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/sys-databases-transact-sql)
+
+Capture origin per revision and preserve it in folder exports and relational packages. Keep older pasted results and exports importable with unknown origin. A direct capture from a verified registered live source links automatically. For independently captured snapshots, link automatically only when the engine-specific identifier and server evidence agree on one source. Show recorded and live origin details and ask for explicit confirmation when evidence is missing, changed or ambiguous. A name alone cannot establish a match. Recheck the live source before refreshing a linked snapshot when identity evidence has changed. Snapshots remain readable without their live connection or its credentials.
+
+### Full catalog requirement for direct capture
+
+Require proven catalog visibility on the same source session before allowing any direct capture or **Refresh Snapshot**. A database-owner context is an example of positive evidence. A database-level `VIEW DEFINITION` check alone cannot establish full visibility because an object or schema can have a more specific denial. Lack of positive proof is a capture failure. Keep the linked live view available for the metadata and rows that login can read. [Metadata visibility](https://learn.microsoft.com/en-us/sql/relational-databases/security/metadata-visibility-configuration) · [Database owner context](https://learn.microsoft.com/en-us/sql/relational-databases/security/authentication-access/principals-database-engine#dbo-user-and-dbo-schema)
+
+On insufficient catalog visibility, warn that the current account cannot produce a verified snapshot. Offer using an account with sufficient visibility or importing the generated query results run under such an account. Publish a revision only after the full capture validates. If a selected table is visible but its rows cannot be read, report which capture failed and keep the prior revision. When a verified catalog shows that a formerly captured table is absent, show its removal in the new revision. Compare tables by schema and name, so a rename appears as the old name removed and the new name added. Preserve historical rows under their original revisions.
 
 Keep snapshots and live sources visibly distinguished in the resource picker and explorer. A snapshot remains at its captured revision; Refresh on a live source queries its current state. Source deletion or credential loss must not break an existing snapshot. All local/Azure source and persistence combinations use the same capture/import contract when the source is reachable from the desktop.
 
@@ -528,6 +595,27 @@ Completion reports copied/rebound/kept/unavailable resources, file counts and ve
 
 ## 13. Service boundaries and implementation sequence
 
+### First milestone — local Surf2 persistence
+
+Keep every slice usable with the current local Surf2 workspace. Verify against the current tip of `relationalDb_V2`, including the durable document links added after the original audit. Git and Blob should meet the same browse, open and search expectations as a folder once their local copies are ready.
+
+| Order | Implementation | Exit check |
+| --- | --- | --- |
+| 1. Resource identity and Git | Add stable scope-node identity and location bindings where Git needs them. Preserve old folder records and durable links. Reuse `FileTreeService` Git detection and the existing physical folder reader. Add Git matching, the first-row wizard and view switch, managed checkout reuse, and cache Settings with a shared disk budget. Keep credentials on the desktop. | Both add orders produce one node. Linking and switching preserve the alternative view. Restart reuses the managed checkout. Refresh or cleanup failure cannot damage a user checkout. |
+| 2. Standalone Blob | Add the container create/connect wizard, prefix selection, capacity preflight, persistent local cache and background startup refresh. Use the existing text parsing and reference pipeline with exact Blob names and locally cached content. | Empty and existing containers work. Unchanged files are reused. Changed and removed entries update browse and search. Oversized sources are refused. Measure equivalent local folder and cached Blob workloads. |
+| 3. Paired Blob folders | Add the pairing wizard, saved baseline manifest, transfer preview and per-file decisions. Reuse `ResourceFileDiffWindow` for text diffs and existing resource unload behavior for the reconciliation gate. Implement explicit, conflict-checked transfers and restore/delete choices. | Both empty-side cases, divergent files and intentional deletions reconcile correctly. Startup, Refresh and Load all check. Declining, access failure, a race or a partial transfer keeps the node unloaded and out of search. A new Load rescans. |
+| 4. Live SQL and queries | Add the live resource and metadata reader, existing category and document presentation, and bounded query results. Reuse capture-side metadata patterns and the existing grid. Qualify local SQL Server and Azure SQL authentication and equivalent read behavior. | Any readable table can be queried without prior capture. Permission, timeout and cancel behavior are visible. Switching scopes cannot publish an old query or index. |
+| 5. Snapshot linking and refresh | Extend generated SQL, direct capture, saved revisions and export-folder provenance. Add optional live/snapshot links, view switching and **Refresh Snapshot** in both menu locations. Gate direct capture on verified catalog visibility. Reuse capture and history publication. | Old imports still work. Same-name sources stay separate. A reliable match links automatically. Restricted capture cannot publish a revision. A verified removal and a rename compare correctly, and earlier revisions stay readable. |
+| 6. Local milestone verification | Run local schema upgrade, package round-trip, scope, document, snapshot and search regressions. Exercise actual Git, Blob and Azure SQL source fixtures alongside the local equivalents. Measure cache size and browse/index performance to tune defaults. | One local Surf2 workspace can use all three source types, preserve its saved state, and explain loading, capacity, conflict and permission failures. |
+
+Make the minimum additive persistence and package changes required by these resource features. Use the existing upgrade and serialization paths and verify old folders, snapshots and open documents through the conversion. Keep any new source ID, scope-node ID and pinned item locator distinct. Preservation of these identities also prepares the later migration to Azure.
+
+Use a verified owner context for the initial full-catalog check. A supported mechanism for proving equivalent visibility with less privilege can be added when its SQL Server and Azure SQL behavior is verified. Adjustable cache limit defaults need representative measurements. Scheduled history capture remains a separate design choice after manual **Refresh Snapshot** works.
+
+### Later milestone — shared Azure persistence
+
+Design identity, profiles, scope permissions and private versus shared resources before publishing migrated scopes. Include a review of which local source bindings become shared remote links, remain personal, or become snapshots. The connection-switch, migration and recovery work below belongs to this later milestone. The resource milestone uses the reusable identity, binding and authentication components as needed.
+
 Keep SQL and catalogue rules in services; WPF event handlers bind state, request choices and display results. Suggested new types are illustrative names, not an obligation to introduce a framework.
 
 | Work package | Changes and exit condition |
@@ -540,7 +628,7 @@ Keep SQL and catalogue rules in services; WPF event handlers bind state, request
 | 6. Schema and compatibility | Define the shared source/binding model and maintenance tables, then implement the coordinated schema/package revision with explicit baseline conversion. Preserve resumable schema-1→2 capture upgrade before the next upgrade. Update probes, checksums, admission, operation journal and old-client exclusion together. |
 | 7. Replacement and recovery | Add a transactional replacement service, transaction-aware loaders/validators, full input/recovery-package verification, retained recovery exports and commit/rollback reconciliation. Verify current-target reopening and preservation of old application state on rollback. |
 | 8. Provider and binding foundation | Add source definitions, typed item locators, local credential bindings and provider-based discovery/read/index contracts. Migrate existing folders to LocalFileSystem; extend saved windows/references/diagrams/virtual folders and package compatibility. |
-| 9. Local Git, Blob and remote Git | Extract local Git detection into relational explorer; add upstream/status inspection for relocation. Implement both remote providers, source editing, bounded browsing/reads, pinned revisions, refresh/cache and authentication/offline states. Route search/reference/compare through providers. |
+| 9. Local Git, Blob and remote Git | Add one-node switching, Git linking, managed checkouts and the Blob add/create wizard. Implement persistent copies, Blob startup refresh, local cache limits and cleanup. Qualify browse, search and reference matching against local folder performance. |
 | 10. Live SQL metadata | Add LiveDatabase resource kind, source editor and metadata/definition service. Adapt explorer, document bindings, reference indexing and refresh. Keep snapshot acquisition separate and usable with both persistence locations. |
 | 11. Live queries | Implement the SQL Query view/executor and bounded result adapter over existing grid/scratch contracts, source permissions, parameters, limits, cancellation and saved-query behavior. Every accessible table is queryable without capture. |
 | 12. Resource relocation | Add inventory/planning, Git correspondence, Blob upload/download, Git materialization, verified manifests, exact binding mapping and transformation-aware package validation. Integrate before SQL publication; provide operation reconciliation and owned-artifact cleanup. |
@@ -551,7 +639,7 @@ One application-level operation coordinator must serialize conflicting switch/im
 
 Recommended service responsibilities: `FolderSourceProvider` owns listing/reads; `LocalGitInspector` owns checkout facts; `LiveSqlMetadataService` owns source discovery; `LiveSqlQueryService` owns bounded execution; `ResourceRelocationPlanner` owns choices/manifests; `ResourceBindingMapper` owns reviewed transformations; `PersistenceTransferCoordinator` orders external staging, recovery export and SQL publication. Keep provider reads separate from relocation writes so browsing cannot accidentally trigger upload, checkout or replacement.
 
-Work packages 1–5 establish connection UX; 6–8 establish the data contracts required by both remote folders and live SQL. Folder and live-SQL implementation can then proceed in parallel. Relocation integration depends on those providers, the new package format and replacement service. Deliver intermediate milestones behind feature gating; release acceptance includes the entire diagram, not just the Settings grids.
+Use packages 1–7 to deliver connection UX, maintenance and recovery in the later milestone. Packages 8–11 describe reusable components delivered through the local sequence above. Relocation integration builds on those components, the package format and the replacement service. Qualify the shared Azure deployment after the resource and access rules are in place.
 
 ## 14. Acceptance and regression criteria
 
@@ -572,15 +660,19 @@ Work packages 1–5 establish connection UX; 6–8 establish the data contracts 
 | Transactional replacement | Interrupted bulk batch, constraint/model failure, cancellation and capacity/time-limit failures roll back prior application data; all validators see the same transaction; new identity/operation receipt publish atomically; stale sessions are invalidated; no per-batch commits occur. |
 | Failure and recovery | Cancel in every phase; crash before/after commit; lost acknowledgement reconciled without replay; unresolved outcomes block normal use; empty-import partial target remains non-Ready; replacement rollback restores the previous usable contents; reopen failure after commit reports committed success accurately. |
 | Bootstrap and protection | Old single-string migration is idempotent; missing versus corrupt/locked files distinguished; undecryptable payloads recover visibly; environment overrides honored; no plaintext secrets in JSON, package metadata, logs or previews. |
-| Remote folder registration | Local/Blob/Git choices; valid root/ref/subfolder selection; source reuse across scopes; aliases and IncludeChildren; provider-specific Test results; a failed folder leaves SQL status unchanged. |
-| Blob folders | Nested/paged enumeration and exact prefix boundaries; empty container; blob/prefix name collision; Entra/SAS/anonymous access as permitted; expired credentials; item changes between listing/read; unavailable historic version; offline cached content marked accurately. |
-| Git folders | HTTPS and SSH private/public access; branch/tag/commit/subfolder; moved refs with open documents pinned; deleted ref/unavailable commit; path case preserved; symlink/submodule/LFS limitations explicit; no hooks/builds/checkout mutation. |
+| Remote folder registration | Local/Blob/Git choices, valid root/ref/subfolder selection, source reuse across scopes, aliases, IncludeChildren and access tests. Add Blob uses an existing container or creates an empty one in the selected account after an explicit action. |
+| Blob folders | Paged enumeration and exact prefix boundaries, empty container, blob/prefix name collision, permitted authentication options, expired credentials and offline status. Restart with the same contents and reuse the copy. Refresh with new, changed and removed blobs. Interrupted listing or a changed ETag retains the last usable generation. |
+| Git folders | Add in either order and obtain one node. Reject an unrelated checkout. Verify the four icon and first-row states, switch atomically or retain the current view on failure, reuse the managed checkout on restart, and fetch on Refresh. Exercise HTTPS and SSH, branch/tag/commit/subfolder, pinned open documents, Windows path collisions and special Git entries. Verify user checkouts retain their files. |
+| Paired folder reconciliation | Independent resources remain usable. An explicit pair uses the selected local folder. Verify empty-side transfer, equal files, text diff, keep-local and keep-Blob choices, subsequent edits and restore/delete choices. Startup, Refresh and Load compare again. Decline, cancellation, changed files and failed verification keep the pair unloaded and excluded from search and references. |
+| Cache limits and cleanup | Reject oversized Blob sources before downloading. Enforce limits during a growing Blob refresh and a Git fetch of unknown size. Account for simultaneous downloads and staging. Retain the previous view after a budget failure. Remove a managed copy and verify the source node remains available to download again. |
+| Remote folder performance | On a representative desktop, compare browse, file open, search and reference matching with the same local files after indexing. Record first download, first index and refresh separately. |
 | Remote search and identity | Browse/open/name/content search/reference/compare use provider locators; Windows-invalid and case-colliding names remain distinct; no path traversal; limits/cancellation/partial listings do not produce false complete indexes; stale callbacks cannot publish. |
 | Local Git recognition | `.git` directory and relative/absolute gitdir file, nested scope, linked worktree, detached/unborn HEAD, branch change, missing remote, multiple remotes and upstream mismatch; ordinary folder browsing survives Git inspection failure. |
 | Live SQL resource | Local/Azure source × local/Azure persistence; ordinary non-Surf2 source allowed while barred as persistence target; no schema writes on Test; visible partial metadata/permission failures; source credential rebinding after package import. |
 | Live definitions and bindings | Categories match snapshots; objects open without fake snapshot keys; encrypted/inaccessible definitions isolated; rename/drop/recreate and source-generation changes detected; refresh/search/reference coverage accurate; stale requests cannot publish. |
 | Live queries | Every permitted table offers View Data without HasFullData; generated and editable single SELECT/CTE/typed parameters; rejected writes/SELECT INTO/multiple statements; read-only SQL principal; quoting, null/Unicode/decimal/raw values, duplicate columns and unsupported types; row/byte/cell/time caps, cancel/timeout/network failures; scroll does not re-run query; source connection released; saved windows never auto-execute. |
 | Snapshot independence | Generated-SQL result import, direct capture and exported-folder import continue to work; completed snapshot remains readable after original source is disconnected/deleted; local and Azure sources can be captured into either persistence location; snapshots retain existing history/data semantics. |
+| Snapshot links and capture visibility | Verify legacy origin handling, generated-query provenance, round-trip export/import, duplicate names, changed identity, both menu positions, and historical revision selection. Direct capture with unverified or specifically denied catalog visibility preserves the last revision. Verified removal and a rename compare by schema and name. |
 | Reference-only package transfer | Local/Azure SQL round-trips preserve source definitions, saved queries and typed bindings without SAS/tokens/cache paths; authentication rebinding is visible; recovery restores references without implying external-content backup; existing remote content remains unchanged. |
 | Relocation planning | Same-desktop Azure persistence can keep local paths; all scopes/unloaded resources inventoried; reused/nested sources mapped unambiguously; inaccessible resource requires explicit keep-unavailable choice; selected existing Blob contents verified; live SQL migration does not copy the business DB. |
 | Git relocation | Unpushed commits and staged/unstaged/untracked/ignored files surfaced; corresponding remote commit/subfolder verified; dirty content preserved by reviewed Blob copy or explicitly excluded; no automatic push/commit; reverse materialization does not overwrite a dirty checkout. |
@@ -593,7 +685,7 @@ Extend `StorageCases/BootstrapCases.cs`, `TransferCases.cs`, `PackageExportCases
 
 Azure integration tests need their own explicitly owned, disposable, preprovisioned fixtures. Do not reuse LocalDB create/drop assumptions or run destructive tests against saved user connections. Unit tests cover state/invariants; SQL integration tests prove recognition and data preservation; WPF tests prove lifecycle and user-visible command behavior.
 
-Completion requires the new workflow and existing relational regression suites to pass, plus Azure transfers that verify actual data/history in empty and populated destinations. Populated-target replacement, retained verified recovery exports, maintenance isolation and crash/rollback reconciliation are release criteria. Both remote-folder providers, local Git recognition, live SQL browsing/querying, independent snapshot acquisition and resource relocation in both directions must pass with local and Azure SQL persistence. The diagram is not complete with only connection editing or empty-target transfer.
+Local milestone completion requires the six exit checks in section 13 and the applicable local relational regressions. Qualify Git and Blob and both live SQL platforms while Surf2 persistence is local. For the later milestone, also verify actual data and history through Azure transfers into empty and populated destinations. Verify replacement, recovery exports, maintenance isolation, crash recovery and resource relocation in both directions with the shared access rules in effect.
 
 ## 15. Repository reference map
 
