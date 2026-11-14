@@ -17,6 +17,12 @@ internal static class RelationalRegressionSuite
     public static async Task RunAsync(string[] args)
     {
 int passed = 0;
+if (args.Contains("--sql-query-ui", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunSqlQueryWindowChecksAsync(Check, Path.Combine(AppContext.BaseDirectory, "sql-query-ui-checks"));
+    Console.WriteLine($"Passed {passed} SQL query UI checks.");
+    return;
+}
 if (args.Contains("--source-ui", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunRuntimeWpfChecksAsync(Check,
@@ -29,6 +35,12 @@ if (args.Contains("--remote-folders", StringComparer.Ordinal))
     foreach (string name in await Surf2.Services.RemoteFolders.RemoteFolderContractChecks.RunAsync()) Check(true, name);
     foreach (string name in await Surf2.Services.SourceResources.SourceWorkspaceContractChecks.RunAsync()) Check(true, name);
     Console.WriteLine($"Passed {passed} remote folder checks.");
+    return;
+}
+if (args.Contains("--manual-snapshot-query", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunManualSnapshotQueryChecksAsync(Check);
+    Console.WriteLine($"Passed {passed} manual snapshot SQL checks.");
     return;
 }
 if(args.Contains("--live-sql",StringComparer.Ordinal) || args.Contains("--live-sql-contract",StringComparer.Ordinal))
@@ -135,6 +147,12 @@ if (args.Contains("--v2-catalogue", StringComparer.Ordinal))
 {
     await StorageRegressionSuite.RunV2CatalogueChecksAsync(Check);
     Console.WriteLine($"Passed {passed} V2 catalogue checks.");
+    return;
+}
+if (args.Contains("--history-ui", StringComparer.Ordinal))
+{
+    await StorageRegressionSuite.RunV2WorkspaceChecksAsync(Check, Path.Combine(AppContext.BaseDirectory, "history-ui-checks"), historyOnly: true);
+    Console.WriteLine($"Passed {passed} History UI checks.");
     return;
 }
 if (args.Contains("--v2-workspace", StringComparer.Ordinal))

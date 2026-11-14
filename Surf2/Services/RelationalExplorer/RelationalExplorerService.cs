@@ -153,8 +153,7 @@ public sealed partial class RelationalExplorerService
     {
         string name = ExplorerCompatibility.ResourceDisplayName(resource);
         bool directory = resource.Kind is ResourceKind.Folder or ResourceKind.DatabaseSnapshot or ResourceKind.LiveDatabase;
-        string label = resource.Snapshot?.RefreshDisplay?.Label(name) ?? name;
-        return new("resource:" + resource.ScopeResourceKey, label + (availability == ExplorerAvailability.Missing ? " (missing)" : ""),
+        return new("resource:" + resource.ScopeResourceKey, name + (availability == ExplorerAvailability.Missing ? " (missing)" : ""),
             name, resource.Path, SourceNodeKey(resource, resource.Path), parent, parent, ExplorerNodeRole.Resource, resource.Kind,
             resource.Kind == ResourceKind.DatabaseSnapshot ? FileSystemNodeIconKind.Database : resource.Kind == ResourceKind.LiveDatabase
                 ? FileSystemNodeIconKind.LiveDatabase : directory ? FileSystemNodeIconKind.Folder : FileSystemNodeIconKind.File,

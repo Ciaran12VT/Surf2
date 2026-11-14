@@ -11,6 +11,33 @@ public sealed record SnapshotRefreshEvent(Guid EventId, DateTimeOffset StartedAt
 
 public sealed partial class RelationalSnapshotStore
 {
+    public async Task<SnapshotRefreshDisplay> ReadRefreshDisplayAsync(SnapshotSummary snapshot, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        await using var connection = await Open(ct).ConfigureAwait(false);
+        using var command = Command(connection, null, """
+            SELECT COALESCE(v.VersionNumber,1),COALESCE(v.CreatedAtUtc,s.ImportedAtUtc),
+                COALESCE(attempt.CompletedAtUtc,attempt.StartedAtUtc),attempt.Outcome,
+                success.CompletedAtUtc,completed.CompletedAtUtc,completed.Outcome
+            FROM surf.DatabaseSnapshot s LEFT JOIN surf.SnapshotVersion v ON v.VersionKey=s.CurrentVersionKey
+            OUTER APPLY(SELECT TOP(1) e.StartedAtUtc,e.CompletedAtUtc,e.Outcome FROM surf.SnapshotCaptureEvent e
+                WHERE e.SnapshotKey=s.SnapshotKey ORDER BY e.StartedAtUtc DESC,e.EventId) attempt
+            OUTER APPLY(SELECT TOP(1) e.CompletedAtUtc FROM surf.SnapshotCaptureEvent e
+                WHERE e.SnapshotKey=s.SnapshotKey AND e.Outcome IN (1,2)
+                ORDER BY e.StartedAtUtc DESC,e.EventId) success
+            OUTER APPLY(SELECT TOP(1) e.CompletedAtUtc,e.Outcome FROM surf.SnapshotCaptureEvent e
+                WHERE e.SnapshotKey=s.SnapshotKey AND e.CompletedAtUtc IS NOT NULL
+                ORDER BY e.CompletedAtUtc DESC,e.EventId) completed
+            WHERE s.SnapshotKey=@Snapshot AND s.RowVersion=@Expected;
+            """, Key("@Snapshot", snapshot.SnapshotKey), Token("@Expected", snapshot.RowVersion));
+        using var cancel = RelationalSession.CancelCommand(command, ct);
+        using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false)) throw new SnapshotConcurrencyException();
+        return new(reader.GetInt32(0), reader.GetFieldValue<DateTimeOffset>(1), NullableDate(reader, 2),
+            reader.IsDBNull(3) ? null : (SnapshotRefreshOutcome)reader.GetInt32(3), NullableDate(reader, 4),
+            NullableDate(reader, 5), reader.IsDBNull(6) ? null : (SnapshotRefreshOutcome)reader.GetInt32(6));
+    }
+
     public async Task StartRefreshAsync(long snapshotKey, Guid eventId, Guid? sourceId, CancellationToken ct = default)
     {
         session.RejectValidationWrite(); await using var connection = await Open(ct).ConfigureAwait(false);

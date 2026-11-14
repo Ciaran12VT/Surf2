@@ -3,11 +3,22 @@ using Surf2.Models;
 
 namespace Surf2.Services;
 
-public sealed class DatabaseMetadataQueryService
+public sealed partial class DatabaseMetadataQueryService
 {
     private const int ChunkSize = 30000;
 
     public string CreateEntityQuery(
+        DatabaseEntityEditKind kind,
+        string schemaName,
+        string entityName,
+        string tableName = "",
+        string columnName = "",
+        string constraintName = "",
+        string? fullDataTableSelection = null)
+        => CreateCompatibleQuery(CreateNativeEntityQuery(kind, schemaName, entityName, tableName, columnName, constraintName, fullDataTableSelection),
+            CreateLegacyEntityQuery(kind, schemaName, entityName, tableName, columnName, constraintName, fullDataTableSelection));
+
+    internal string CreateNativeEntityQuery(
         DatabaseEntityEditKind kind,
         string schemaName,
         string entityName,
@@ -70,6 +81,26 @@ public sealed class DatabaseMetadataQueryService
 
     public string CreateImportQuery(IEnumerable<string> fullDataTableNames)
     {
+        string[] selections = fullDataTableNames.ToArray();
+        return CreateCompatibleQuery(CreateNativeImportQuery(selections), CreateLegacyImportQuery(selections));
+    }
+
+    internal static string CreateCompatibleQuery(string nativeQuery, string legacyQuery) => $$"""
+-- Surf2 manual capture: SQL Server 2012 or newer, including Azure SQL Database.
+-- Each dialect is compiled only on its supported engine; database compatibility is not changed.
+SET NOCOUNT ON;
+DECLARE @Surf2Engine int = CONVERT(int, SERVERPROPERTY('EngineEdition'));
+DECLARE @Surf2Major int = CONVERT(int, PARSENAME(CONVERT(nvarchar(128), SERVERPROPERTY('ProductVersion')), 4));
+IF @Surf2Engine IN (5,8) OR @Surf2Major >= 13
+    EXEC sys.sp_executesql N{{ToSqlStringLiteral(nativeQuery)}};
+ELSE IF @Surf2Major >= 11
+    EXEC sys.sp_executesql N{{ToSqlStringLiteral(legacyQuery)}};
+ELSE
+    RAISERROR(N'Surf2 manual capture requires SQL Server 2012 or newer.',16,1);
+""";
+
+    internal string CreateNativeImportQuery(IEnumerable<string> fullDataTableNames)
+    {
         List<FullTableDataSelection> fullDataTables = fullDataTableNames
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(ParseFullTableDataSelection)
@@ -98,6 +129,7 @@ public sealed class DatabaseMetadataQueryService
 SET NOCOUNT ON;
 
 DECLARE @Surf2ChunkSize int = {{ChunkSize}};
+DECLARE @Surf2RowCount bigint;
 
 IF OBJECT_ID('tempdb..#Surf2Payloads') IS NOT NULL
 BEGIN
@@ -121,7 +153,7 @@ SELECT
     );
 
 DECLARE @Surf2Origin TABLE (Result nvarchar(max));
-INSERT INTO @Surf2Origin EXEC sys.sp_executesql N{{ToSqlStringLiteral(DatabaseOriginQueryService.Query)}};
+INSERT INTO @Surf2Origin EXEC sys.sp_executesql N{{ToSqlStringLiteral(DatabaseOriginQueryService.NativeQuery)}};
 INSERT INTO #Surf2Payloads(EntityType,EntityKey,PayloadJson)
 SELECT N'DatabaseOrigin',DB_NAME(),Result FROM @Surf2Origin;
 """;
@@ -429,8 +461,6 @@ INSERT INTO #Surf2Payloads(EntityType,EntityKey,PayloadJson)
 SELECT N'FullDataSelection',N{{tableKeyLiteral}},(SELECT N{{ToSqlStringLiteral(selectionText)}} AS Selection FOR JSON PATH,WITHOUT_ARRAY_WRAPPER);
 IF OBJECT_ID(N{{tableObjectIdLiteral}}, N'U') IS NOT NULL
 BEGIN
-    DECLARE @Surf2RowCount_{{table.VariableSuffix}} bigint;
-
     INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
     SELECT{{topClause}}
         N'TableDataRow',
@@ -441,7 +471,7 @@ BEGIN
         )
     FROM {{bracketedTableName}} AS rowData{{whereClause}};
 
-    SET @Surf2RowCount_{{table.VariableSuffix}} = ROWCOUNT_BIG();
+    SET @Surf2RowCount = ROWCOUNT_BIG();
 
     INSERT INTO #Surf2Payloads (EntityType, EntityKey, PayloadJson)
     SELECT
@@ -451,7 +481,7 @@ BEGIN
             SELECT
                 N{{schemaLiteral}} AS [SchemaName],
                 N{{tableLiteral}} AS [TableName],
-                @Surf2RowCount_{{table.VariableSuffix}} AS [RowCount]
+                @Surf2RowCount AS [RowCount]
             FOR JSON PATH, WITHOUT_ARRAY_WRAPPER
         );
 END;

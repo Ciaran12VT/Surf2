@@ -246,7 +246,14 @@ public sealed class LiveSqlService
             { if ((builder.Length + n) * 2L > maximumBytes) throw new NotSupportedException("cell byte limit"); builder.Append(buffer, 0, n); }
             return new("Text", builder.ToString());
         }
-        if (type is "binary" or "varbinary" or "image" or "timestamp" or "rowversion")
+        if (type is "timestamp" or "rowversion")
+        {
+            // SqlClient does not support GetStream for these fixed eight-byte values.
+            byte[] bytes = reader.GetSqlBinary(i).Value;
+            if (bytes.Length > maximumBytes) throw new NotSupportedException("cell byte limit");
+            return new("Binary", Convert.ToBase64String(bytes));
+        }
+        if (type is "binary" or "varbinary" or "image")
         {
             using var stream = reader.GetStream(i); using var bytes = new MemoryStream(); var buffer = new byte[4096]; int n;
             while ((n = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) != 0)

@@ -32,7 +32,6 @@ public sealed partial class RelationalExplorerMetadataQueries : IExplorerMetadat
         var selected = await new Storage.Relational.State.RelationalStateStore(_session, new RelationalContentStore())
             .ReadScopeAsync(scopeKey, ct).ConfigureAwait(false);
         if (selected != null) scope = SourceResources.ResourceWorkspace.Project(scope, selected.Value);
-        scope = await ReadRefreshDisplayAsync(scope, ct).ConfigureAwait(false);
         var snapshots = scope.Resources.Where(r => r.IsLoaded && r.Snapshot != null)
             .Select(r => r.Snapshot!.SnapshotKey).Distinct().ToArray();
         var catalogue = await ReadCatalogueAsync(snapshots, ct).ConfigureAwait(false);

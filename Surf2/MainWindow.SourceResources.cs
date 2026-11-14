@@ -426,7 +426,7 @@ public partial class MainWindow
     private Task OpenLiveQueryAsync(ScopedResource source, string? schema = null, string? table = null)
     {
         var service = LiveSourceWorkspace.Service(source.PublicId);
-        var window = new SqlQueryWindow(service, table == null ? null : "SELECT TOP (@limit) * FROM " + SqlName.FormatMultipartName(schema!, table)) { Owner = this };
+        var window = new SqlQueryWindow(service, SqlQueryWindow.InitialQuery(schema, table)) { Owner = this };
         TrackSourceWindow(source, window); window.Show(); return Task.CompletedTask;
     }
 

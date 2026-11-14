@@ -17,7 +17,13 @@ public sealed class LiveSqlBrowserWindow : Window
         _service = new(connectionString); Title = title ?? _service.Database + " — Live SQL"; Width = 1100; Height = 740;
         var root = new DockPanel { Margin = new(12) }; var tools = new StackPanel { Orientation = Orientation.Horizontal };
         var refresh = new Button { Content = "Refresh", Margin = new(4) }; refresh.Click += async (_, _) => await RefreshAsync();
-        var query = new Button { Content = "Query", Margin = new(4) }; query.Click += (_, _) => new SqlQueryWindow(_service, (_objects.SelectedItem as LiveSqlObject)?.IsTable == true ? "SELECT TOP (@limit) * FROM " + ((LiveSqlObject)_objects.SelectedItem).QualifiedName : null) { Owner = this }.Show();
+        var query = new Button { Content = "Query", Margin = new(4) };
+        query.Click += (_, _) =>
+        {
+            var item = _objects.SelectedItem as LiveSqlObject;
+            string sql = item?.Type is "U" or "V" ? SqlQueryWindow.InitialQuery(item.Schema, item.Name) : string.Empty;
+            new SqlQueryWindow(_service, sql) { Owner = this }.Show();
+        };
         var capture = new Button { Content = "Create snapshot…", Margin = new(4) }; capture.Click += (_, _) => CreateSnapshotRequested?.Invoke(this, EventArgs.Empty);
         tools.Children.Add(refresh); tools.Children.Add(query); tools.Children.Add(capture); DockPanel.SetDock(tools, Dock.Top); root.Children.Add(tools);
         DockPanel.SetDock(_status, Dock.Bottom); root.Children.Add(_status); DockPanel.SetDock(_objects, Dock.Left); _objects.Width = 310; root.Children.Add(_objects); root.Children.Add(_definition);

@@ -64,7 +64,7 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
         _usesSnapshotMemory = runtime.IsSnapshotMemoryReady([snapshot.SnapshotKey]);
         InitializeComponent();
         Title = "History - " + snapshot.DisplayName;
-        HeaderTextBlock.Text = "Database History: " + snapshot.DisplayName;
+        HeaderTextBlock.Text = snapshot.RefreshDisplay?.Label(snapshot.DisplayName) ?? snapshot.DisplayName;
         RowsListView.ItemsSource = _visibleRows;
         RowsListView.ContextMenu = new ContextMenu();
         _filterTimer.Tick += async (_, _) =>
@@ -102,6 +102,11 @@ public sealed partial class RelationalSnapshotHistoryWindow : Window
         _visibleRows.Clear(); StatusTextBlock.Text = "Loading history…";
         var token = Token;
         var versions = await Task.Run(() => _service.GetDisplayedVersionsAsync(_snapshot, token), token);
+        var display = await _runtime.Snapshots.ReadRefreshDisplayAsync(_snapshot, token);
+        token.ThrowIfCancellationRequested();
+        if (_closing || _closed) return;
+        _snapshot = _snapshot with { RefreshDisplay = display };
+        HeaderTextBlock.Text = display.Label(_snapshot.DisplayName);
         foreach (var version in versions)
         {
             ReserveMetadata(version.VersionName.Length * 2L + 256);

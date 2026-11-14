@@ -6,7 +6,10 @@ namespace Surf2.Services;
 
 public static class DatabaseOriginQueryService
 {
-    public const string Query = """
+    public static string Query => DatabaseMetadataQueryService.CreateCompatibleQuery(NativeQuery,
+        DatabaseMetadataQueryService.CreateLegacyOriginQuery());
+
+    internal const string ReadVariablesSql = """
         SET NOCOUNT ON;
         DECLARE @edition int=CONVERT(int,SERVERPROPERTY('EngineEdition'));
         DECLARE @kind nvarchar(64)=N'', @identifier nvarchar(2048)=N'', @availability nvarchar(64)=N'Unavailable';
@@ -26,14 +29,20 @@ public static class DatabaseOriginQueryService
         BEGIN CATCH
           SET @availability=N'Unavailable';
         END CATCH;
+        """;
+
+    internal const string SelectFieldsSql = """
         SELECT N'Surf2.DatabaseOrigin' AS Format,1 AS Version,
           CASE WHEN @edition=5 THEN N'AzureSqlDatabase' WHEN @edition=8 THEN N'AzureSqlManagedInstance'
                WHEN @edition IN (2,3,4) THEN N'SqlServer' ELSE N'Unknown' END AS Engine,
           CONVERT(nvarchar(128),SERVERPROPERTY('ServerName')) AS Server,DB_NAME() AS [Database],
           @kind AS IdentifierKind,COALESCE(@identifier,N'') AS Identifier,@availability AS Availability,
           SYSUTCDATETIME() AS ObservedAtUtc
-        FOR JSON PATH,WITHOUT_ARRAY_WRAPPER;
         """;
+
+    // A scalar JSON value is an ordinary result column, including when the caller uses INSERT ... EXEC.
+    internal const string NativeQuery = ReadVariablesSql + "\nSELECT (" + SelectFieldsSql +
+        "\nFOR JSON PATH,WITHOUT_ARRAY_WRAPPER) AS Result;";
 
     public static DatabaseOrigin Parse(string input)
     {

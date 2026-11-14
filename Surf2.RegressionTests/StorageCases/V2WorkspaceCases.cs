@@ -17,7 +17,7 @@ using Surf2.Storage.Relational.State;
 public static partial class StorageRegressionSuite
 {
     // A separate process is required because WPF allows only one Application per process.
-    public static Task RunV2WorkspaceChecksAsync(Action<bool, string> check, string outputDir)
+    public static Task RunV2WorkspaceChecksAsync(Action<bool, string> check, string outputDir, bool historyOnly = false)
     {
         if (!Path.IsPathFullyQualified(outputDir)) throw new ArgumentException("Supply an absolute evidence directory.", nameof(outputDir));
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -37,7 +37,7 @@ public static partial class StorageRegressionSuite
                         throw new InvalidOperationException("Fixture logging must be disabled before application construction.");
                     app = new Surf2.App(); app.InitializeComponent(); app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
                     Directory.CreateDirectory(outputDir);
-                    await RunV2WorkspaceFixtureAsync(check, Path.TrimEndingDirectorySeparator(Path.GetFullPath(outputDir)));
+                    await RunV2WorkspaceFixtureAsync(check, Path.TrimEndingDirectorySeparator(Path.GetFullPath(outputDir)), historyOnly);
                 }
                 catch (Exception ex) { failure = ex; }
                 finally
@@ -62,7 +62,7 @@ public static partial class StorageRegressionSuite
         }
     }
 
-    private static async Task RunV2WorkspaceFixtureAsync(Action<bool, string> check, string outputDir)
+    private static async Task RunV2WorkspaceFixtureAsync(Action<bool, string> check, string outputDir, bool historyOnly)
     {
         var models = MigrationModels();
         models.Settings.LoadMostRecentWorkbenchOnStartup = false;
@@ -115,6 +115,15 @@ public static partial class StorageRegressionSuite
             // Finish it before asserting that synchronous Explorer menu construction performs no SQL.
             await RuntimeWpfField<Task>(main, "_relationalImageMenuTask");
             var scope = RuntimeWpfField<ExplorerScope>(main, "_relationalExplorerScope");
+            if (historyOnly)
+            {
+                gate.TrySetResult(true);
+                await RuntimeWpfField<Task>(main, "_relationalIndexRefreshTask").WaitAsync(TimeSpan.FromSeconds(60));
+                await RuntimeWpfInvokeTaskAsync(main, "EnsureRelationalSnapshotMemoryReadyAsync", CancellationToken.None);
+                await VerifyV2HistoryUiParityAsync(main, scope, models.Snapshots, outputDir, check);
+                await fixture.VerifySourceUnchangedAsync(check);
+                return;
+            }
             VerifyV2ExplorerMenuParity(main, scope, folder, callerPath, check);
             var selector = RuntimeWpfNamed<ComboBox>(main, "ObjectExplorerSearchTargetComboBox");
             var footer = RuntimeWpfNamed<Border>(main, "RelationalIndexFooter");

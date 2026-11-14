@@ -83,6 +83,7 @@
                 BorderThickness="0,0,0,1"
                 Background="#F8FAFC">
             <TextBlock x:Name="HeaderTextBlock"
+                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                        FontSize="14"
                        FontWeight="SemiBold"
                        Foreground="#1F2937"

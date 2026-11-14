@@ -48,9 +48,12 @@ public static partial class StorageRegressionSuite
             var oldVersions = oldRows.Items.Cast<DatabaseSnapshotHistoryWindow.DatabaseHistoryVersionRow>().ToArray();
 
             RuntimeWpfAssert(window.Title == original.Title &&
-                RuntimeWpfNamed<TextBlock>(window, "HeaderTextBlock").Text == RuntimeWpfNamed<TextBlock>(original, "HeaderTextBlock").Text &&
                 window.Width == original.Width && window.Height == original.Height && window.MinWidth == original.MinWidth && window.MinHeight == original.MinHeight,
-                check, "History restores master's title, database heading and window dimensions");
+                check, "History retains master's title and window dimensions");
+            var header = RuntimeWpfNamed<TextBlock>(window, "HeaderTextBlock");
+            var display = await runtime.Snapshots.ReadRefreshDisplayAsync(snapshot);
+            RuntimeWpfAssert(header.Text == display.Label(snapshot.DisplayName) && Equals(header.ToolTip, header.Text), check,
+                "History top-left heading shows version, name, capture and refresh dates with a full-text tooltip");
             var columns = ((GridView)rows.View).Columns;
             var expectedColumns = ((GridView)oldRows.View).Columns;
             RuntimeWpfAssert(columns.Select(column => column.Width).SequenceEqual(expectedColumns.Select(column => column.Width)) &&

@@ -186,6 +186,16 @@ public static partial class StorageRegressionSuite
         check(Convert.ToInt64(await fixture.DestinationSqlAsync("SELECT COUNT_BIG(*) FROM surf.SnapshotVersion WHERE SnapshotKey=@Snapshot;",
             RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, noHistory.SnapshotKey))) == 0,
             "Browsing a synthetic initial version writes no persistent history");
+        var refreshEvent = Guid.NewGuid();
+        await runtime.Snapshots.StartRefreshAsync(noHistory.SnapshotKey, refreshEvent, null);
+        await runtime.Snapshots.FailRefreshAsync(refreshEvent, false, "Fixture refresh failed before publication.");
+        var failedRefresh = (await runtime.Snapshots.ReadRefreshEventsAsync(noHistory.SnapshotKey)).Single();
+        var refreshDisplay = await runtime.Snapshots.ReadRefreshDisplayAsync(noHistory);
+        check(noHistory.CurrentVersionKey == null && refreshDisplay?.VersionNumber == 1 &&
+            refreshDisplay.CapturedAtUtc == noHistory.ImportedAtUtc && refreshDisplay.LastOutcome == SnapshotRefreshOutcome.Failed &&
+            refreshDisplay.LastAttemptUtc == failedRefresh.CompletedAtUtc &&
+            refreshDisplay.LastCompletedRefreshUtc == failedRefresh.CompletedAtUtc,
+            "Synthetic V1 history heading retains its capture date and a failed refresh recorded without a persisted version");
         await fixture.DestinationSqlAsync("UPDATE surf.DatabaseSnapshot SET DisplayName=DisplayName WHERE SnapshotKey=@Snapshot;",
             RelationalSession.Parameter("@Snapshot", SqlDbType.BigInt, noHistory.SnapshotKey));
         await ThrowsAsync<SnapshotConcurrencyException>(() => service.CountFileLinesAsync(selected), check,

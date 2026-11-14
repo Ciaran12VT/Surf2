@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using Surf2.Models;
 using Surf2.Services;
 using Surf2.Services.RelationalExplorer;
+using Surf2.Services.SourceResources;
 using Surf2.Storage.Relational.Index;
 
 namespace Surf2;
@@ -972,15 +973,17 @@ public partial class MainWindow
                 else if (sourceMember.Kind == ResourceKind.LiveDatabase)
                 {
                     Add("Create Snapshot", () => CaptureLiveSourceSnapshotAsync(sourceMember));
-                    Add("New Query", () => OpenLiveQueryAsync(sourceMember));
+                    Add("Query", () => OpenLiveQueryAsync(sourceMember), LiveSourceWorkspace.Available(sourceMember.PublicId));
                 }
                 Add("Refresh", () => RefreshSourceAsync(sourceMember));
                 Add("Reconnect / edit connection", () => ReconnectSourceAsync(sourceMember), sourceMember.Source?.Provider is SourceProvider.Git or SourceProvider.AzureBlob or SourceProvider.LiveSql);
                 Add("Link alternate source", () => LinkSourceAsync(sourceMember));
                 Add("Rename resource container", () => RenameSourceContainerAsync(sourceMember));
             }
-            else if (summary.Role == ExplorerNodeRole.LiveDatabaseDocument && summary.Category == ExplorerCategory.Tables)
-                Add("View Data", () => OpenLiveQueryAsync(sourceMember, summary.SchemaName, summary.ObjectName));
+            else if (sourceMember.Kind == ResourceKind.LiveDatabase && summary.Role == ExplorerNodeRole.LiveDatabaseDocument &&
+                summary.Category is ExplorerCategory.Tables or ExplorerCategory.Views)
+                Add("Query", () => OpenLiveQueryAsync(sourceMember, summary.SchemaName, summary.ObjectName),
+                    LiveSourceWorkspace.Available(sourceMember.PublicId));
         }
         if (summary.IsVirtualFolder) { Separate(); Add("Disband", () => DisbandVirtualFolderAsync(summary.VirtualFolderId)); }
         if (_activeScope != null)
